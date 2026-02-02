@@ -3,6 +3,7 @@ import torch
 import pytorch_lightning as pl
 import numpy as np
 import argparse
+import json
 from hmr4d.utils.pylogger import Log
 import hydra
 from hydra import initialize_config_module, compose
@@ -18,11 +19,11 @@ from hmr4d.utils.video_io_utils import (
     get_writer,
     get_video_reader,
 )
-from hmr4d.utils.vis.cv2_utils import draw_bbx_xyxy_on_image_batch, draw_coco17_skeleton_batch
+from hmr4d.utils.vis.cv2_utils import draw_bbx_xyxy_on_image_batch, draw_coco17_skeleton_batch, draw_dual_skeletons_batch
 
 from hmr4d.utils.preproc import Tracker, Extractor, VitPoseExtractor, SimpleVO
 
-from hmr4d.utils.geo.hmr_cam import get_bbx_xys_from_xyxy, estimate_K, convert_K_to_K4, create_camera_sensor
+from hmr4d.utils.geo.hmr_cam import get_bbx_xys_from_xyxy, estimate_K, convert_K_to_K4, create_camera_sensor, perspective_projection
 from hmr4d.utils.geo_transform import compute_cam_angvel
 from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
 from hmr4d.utils.net_utils import detach_to_cpu, to_cuda
@@ -52,7 +53,9 @@ def parse_args_to_cfg():
         "If the camera zoom in a lot, you can try 135, 200 or even larger values.",
     )
     parser.add_argument("--verbose", action="store_true", help="If true, draw intermediate results")
-    args = parser.parse_args()
+    parser.add_argument("--n_people", type=int, default=1, help="Number of people to track (default: 1)")
+    parser.add_argument("--center_priority", action="store_true", default=True, help="Prioritize center bbox (default: True)")
+    args, unknown = parser.parse_known_args()
 
     # Input
     video_path = Path(args.video)
@@ -67,13 +70,20 @@ def parse_args_to_cfg():
             f"static_cam={args.static_cam}",
             f"verbose={args.verbose}",
             f"use_dpvo={args.use_dpvo}",
+            f"n_people={args.n_people}",
+            f"center_priority={args.center_priority}",
         ]
+        print(overrides)
         if args.f_mm is not None:
             overrides.append(f"f_mm={args.f_mm}")
 
         # Allow to change output root
         if args.output_root is not None:
             overrides.append(f"output_root={args.output_root}")
+        
+        # 支持额外的 Hydra 覆盖参数
+        overrides.extend(unknown)
+        
         register_store_gvhmr()
         cfg = compose(config_name="demo", overrides=overrides)
 
@@ -107,7 +117,7 @@ def run_preprocess(cfg):
     # Get bbx tracking result
     if not Path(paths.bbx).exists():
         tracker = Tracker()
-        bbx_xyxy = tracker.get_one_track(video_path).float()  # (L, 4)
+        bbx_xyxy = tracker.get_one_track(video_path, center_priority=cfg.center_priority).float()  # (L, 4)
         bbx_xys = get_bbx_xys_from_xyxy(bbx_xyxy, base_enlarge=1.2).float()  # (L, 3) apply aspect ratio and enlarge
         torch.save({"bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys}, paths.bbx)
         del tracker
@@ -200,8 +210,65 @@ def load_data_dict(cfg):
     return data
 
 
+def export_json(cfg):
+    """Export SMPL results to JSON format"""
+    json_path = Path(cfg.paths.incam_video).parent / "smpl_output.json"
+    if json_path.exists():
+        Log.info(f"[Export JSON] Already exists at {json_path}")
+        return
+    
+    pred = torch.load(cfg.paths.hmr4d_results)
+    bbx_data = torch.load(cfg.paths.bbx)
+    
+    smplx = make_smplx("supermotion").cuda()
+    smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
+    J_regressor = torch.load("hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
+    
+    # SMPL forward
+    smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
+    pred_c_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    smpl_joints_3d = einsum(J_regressor, pred_c_verts, "j v, f v i -> f j i")  # (F, 24, 3)
+    
+    # Project to 2D
+    K = pred["K_fullimg"]
+    smpl_kp2d = perspective_projection(smpl_joints_3d.cuda(), K.cuda()).cpu()  # (F, 24, 2)
+    
+    # Extract SMPL params (使用正确的键名)
+    params = pred["smpl_params_incam"]
+    global_orient = params["global_orient"].cpu().numpy()  # (F, 3)
+    body_pose = params["body_pose"].cpu().numpy()  # (F, 63)
+    transl = params["transl"].cpu().numpy()  # (F, 3)
+    bbx_xyxy = bbx_data["bbx_xyxy"].cpu().numpy()  # (F, 4)
+    
+    # Build JSON structure
+    frames = []
+    for i in range(len(smpl_joints_3d)):
+        rotvec = np.concatenate([global_orient[i], body_pose[i]]).tolist()  # (66,) = 3 + 63
+        frame_data = {
+            "frame_number": i,
+            "people": [{
+                "bbox2d": bbx_xyxy[i].tolist(),
+                "kps2d": smpl_kp2d[i].flatten().tolist(),  # (24*2=48,)
+                "rotvec": rotvec,
+                "track_id": 1,
+                "transl": transl[i].tolist(),
+                "xyz": smpl_joints_3d[i].flatten().tolist(),  # (24*3=72,)
+            }],
+            "time": str(i)
+        }
+        frames.append(frame_data)
+    
+    output = {"frames": frames}
+    with open(json_path, 'w') as f:
+        json.dump(output, f, indent=2)
+    
+    Log.info(f"[Export JSON] Saved to {json_path}")
+
+
 def render_incam(cfg):
     incam_video_path = Path(cfg.paths.incam_video)
+    skeleton_video_path = Path(cfg.paths.incam_video).parent / "incam_skeleton.mp4"
+    
     if incam_video_path.exists():
         Log.info(f"[Render Incam] Video already exists at {incam_video_path}")
         return
@@ -210,36 +277,43 @@ def render_incam(cfg):
     smplx = make_smplx("supermotion").cuda()
     smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
     faces_smpl = make_smplx("smpl").faces
+    J_regressor = torch.load("hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
 
-    # smpl
+    # SMPL vertices and joints
     smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
     pred_c_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
+    smpl_joints_3d = einsum(J_regressor, pred_c_verts, "j v, f v i -> f j i")  # (F, 24, 3)
 
     # -- rendering code -- #
     video_path = cfg.video_path
     length, width, height = get_video_lwh(video_path)
-    K = pred["K_fullimg"][0]
+    K = pred["K_fullimg"]
+
+    # Project SMPL joints to 2D
+    smpl_kp2d = perspective_projection(smpl_joints_3d.cuda(), K.cuda()).cpu()  # (F, 24, 2)
+    vitpose = torch.load(cfg.paths.vitpose)  # (F, 17, 3)
 
     # renderer
-    renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K)
-    reader = get_video_reader(video_path)  # (F, H, W, 3), uint8, numpy
-    bbx_xys_render = torch.load(cfg.paths.bbx)["bbx_xys"]
-
-    # -- render mesh -- #
-    verts_incam = pred_c_verts
+    renderer = Renderer(width, height, device="cuda", faces=faces_smpl, K=K[0])
+    reader = get_video_reader(video_path)
+    
+    # -- render mesh and skeleton -- #
     writer = get_writer(incam_video_path, fps=30, crf=CRF)
-    for i, img_raw in tqdm(enumerate(reader), total=get_video_lwh(video_path)[0], desc=f"Rendering Incam"):
-        img = renderer.render_mesh(verts_incam[i].cuda(), img_raw, [0.8, 0.8, 0.8])
-
-        # # bbx
-        # bbx_xys_ = bbx_xys_render[i].cpu().numpy()
-        # lu_point = (bbx_xys_[:2] - bbx_xys_[2:] / 2).astype(int)
-        # rd_point = (bbx_xys_[:2] + bbx_xys_[2:] / 2).astype(int)
-        # img = cv2.rectangle(img, lu_point, rd_point, (255, 178, 102), 2)
-
+    writer_skel = get_writer(skeleton_video_path, fps=30, crf=CRF)
+    
+    for i, img_raw in tqdm(enumerate(reader), total=length, desc=f"Rendering Incam"):
+        # Mesh overlay
+        img = renderer.render_mesh(pred_c_verts[i].cuda(), img_raw, [0.8, 0.8, 0.8])
         writer.write_frame(img)
+        
+        # Dual skeletons: ViTPose (green) + SMPL (red)
+        img_skel = draw_dual_skeletons_batch([img_raw], vitpose[i:i+1], smpl_kp2d[i:i+1], conf_thr=0.5)[0]
+        writer_skel.write_frame(img_skel)
+    
     writer.close()
+    writer_skel.close()
     reader.close()
+    Log.info(f"[Render Incam] Skeleton video saved to {skeleton_video_path}")
 
 
 def render_global(cfg):
@@ -329,6 +403,7 @@ if __name__ == "__main__":
     # ===== Render ===== #
     render_incam(cfg)
     render_global(cfg)
+    export_json(cfg)
     if not Path(paths.incam_global_horiz_video).exists():
         Log.info("[Merge Videos]")
         merge_videos_horizontal([paths.incam_video, paths.global_video], paths.incam_global_horiz_video)

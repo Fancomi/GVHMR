@@ -30,6 +30,8 @@ static_cam: False
 verbose: False
 use_dpvo: False
 f_mm: null  # focal length of fullframe camera in mm
+n_people: 1  # number of people to track
+center_priority: True  # prioritize center bbox when selecting people
 
 paths:
   bbx: ${preprocess_dir}/bbx.pt
