@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-把 GVHMR 包成一个常驻 HTTP 服务, 经 frp 反向代理从外网调用, 支持两条链路:
+把 GVHMR 包成一个常驻 HTTP 服务, **仅在内网环境调用 (不使用 frp)**, 支持两条链路:
 
 - **链路 1**: 输入图像 → YOLO 检测人体 bbox + GVHMR 出 SMPL
 - **链路 2**: 输入图像 + bbox → 跳过检测, 直接 GVHMR 出 SMPL
@@ -127,24 +127,23 @@ tools/serve/verify_single.py  # 阶段1: 不起服务, 跑通 0001.jpg → 写 p
 tools/serve/app.py            # 阶段2: Flask + Queue + worker (§3,§5)
 scripts/install_service.sh    # 在 gvhmr 环境补装 flask (用户要求: install 放进 script)
 scripts/run_service.sh        # 启动服务 (用户要求: 服务脚本同)
-frpc 配置                     # 阶段3: frpc.toml 指向 82.157.208.105, http 代理 GVHMR 端口
 ```
 
 ## 7. 实现顺序 (层层递进)
 
 1. **infer_core + verify_single**: 跑通 0001.jpg, 产出 player_0.json, 确认 SMPL 投影对齐 (肉眼/数值)。这是正确性地基。
 2. **app.py 起服务**: 包 Flask + 有界队列 + worker; 本地 curl /health 与 /infer 验证两条链路 + 503 繁忙。
-3. **frpc 经公网**: 配置 frpc 连 82.157.208.105, 外网 client 调用验证全链路。
+3. **内网验证**: 同机/内网另一进程 client 调用 `127.0.0.1:port` 验证全链路 (不使用 frp)。
 
 ## 8. 测试与验证
 
 - 阶段1: `verify_single.py` 输出 json 字段齐全、维度正确 (root_pos 3, body_pose 63, betas 10, keypoints 156); 投影 keypoints 落在人体上。
 - 阶段2: 单请求 200 正确; 并发压测 (30+ 并发) 验证排队 + 队列满 503; 两条链路 (有/无 bbox) 都正确。
-- 阶段3: 外网 client 经 frp 拿到与本地一致的结果。
+- 阶段3: 内网另一进程/另一台机器 client 调用拿到与本地一致的结果。
 
 ## 9. 安全说明
 
-服务无鉴权 (内网+frp 场景, 与现有 flask demo 一致)。若暴露公网需注意: base64 图像解码有大小上限保护, 防止超大 body 打爆内存。生产化鉴权不在本期范围。
+服务无鉴权 (内网场景, 与现有 flask demo 一致)。base64 图像解码有大小上限保护, 防止超大 body 打爆内存。生产化鉴权与公网暴露不在本期范围。
 
 ## 10. 不做 (YAGNI)
 
