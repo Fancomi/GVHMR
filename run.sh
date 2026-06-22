@@ -1,4 +1,4 @@
-
+source ~/envs/gvhmr/bin/activate
 # 必须使用cuda12.1, 否则预测严重bug
 # python tools/demo/demo.py --video=/media/fanco/disk/Code/3DBody/HybrIK/examples/taiji.mp4 -s
 # python tools/demo/demo.py --video=docs/example_video/swim-train.mp4 -s
@@ -9,7 +9,9 @@
 # python tools/demo/demo.py -s --video="/media/fanco/disk/Datas/3DMocap/20251225/20251226-2/四足支撑前伸/color_m.mp4"
 
 
-python tools/demo/demo.py --video=/media/fanco/disk/BaiduPan/weightlifting20251230.mp4 -s --use_dpvo --center_priority
+# python tools/demo/demo.py --video=/media/fanco/disk/BaiduPan/weightlifting20251230.mp4 --use_dpvo --center_priority
+# python tools/demo/demo.py --video=/media/fanco/disk/BaiduPan/video20260202.mp4 --use_dpvo --center_priority
+
 
 
 # python tools/demo/demo.py --video=/media/fanco/disk/BaiduPan/weightlifting20251230.mp4 -s
@@ -20,3 +22,5 @@ python tools/demo/demo.py --video=/media/fanco/disk/BaiduPan/weightlifting202512
 
 # 批处理
 # python tools/demo/demo_batch.py -f /media/fanco/disk/Datas/3DMocap/20251225/20260112 -s
+
+python tools/demo/demo_batch.py -f /media/fanco/disk/Datas/3DMocap/20260425 -s
