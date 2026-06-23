@@ -148,21 +148,30 @@ class GVHMRInfer:
 
     def _to_coco(self, params, K_fullimg, bbx_xys, file_name, w, h):
         """Convert incam SMPL params (CV frame) to a label_mocap COCO doc (GL frame)."""
-        # --- SMPL params: 1:1 fields, with CV->GL frame flip on root ---
+        # --- body_pose / betas pass through 1:1; root rotation gets CV->GL flip ---
         global_orient = params["global_orient"].reshape(1, 3).cpu()  # (1,3)
         body_pose = params["body_pose"].reshape(63).cpu().tolist()  # unchanged
         betas = params["betas"].reshape(-1)[:10].cpu().tolist()  # unchanged
-        transl = params["transl"].reshape(3).cpu()  # (3,)
 
         R_cv = axis_angle_to_matrix(global_orient)  # (1,3,3)
         R_gl = _M @ R_cv  # left-multiply frame flip
         root_rota = matrix_to_axis_angle(R_gl).reshape(3).tolist()
-        root_pos = [float(transl[0]), float(-transl[1]), float(-transl[2])]
 
-        # --- keypoints: project 24 SMPL joints (incam, pixel space) ---
+        # --- posed joints (CV incam, pixel space): drive BOTH root_pos & keypoints ---
         smplx_out = self.smplx(**to_cuda({k: v for k, v in params.items()}))
         verts = torch.matmul(self.smplx2smpl, smplx_out.vertices[0])  # (6890,3)
-        joints3d = einsum(self.J_regressor, verts, "j v, v i -> j i")  # (24,3)
+        joints3d = einsum(self.J_regressor, verts, "j v, v i -> j i")  # (24,3) SMPL joints
+
+        # root_pos = posed pelvis world position (joints3d[0]), NOT smpl transl.
+        # label_mocap's forwardSmpl places the pelvis joint AT root_pos, whereas
+        # SMPL transl is offset from the pelvis by the rest-pose J0(betas)
+        # (~0.22m, mostly Y) — using transl caused a ~100px vertical mismatch
+        # downstream. Taking it from joints3d[0] also guarantees the pelvis lands
+        # exactly on keypoints[0] (same source). Flip CV->GL.
+        j0 = joints3d[0].cpu()
+        root_pos = [float(j0[0]), float(-j0[1]), float(-j0[2])]
+
+        # --- keypoints: project the same 24 joints to pixels ---
         kp2d = perspective_projection(joints3d[None].cuda(), K_fullimg[None].cuda())[0].cpu()  # (24,2)
         keypoints = [0.0] * (52 * 3)
         for j in range(24):
