@@ -40,10 +40,10 @@ def _worker():
     _infer = GVHMRInfer()
     _ready.set()
     while True:
-        future, image_bgr, bbox, file_name = _job_queue.get()
+        future, image_bgr, bbox, file_name, cam_K = _job_queue.get()
         if future.set_running_or_notify_cancel():
             try:
-                doc = _infer.infer(image_bgr, bbox_xywh=bbox, file_name=file_name)
+                doc = _infer.infer(image_bgr, bbox_xywh=bbox, file_name=file_name, cam_K=cam_K)
                 future.set_result(doc)
             except Exception as e:  # noqa: BLE001 - report any infer error back to caller
                 future.set_exception(e)
@@ -59,6 +59,16 @@ def _decode_image(image_b64):
     return img
 
 
+@app.after_request
+def add_cors_headers(resp):
+    # Intranet/demo: allow any origin so the browser annotator can call directly.
+    # Tighten Allow-Origin to the page origin if this ever goes public.
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
@@ -68,8 +78,12 @@ def health():
     })
 
 
-@app.route("/gvhmr/infer", methods=["POST"])
+@app.route("/gvhmr/infer", methods=["POST", "OPTIONS"])
 def infer():
+    # CORS preflight: headers are added by after_request; just 200 with empty body.
+    if request.method == "OPTIONS":
+        return ("", 200)
+
     if not _ready.is_set():
         return jsonify({"error": "loading", "detail": "models not ready"}), 503
 
@@ -85,10 +99,13 @@ def infer():
     if bbox is not None and (not isinstance(bbox, (list, tuple)) or len(bbox) != 4):
         return jsonify({"error": "bad_request", "detail": "bbox must be [x,y,w,h]"}), 400
     file_name = body.get("file_name", "input.jpg")
+    # Optional real intrinsics: {fx,fy,cx,cy} or 3x3. None -> server estimates.
+    # Shape is validated in infer_core (_resolve_K); a bad K surfaces as 400 below.
+    cam_K = body.get("cam_K")
 
     future = Future()
     try:
-        _job_queue.put_nowait((future, image_bgr, bbox, file_name))
+        _job_queue.put_nowait((future, image_bgr, bbox, file_name, cam_K))
     except queue.Full:
         return jsonify({"error": "busy", "detail": "queue full"}), 503
 

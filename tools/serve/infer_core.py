@@ -36,6 +36,28 @@ _M = torch.diag(torch.tensor([1.0, -1.0, -1.0]))
 _STATIC_ANGVEL = torch.tensor([[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]])
 
 
+def _resolve_K(cam_K, w, h):
+    """Build a (3,3) float K from caller input, or estimate from image size.
+
+    cam_K accepts: None -> estimate_K(w,h); dict {fx,fy,cx,cy}; or a 3x3
+    nested list / ndarray. Raises ValueError on malformed input.
+    """
+    if cam_K is None:
+        return estimate_K(w, h)
+    if isinstance(cam_K, dict):
+        try:
+            fx, fy, cx, cy = (float(cam_K[k]) for k in ("fx", "fy", "cx", "cy"))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("cam_K dict must have numeric fx, fy, cx, cy")
+        K = torch.eye(3)
+        K[0, 0], K[1, 1], K[0, 2], K[1, 2] = fx, fy, cx, cy
+        return K.float()
+    arr = np.asarray(cam_K, dtype=np.float32)
+    if arr.shape != (3, 3):
+        raise ValueError("cam_K matrix must be 3x3 or a {fx,fy,cx,cy} dict")
+    return torch.from_numpy(arr).float()
+
+
 def _load_cfg():
     """Compose the demo Hydra config without any video-specific overrides."""
     with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
@@ -81,13 +103,17 @@ class GVHMRInfer:
         return xyxy[int(score.argmax())]
 
     @torch.no_grad()
-    def infer(self, image_bgr, bbox_xywh=None, file_name="input.jpg"):
+    def infer(self, image_bgr, bbox_xywh=None, file_name="input.jpg", cam_K=None):
         """image_bgr: HxWx3 uint8 (BGR, as cv2 reads). Returns a COCO doc dict.
 
         bbox_xywh: optional [x, y, w, h]. If None, YOLO detects the person.
+        cam_K: optional real intrinsics. Accepts {fx,fy,cx,cy} or a 3x3 matrix
+               (list/ndarray). If None, falls back to estimate_K (diagonal-FOV
+               guess). Real K improves depth (tz = 2f/(s*b)) and the CLIFF
+               position prior the network consumes.
         """
         h, w = image_bgr.shape[:2]
-        K_fullimg = estimate_K(w, h)  # (3, 3)
+        K_fullimg = _resolve_K(cam_K, w, h)  # (3, 3)
 
         # --- bbox (xyxy) ---
         if bbox_xywh is None:
