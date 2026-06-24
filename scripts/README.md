@@ -31,17 +31,14 @@
 - **机器**: Linux + NVIDIA GPU, CUDA 12.1。
 - **uv**: 建虚拟环境与装包用。先装: https://docs.astral.sh/uv/ (脚本会检查, 缺则报错)。
 - **aria2c**: 多线程下大权重 (hmr2 ckpt ~2.5G)。`apt install aria2` 或 `conda install aria2` (脚本会检查, 缺则报错)。
-- **SMPL / SMPLX body model (有 license, 需手动获取)**: 不在 HF 自动下载范围, 需到官网注册下载:
-  - SMPL: https://smpl.is.tue.mpg.de/ (下 v1.1.0)
+- **SMPLX body model (服务必需, 有 license 需手动获取)**: 不在 HF 自动下载范围, 需到官网注册下载:
   - SMPLX: https://smpl-x.is.tue.mpg.de/ (下 SMPLX_NEUTRAL)
   - 放到 `inputs/checkpoints/body_models/` 下 (文件名需完全一致):
     ```
-    body_models/smpl/SMPL_NEUTRAL.pkl
-    body_models/smpl/SMPL_MALE.pkl
-    body_models/smpl/SMPL_FEMALE.pkl
     body_models/smplx/SMPLX_NEUTRAL.npz
     ```
-  - 缺这些, 服务启动时 `make_smplx("supermotion")` 会失败。`download_models.sh` 会检查并打印提示。
+  - 缺它, 服务启动时 `make_smplx("supermotion")` 会失败。`download_models.sh` 会检查并打印提示。
+- **SMPL body model (可选, 仅评测/渲染)**: 单图推理服务**不需要**。只有跑 3DPW/EMDB/RICH 评测或渲染时才用到。需要时去 https://smpl.is.tue.mpg.de/ 下 v1.1.0, 放到 `body_models/smpl/SMPL_{NEUTRAL,MALE,FEMALE}.pkl`。
 
 ---
 
@@ -52,7 +49,7 @@
 #     proxy 可选 baidu(默认, 国内 PIP/torch 快) | aliyun(HF 快)
 bash scripts/install.sh baidu
 
-# (2) 下权重: gvhmr/hmr2/vitpose/yolo 从 HF 拉; SMPL/SMPLX 需自备(见上)
+# (2) 下权重: gvhmr/hmr2/vitpose/yolo 从 HF 拉; SMPLX 需自备(服务必需), SMPL 可选(见上)
 bash scripts/download_models.sh baidu
 
 # (3) 起服务: 默认 GPU 0, 端口 8666, 队列上限 64
@@ -133,7 +130,7 @@ python3 tools/serve/call_with_bbox.py <图片路径> 633 0 991 991  # 链路2: �
 | 文件 | 作用 |
 | --- | --- |
 | `install.sh` | 一键装环境 + 推理依赖 + flask (合并了原根目录 install.sh 与 install_service.sh) |
-| `download_models.sh` | 从 HF 下 gvhmr/hmr2/vitpose/yolo; 检查 SMPL/SMPLX 是否就位 |
+| `download_models.sh` | 从 HF 下 gvhmr/hmr2/vitpose/yolo; 检查 SMPLX(必需)/SMPL(可选) 是否就位 |
 | `run_service.sh` | 启动 Flask 推理服务 (默认 GPU 0 / 端口 8666 / 队列 64) |
 
 相关代码(在仓库其他位置, 非本目录): `tools/serve/` (服务实现 + 客户端示例 + 对齐验证脚本)。

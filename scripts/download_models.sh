@@ -6,10 +6,12 @@
 #   proxy: baidu (默认) | aliyun (HF 快)
 #
 # 注意 (body model 需自备):
-#   SMPL / SMPLX 有 license, 不在 HF camenduru/GVHMR 里, 本脚本不下载,
-#   只检查是否就位。需到官网注册下载 (见结尾提示), 放到:
-#     inputs/checkpoints/body_models/smpl/SMPL_{NEUTRAL,MALE,FEMALE}.pkl
-#     inputs/checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz
+#   SMPL / SMPLX 有 license, 不在 HF camenduru/GVHMR 里, 本脚本不下载, 只检查。
+#   需到官网注册下载 (见结尾提示):
+#     [服务必需] inputs/checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz
+#     [可选,仅评测/渲染] inputs/checkpoints/body_models/smpl/SMPL_{NEUTRAL,MALE,FEMALE}.pkl
+#   单图推理服务全链路只用 SMPLX_NEUTRAL.npz (make_smplx supermotion / v437coco17),
+#   不读 SMPL .pkl; 那 3 个 .pkl 仅 3DPW/EMDB/RICH 评测与渲染用到。
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,31 +56,37 @@ dl_if_missing "hmr2/epoch=10-step=25000.ckpt"   "$CKPT/hmr2/epoch=10-step=25000.
 dl_if_missing "vitpose/vitpose-h-multi-coco.pth" "$CKPT/vitpose/vitpose-h-multi-coco.pth"
 dl_if_missing "yolo/yolov8x.pt"                  "$CKPT/yolo/yolov8x.pt"
 
-# ---- 2. body model (SMPL/SMPLX): 有 license, 不自动下, 仅检查 ----
+# ---- 2. body model: 有 license, 不自动下, 仅检查 ----
+#   SMPLX_NEUTRAL.npz : 服务必需 (缺则 make_smplx 报错, 服务起不来)
+#   SMPL_*.pkl        : 可选, 仅评测/渲染用; 单图服务不读
+SMPLX_OK=1
+[ -e "$CKPT/body_models/smplx/SMPLX_NEUTRAL.npz" ] || SMPLX_OK=0
+
 SMPL_OK=1
 for g in NEUTRAL MALE FEMALE; do
     [ -e "$CKPT/body_models/smpl/SMPL_${g}.pkl" ] || SMPL_OK=0
 done
-[ -e "$CKPT/body_models/smplx/SMPLX_NEUTRAL.npz" ] || SMPL_OK=0
 
 echo
-if [ "$SMPL_OK" = "1" ]; then
-    echo "[body model] SMPL + SMPLX 已就位 ✓"
+if [ "$SMPLX_OK" = "1" ]; then
+    echo "[body model] SMPLX_NEUTRAL.npz 已就位 ✓ (服务必需)"
 else
     echo "============================================================"
-    echo " [!] 缺少 SMPL / SMPLX body model (有 license, 需手动获取)"
+    echo " [!] 缺少 SMPLX body model (服务必需, 有 license 需手动获取)"
     echo
-    echo "   SMPL  : https://smpl.is.tue.mpg.de/        (注册后下 v1.1.0)"
-    echo "   SMPLX : https://smpl-x.is.tue.mpg.de/      (注册后下 SMPLX_NEUTRAL)"
-    echo
-    echo "   放到以下位置 (文件名需完全一致):"
-    echo "     $CKPT/body_models/smpl/SMPL_NEUTRAL.pkl"
-    echo "     $CKPT/body_models/smpl/SMPL_MALE.pkl"
-    echo "     $CKPT/body_models/smpl/SMPL_FEMALE.pkl"
+    echo "   SMPLX : https://smpl-x.is.tue.mpg.de/   (注册后下 SMPLX_NEUTRAL)"
+    echo "   放到 (文件名需完全一致):"
     echo "     $CKPT/body_models/smplx/SMPLX_NEUTRAL.npz"
     echo
-    echo "   缺这些, 服务启动时 make_smplx(\"supermotion\") 会失败。"
+    echo "   缺它, 服务启动时 make_smplx(\"supermotion\") 会失败。"
     echo "============================================================"
+fi
+
+if [ "$SMPL_OK" = "1" ]; then
+    echo "[body model] SMPL_*.pkl 已就位 ✓ (可选: 仅评测/渲染)"
+else
+    echo "[body model] SMPL_*.pkl 缺失 (可选: 仅 3DPW/EMDB/RICH 评测与渲染用,"
+    echo "             单图推理服务不需要; 需要评测再去 https://smpl.is.tue.mpg.de/ 下 v1.1.0)"
 fi
 
 echo
