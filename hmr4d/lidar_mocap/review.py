@@ -50,7 +50,8 @@ def make_review(session, calibration, window_dir, max_frames=3):
                                      'joints':np.round(joints,4).tolist(),'accepted':row['accepted'],
                                      'mean_mm':round(row['qa']['final_p2surface_mean_m']*1000,1),
                                      'p90_mm':round(row['qa']['final_p2surface_p90_m']*1000,1),
-                                     'reprojection_px':round(row['qa']['reprojection_mean_px'],1),
+                                     'reprojection_px':(round(row['qa']['reprojection_mean_px'],1)
+                                                        if row['qa']['reprojection_mean_px'] is not None else None),
                                      'motion_id':row['motion_id']})
             cv2.putText(image,f'{camera} scan {lidar_index} | yellow: real LiDAR; orange/blue: SMPL',
                         (25,35),cv2.FONT_HERSHEY_SIMPLEX,.7,(255,255,255),2)
@@ -58,10 +59,11 @@ def make_review(session, calibration, window_dir, max_frames=3):
             cv2.imwrite(str(output/name),image)
             cameras[camera] = name
         frames.append({'lidar_index':lidar_index,'cameras':cameras,'athletes':geometry})
+    projection_values = [r['qa']['reprojection_mean_px'] for r in rows if r['qa']['reprojection_mean_px'] is not None]
     summary = {'fitted':len(rows),'accepted':sum(r['accepted'] for r in rows),
                'mean_surface_mm':round(np.mean([r['qa']['final_p2surface_mean_m'] for r in rows])*1000,2),
                'mean_p90_surface_mm':round(np.mean([r['qa']['final_p2surface_p90_m'] for r in rows])*1000,2),
-               'mean_reprojection_px':round(np.mean([r['qa']['reprojection_mean_px'] for r in rows])*1,2),
+               'mean_reprojection_px':round(float(np.mean(projection_values)),2) if projection_values else None,
                'calibration_digest':calibration.data['snapshot_digest']}
     template = '''<!doctype html><html lang="zh"><meta charset="utf-8"><title>羽毛球 SMPL / LiDAR 配对检查</title>
 <style>body{margin:24px;background:#121821;color:#e8edf3;font:15px system-ui}button,select{padding:8px;margin:5px;background:#263243;color:white;border:1px solid #62768c}#c{background:#0c1119;width:100%;height:580px}.layout{display:grid;grid-template-columns:1fr 1fr;gap:20px}img{width:100%}small{color:#afbdce}pre{white-space:pre-wrap}</style>
