@@ -350,6 +350,9 @@ def diagnose(root, production_root, production_window=None):
                 for name,target in targets:
                     field=f'max_joint_difference_{name}_m';values[field]=max(values[field],float(np.abs(joints-target).max()))
         displayed[displayed_clip['id']]=checks
+        for values in checks.values():
+            if values.get('production_identity_unmatched_scans',0)==values['person_scans']:
+                values['max_joint_difference_production_m']=None
     clip_index={frame['lidar_index']:i for i,frame in enumerate(clip['frames'])}
     requested_groups=[(1,[14,15]),(1,[37,38]),(1,[39,40]),(2,[23,24,25])]
     specified_events=[]
@@ -510,6 +513,9 @@ def main():
     parser.add_argument('--output-dir',type=Path,help='Dedicated generated diagnosis directory')
     args=parser.parse_args();report,curves=diagnose(args.output_root,args.production_root,args.production_window)
     output=args.output_dir or args.output_root/'calibration_refinement/all_tracks_diagnosis'
+    output=Path(output).resolve()
+    if not output.is_relative_to(Path(__file__).resolve().parents[1]/'outputs'):
+        raise ValueError('Generated diagnosis must remain under the GVHMR outputs directory')
     output.mkdir(parents=True,exist_ok=True)
     (output/'diagnosis.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n',encoding='utf-8')
     (output/'diagnosis.md').write_text(markdown(report),encoding='utf-8')
