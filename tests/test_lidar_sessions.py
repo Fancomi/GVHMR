@@ -2,12 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from fractions import Fraction
 
+import av
 import cv2
 import numpy as np
 
-from hmr4d.lidar_mocap.sessions import SessionIndex, decode_fixed24
+from hmr4d.lidar_mocap.sessions import SessionIndex, decode_fixed24, iter_native_video_frames
 
 
 class SessionTests(unittest.TestCase):
@@ -141,30 +142,57 @@ class SessionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timing disagrees"):
             SessionIndex.load(self.root, path)
 
-    def test_video_indices_stream_without_seek(self):
+    def make_video(self):
+        path = self.video / "cam1.mp4"
+        with av.open(str(path), "w") as output:
+            stream = output.add_stream("libx264", rate=30)
+            stream.width, stream.height = 32, 32
+            stream.pix_fmt = "yuv420p"
+            stream.codec_context.gop_size = 2
+            stream.codec_context.max_b_frames = 0
+            for i in range(6):
+                rgb = np.full((32, 32, 3), [20 + i * 20, 40, 180 - i * 20], dtype=np.uint8)
+                frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+                frame.pts, frame.time_base = i, Fraction(1, 30)
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+            for packet in stream.encode():
+                output.mux(packet)
+        with av.open(str(path)) as container:
+            decoded = list(container.decode(video=0))
+            rows = [{"record_index": i, "media_pts_us": round(frame.pts * frame.time_base * 1_000_000)}
+                    for i, frame in enumerate(decoded)]
+            images = [frame.to_ndarray(format="rgb24") for frame in decoded]
+        return path, rows, images
+
+    def test_native_video_real_pts_seek_and_missing_frame(self):
+        path, rows, images = self.make_video()
+        subset = [rows[3], rows[5]]
+        decoded = list(iter_native_video_frames(path, subset))
+        self.assertEqual([position for position, _, _ in decoded], [0, 1])
+        self.assertEqual([row for _, row, _ in decoded], subset)
+        np.testing.assert_array_equal(decoded[0][2], images[3])
+        np.testing.assert_array_equal(decoded[1][2], images[5])
+        with self.assertRaisesRegex(ValueError, "PTS missing/mismatched"):
+            list(iter_native_video_frames(path, [{**rows[3], "media_pts_us": rows[3]["media_pts_us"] + 100}]))
+        with self.assertRaisesRegex(ValueError, "ended before requested"):
+            list(iter_native_video_frames(path, [{"record_index": 6, "media_pts_us": 200000}]))
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            list(iter_native_video_frames(path, [rows[3], rows[2]]))
+
+    def test_session_video_real_pts_bgr_and_index_validation(self):
         self.make_session()
         index = SessionIndex.load(self.root)
-        class Capture:
-            def __init__(self):
-                self.at = -1
-                self.released = False
-            def isOpened(self):
-                return True
-            def grab(self):
-                self.at += 1
-                return self.at < 3
-            def retrieve(self):
-                return True, np.full((1, 1, 3), self.at, dtype=np.uint8)
-            def release(self):
-                self.released = True
-        capture = Capture()
-        with patch("hmr4d.lidar_mocap.sessions.cv2.VideoCapture", return_value=capture):
-            result = list(index.iter_video_frames("cam1", [0, 2]))
-        self.assertEqual([i for i, _ in result], [0, 2])
-        self.assertEqual(int(result[1][1][0, 0, 0]), 2)
-        self.assertTrue(capture.released)
+        _, rows, images = self.make_video()
+        index._camera_rows["cam1"] = rows
+        result = list(index.iter_video_frames("cam1", [3, 5]))
+        self.assertEqual([i for i, _ in result], [3, 5])
+        np.testing.assert_array_equal(result[0][1], images[3][:, :, ::-1])
+        np.testing.assert_array_equal(index.read_image("cam1", 5), images[5][:, :, ::-1])
         with self.assertRaises(ValueError):
             list(index.iter_video_frames("cam1", [2, 1]))
+        with self.assertRaises(IndexError):
+            list(index.iter_video_frames("cam1", [6]))
 
 
 if __name__ == "__main__":

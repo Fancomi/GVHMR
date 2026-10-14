@@ -28,6 +28,7 @@ from hmr4d.utils.geo_transform import compute_cam_angvel
 from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
 from hmr4d.utils.net_utils import detach_to_cpu, to_cuda
 from hmr4d.utils.smplx_utils import make_smplx
+from hmr4d.utils.body_model.contracts import mapped_smpl_geometry
 from hmr4d.utils.vis.renderer import Renderer, get_global_cameras_static, get_ground_params_from_points
 from tqdm import tqdm
 from hmr4d.utils.geo_transform import apply_T_on_points, compute_T_ayfz2ay
@@ -229,8 +230,7 @@ def export_json(cfg):
     
     # SMPL forward
     smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
-    pred_c_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
-    smpl_joints_3d = einsum(J_regressor, pred_c_verts, "j v, f v i -> f j i")  # (F, 24, 3)
+    pred_c_verts, smpl_joints_3d = mapped_smpl_geometry(smplx_out.vertices, smplx2smpl, J_regressor)
     
     # Project to 2D
     K = pred["K_fullimg"]
@@ -284,8 +284,7 @@ def render_incam(cfg):
 
     # SMPL vertices and joints
     smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
-    pred_c_verts = torch.stack([torch.matmul(smplx2smpl, v_) for v_ in smplx_out.vertices])
-    smpl_joints_3d = einsum(J_regressor, pred_c_verts, "j v, f v i -> f j i")  # (F, 24, 3)
+    pred_c_verts, smpl_joints_3d = mapped_smpl_geometry(smplx_out.vertices, smplx2smpl, J_regressor)
 
     # -- rendering code -- #
     video_path = cfg.video_path

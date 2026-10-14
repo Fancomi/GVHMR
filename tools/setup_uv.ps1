@@ -71,6 +71,6 @@ if ([regex]::IsMatch($pulsarHeader, $macroPattern)) {
 } elseif (-not $pulsarHeader.Contains($typeAliases)) {
     throw 'Unexpected PyTorch3D Pulsar header; compatibility patch was not applied.'
 }
-Invoke-Uv sync --extra compat --no-install-package pytorch3d --no-install-package chumpy
-Invoke-Uv sync --extra compat --locked
+Invoke-Uv sync --extra compat --extra serve --no-install-package pytorch3d --no-install-package chumpy
+Invoke-Uv sync --extra compat --extra serve --locked
 Invoke-Uv run --no-sync python tools/check_env.py

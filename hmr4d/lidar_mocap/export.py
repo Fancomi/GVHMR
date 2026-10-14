@@ -42,13 +42,12 @@ def validate_sample(sample):
 
 def export_joblib(samples, output_path):
     """Only accepted real-cloud samples are passed here by the pipeline."""
-    if not samples:
-        return {'accepted': 0, 'path': None}
     for sample in samples:
         validate_sample(sample)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True,exist_ok=True)
-    data = {name: torch.from_numpy(np.stack([s[name] for s in samples]).astype(np.float32)) for name in FIELDS}
+    data = {name:torch.from_numpy(np.stack([s[name] for s in samples]).astype(np.float32)) if samples
+            else torch.empty((0,*shape),dtype=torch.float32) for name,shape in FIELDS.items()}
     data['motion_id'] = [s['motion_id'] for s in samples]
     temporary = output_path.with_suffix(output_path.suffix+'.tmp')
     joblib.dump(data, temporary)

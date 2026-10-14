@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+from dataclasses import asdict
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,8 +32,8 @@ def _hash_file(path):
 
 class BadmintonPipeline:
     def __init__(self, sessions_root, lidar_project_root, output_root, *, camera='cam2',
-                 teacher_stride=2, batch_size=4, fit_batch_size=16, iterations=80,
-                 window_seconds=60, min_points=80):
+                 teacher_stride=2, batch_size=4, fit_batch_size=128, iterations=80,
+                 window_seconds=60, min_points=80, preproc_precision='float32', roi_margin_px=40):
         self.sessions_root = Path(sessions_root).resolve()
         self.lidar_project_root = Path(lidar_project_root).resolve()
         self.output_root = Path(output_root).resolve()
@@ -42,12 +43,46 @@ class BadmintonPipeline:
         self.settings = dict(camera=camera,teacher_stride=teacher_stride,batch_size=batch_size,
                              fit_batch_size=fit_batch_size,iterations=iterations,
                              window_seconds=window_seconds,min_points=min_points)
+        if preproc_precision!='float32':
+            self.settings['preproc_precision'] = preproc_precision
+        if roi_margin_px!=40:
+            self.settings['roi_margin_px'] = roi_margin_px
         self.calibration = None
 
     def _load(self):
         if self.calibration is None:
             self.calibration = CalibrationSnapshot.load(self.output_root/'calibration/calibration_snapshot.json')
         return self.calibration
+
+    def _fit_digest(self):
+        paths = [Path(__file__).with_name(name+'.py') for name in ('fitting','segmentation','export')]
+        paths.append(Path(__file__).parents[1]/'utils/body_model/contracts.py')
+        digest = hashlib.sha256()
+        for path in paths:
+            digest.update(path.read_bytes().replace(b'\r\n',b'\n'))
+        return digest.hexdigest()
+
+    def _completed_fit(self, output, teacher_manifest):
+        from .fitting import FittingConfig
+        path = output/'fit_report.json'
+        if not path.exists():
+            return None
+        report = json.loads(path.read_text(encoding='utf-8'))
+        if (report.get('fit_algorithm_digest')!=self._fit_digest() or
+                report.get('fitting_config')!=asdict(FittingConfig()) or
+                report.get('settings')!=self.settings or
+                report.get('teacher_provenance_hash')!=teacher_manifest['provenance_hash']):
+            return None
+        for relative,expected in report.get('artifacts_sha256',{}).items():
+            artifact = output/relative
+            if not artifact.is_file() or _hash_file(artifact)!=expected:
+                return None
+        for source,expected in report.get('source_lidar_sha256',{}).items():
+            if not Path(source).is_file() or _hash_file(source)!=expected:
+                raise ValueError('Original point cloud changed after fitting: '+source)
+        if not report.get('artifacts_sha256'):
+            return None
+        return report
 
     def _session(self, sid):
         c = self._load()
@@ -123,14 +158,17 @@ class BadmintonPipeline:
                           'left_us':left,'right_us':right,'calibration_digest':self.calibration.data['snapshot_digest'],
                           'settings':self.settings,'source_pairs':[p['lidar_index'] for p in pairs]}
                 config_path = output/'window.json'
-                if config_path.exists() and json.loads(config_path.read_text(encoding='utf-8')) != config:
-                    raise ValueError(f'Window settings differ; use a separate output directory: {output}')
+                if config_path.exists():
+                    old_config = json.loads(config_path.read_text(encoding='utf-8'))
+                    def teacher_identity(value):
+                        normalized = dict(value)
+                        normalized['settings'] = {k:v for k,v in value['settings'].items()
+                                                  if k not in ('fit_batch_size','iterations','min_points')}
+                        return normalized
+                    if teacher_identity(old_config)!=teacher_identity(config):
+                        raise ValueError(f'Teacher/source settings differ; use a separate output directory: {output}')
                 write_json(config_path,config)
                 report_path = output/'fit_report.json'
-                if resume and stage=='run' and report_path.exists():
-                    results.append(json.loads(report_path.read_text(encoding='utf-8')))
-                    print(f'[resume] {sid}/{window_id}',flush=True)
-                    continue
                 print(f'[{stage}] {sid}/{window_id}: {len(pairs)} scans, {len(rows)} source video frames',flush=True)
                 if fitter is not None:
                     # Teacher stages need the GPU capacity released by fitting.
@@ -138,14 +176,20 @@ class BadmintonPipeline:
                     fitter = None
                     import torch
                     torch.cuda.empty_cache()
-                if stage=='fit':
-                    teacher_manifest = json.loads((output/'teacher/manifest.json').read_text(encoding='utf-8'))
-                else:
-                    teacher_manifest = run_teacher(session.video_paths[camera],rows,self.calibration.camera(camera),
-                                                   output/'teacher',batch_size=self.settings['batch_size'],resume=resume,
-                                                   roi_polygon=court_polygon(self.calibration,camera))
+                if stage=='fit' and not (output/'teacher/manifest.json').exists():
+                    raise ValueError('Fit stage requires a completed teacher cache')
+                teacher_manifest = run_teacher(session.video_paths[camera],rows,self.calibration.camera(camera),
+                                               output/'teacher',batch_size=self.settings['batch_size'],resume=resume,
+                                               roi_polygon=court_polygon(self.calibration,camera),
+                                               roi_margin_px=self.settings.get('roi_margin_px',40),
+                                               preproc_precision=self.settings.get('preproc_precision','float32'))
                 if stage=='teacher':
                     results.append(teacher_manifest)
+                    continue
+                cached = self._completed_fit(output,teacher_manifest) if resume else None
+                if cached is not None:
+                    results.append(cached)
+                    print(f'[resume validated] {sid}/{window_id}',flush=True)
                     continue
                 from .fitting import SMPLFitter
                 fitter = SMPLFitter(device='cuda')
@@ -202,11 +246,13 @@ class BadmintonPipeline:
                 result = fitter.fit_batch(params,clouds,self.calibration,camera=self.settings['camera'],
                                           keypoints=sampled['kp2d'][indices],previous=previous,
                                           iterations=self.settings['iterations'])
-                if previous is None and len(batch)>=8 and sum(not acceptance_reasons(q,len(clouds[j])) for j,q in enumerate(result['qa'])) >= 4:
+                if previous is None and len(batch)>=4 and sum(not acceptance_reasons(q,len(clouds[j])) for j,q in enumerate(result['qa'])) >= 4:
                     previous = {'shape':result['shape'][0],'shape_fixed':True}
                 for j,(_,pair,segment) in enumerate(batch):
                     qa = result['qa'][j]
                     reasons = acceptance_reasons(qa,len(segment['points']))
+                    if previous is None:
+                        reasons.append('track_shape_not_yet_established')
                     metadata = {'session_id':session.session_id,'motion_id':track_name,
                                 'lidar_index':pair['lidar_index'],'lidar_frame_id':pair['lidar_frame_id'],
                                 'lidar_path':pair['lidar_path'],'scan_mid_us':pair['scan_mid_us'],
@@ -215,6 +261,7 @@ class BadmintonPipeline:
                                 'calibration_digest':self.calibration.data['snapshot_digest'],
                                 'coordinate_space':'lidar_viewer_xyz_m','qa':qa,
                                 'source_point_count':len(segment['points']),'accepted':not reasons,
+                                'source_index_space':'decoded_fixed24_valid_returns_after_raw_to_viewer_rotation',
                                 'rejection_reasons':reasons,'teacher':str(entry['path']),
                                 'teacher_sampling':{name:(value[indices[j]].item() if isinstance(value,np.ndarray) else value)
                                                     for name,value in sampled['metadata'].items()}}
@@ -239,6 +286,62 @@ class BadmintonPipeline:
         report = {'session_id':session.session_id,'window':output.name,'scan_count':len(pairs),
                   'teacher_tracks':len(tracks),'fitted':len(reviews),'accepted':len(accepted_samples),
                   'fit_rejection_reasons':dict(Counter(r for q in reviews for r in q['rejection_reasons'])),
-                  'segmentation_exclusions':exclusions,'export':export}
-        write_json(output/'fit_report.json',report)
+                  'segmentation_exclusions':exclusions,'export':export,
+                  'fit_algorithm_digest':self._fit_digest(),'fitting_config':asdict(fitter.config),
+                  'settings':self.settings,
+                  'teacher_provenance_hash':teacher_manifest['provenance_hash'],
+                  'source_lidar_sha256':{p['lidar_path']:_hash_file(p['lidar_path']) for p in pairs}}
+        artifact_paths = [output/'ptv3.pth',output/'ptv3.metadata.jsonl',output/'quality.jsonl']
+        artifact_paths += [Path(r['fit_path']) for r in reviews]
+        report['artifacts_sha256'] = {p.relative_to(output).as_posix():_hash_file(p) for p in artifact_paths}
+        from .review import make_review
+        review = make_review(session,self.calibration,output)
+        if review:
+            report['review'] = review
+            write_json(output/'fit_report.json',report)
+        else:
+            write_json(output/'fit_report.json',report)
         return report
+
+    def aggregate(self, session_ids=None):
+        """Keep whole sessions separate; prefer full windows over contained smoke runs."""
+        self._load()
+        sessions = session_ids or sorted(self.calibration.data['sessions'])
+        exports = {}
+        selected_windows = {}
+        for sid in sessions:
+            candidates = []
+            for report_path in (self.output_root/'sessions'/sid/'windows').glob('*/fit_report.json'):
+                config = json.loads((report_path.parent/'window.json').read_text(encoding='utf-8'))
+                candidates.append((config['right_us']-config['left_us'],config,report_path.parent))
+            chosen = []
+            samples = []
+            for _,config,path in sorted(candidates,key=lambda c:c[0],reverse=True):
+                if any(old['left_us']<=config['left_us'] and old['right_us']>=config['right_us'] for old in chosen):
+                    continue
+                if any(max(old['left_us'],config['left_us'])<min(old['right_us'],config['right_us']) for old in chosen):
+                    raise ValueError('Partially overlapping windows require a separate output run')
+                if config['calibration_digest']!=self.calibration.data['snapshot_digest']:
+                    raise ValueError('Cannot merge labels from different calibrations')
+                chosen.append(config)
+                for line in (path/'quality.jsonl').read_text(encoding='utf-8').splitlines():
+                    row = json.loads(line)
+                    if acceptance_reasons(row['qa'],row['source_point_count']):
+                        continue
+                    with np.load(row['fit_path']) as fit:
+                        sample = {name:fit[name].copy() for name in ('pc','root_pose','body_pose','shape','transl')}
+                    sample.update(motion_id=row['motion_id'],metadata=row)
+                    samples.append(sample)
+            samples.sort(key=lambda s:(s['metadata']['scan_mid_us'],s['motion_id']))
+            exports[sid] = export_joblib(samples,self.output_root/'datasets'/f'{sid}.pth')
+            selected_windows[sid] = [c['window_id'] for c in sorted(chosen,key=lambda c:c['left_us'])]
+        split_names = ['train','val','test']
+        splits = {split_names[i]:{'sessions':[sid],**exports[sid]} for i,sid in enumerate(sessions[:3])}
+        result = {'schema':'badminton-ptv3-dataset-v1','exports':exports,'suggested_session_splits':splits,
+                  'selected_windows':selected_windows,'calibration_digest':self.calibration.data['snapshot_digest'],
+                  'accepted':sum(e['accepted'] for e in exports.values()),
+                  'split_limit':'Whole sessions separated; athlete identity overlap between sessions has not been verified',
+                  'target_body_model':'neutral_smpl_24_joints','shape_basis':'SMPL fitted; never directly copied from SMPL-X',
+                  'point_count':256,'coordinate_space':'lidar_viewer_xyz_m'}
+        write_json(self.output_root/'datasets/dataset_manifest.json',result)
+        return result

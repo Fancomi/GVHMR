@@ -17,6 +17,27 @@ def estimate_K(img_w, img_h):
     return K
 
 
+def resolve_camera_intrinsics(value, img_w, img_h):
+    """Validated pixel K shared by the single-image service and video teacher."""
+    if value is None:
+        return estimate_K(img_w, img_h)
+    if isinstance(value, dict):
+        try:
+            fx, fy, cx, cy = (float(value[name]) for name in ('fx','fy','cx','cy'))
+        except (KeyError,TypeError,ValueError) as error:
+            raise ValueError('cam_K requires numeric fx,fy,cx,cy') from error
+        value = [[fx,0,cx],[0,fy,cy],[0,0,1]]
+    try:
+        matrix = torch.as_tensor(value,dtype=torch.float32)
+    except (TypeError,ValueError,RuntimeError) as error:
+        raise ValueError('cam_K requires a numeric 3x3 matrix') from error
+    if matrix.shape!=(3,3) or not torch.isfinite(matrix).all():
+        raise ValueError('cam_K requires a finite 3x3 matrix')
+    if matrix[0,0]<=0 or matrix[1,1]<=0 or not torch.equal(matrix[2],torch.tensor([0.,0.,1.])):
+        raise ValueError('cam_K requires positive focal lengths and pinhole final row [0,0,1]')
+    return matrix
+
+
 def convert_K_to_K4(K):
     K4 = torch.stack([K[0, 0], K[1, 1], K[0, 2], K[1, 2]]).float()
     return K4

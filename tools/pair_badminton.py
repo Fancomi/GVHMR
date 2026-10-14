@@ -1,12 +1,14 @@
 """Calibrated video/LiDAR -> neutral SMPL -> PTv3 single-frame pairs."""
 import argparse
 import json
+import torch
 from hmr4d.lidar_mocap.pipeline import BadmintonPipeline
 
 
 def main():
+    torch.set_num_threads(4)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('stage',choices=('prepare','teacher','fit','run'))
+    parser.add_argument('stage',choices=('prepare','teacher','fit','run','export'))
     parser.add_argument('--sessions-root',default='D:/PROJECT/LIDAR/datas/badminton/sessions')
     parser.add_argument('--lidar-project-root',default='D:/PROJECT/LIDAR/lidar_project')
     parser.add_argument('--output-root',default='outputs/badminton')
@@ -17,8 +19,10 @@ def main():
     parser.add_argument('--window-seconds',type=float,default=60)
     parser.add_argument('--teacher-stride',type=int,default=2)
     parser.add_argument('--batch-size',type=int,default=4)
-    parser.add_argument('--fit-batch-size',type=int,default=16)
+    parser.add_argument('--fit-batch-size',type=int,default=128)
     parser.add_argument('--iterations',type=int,default=80)
+    parser.add_argument('--preproc-precision',choices=('float32','float16'),default='float32')
+    parser.add_argument('--roi-margin-px',type=float,default=40)
     parser.add_argument('--no-resume',action='store_true')
     args = parser.parse_args()
     if args.teacher_stride != 2:
@@ -30,9 +34,12 @@ def main():
     pipeline = BadmintonPipeline(args.sessions_root,args.lidar_project_root,args.output_root,camera=args.camera,
                                  teacher_stride=args.teacher_stride,batch_size=args.batch_size,
                                  fit_batch_size=args.fit_batch_size,iterations=args.iterations,
-                                 window_seconds=args.window_seconds)
+                                 window_seconds=args.window_seconds,preproc_precision=args.preproc_precision,
+                                 roi_margin_px=args.roi_margin_px)
     if args.stage=='prepare':
         report = pipeline.prepare()
+    elif args.stage=='export':
+        report = pipeline.aggregate(args.session_ids)
     else:
         report = pipeline.run(args.session_ids,start_seconds=args.start_seconds,duration_seconds=args.duration_seconds,
                               stage=args.stage,resume=not args.no_resume)

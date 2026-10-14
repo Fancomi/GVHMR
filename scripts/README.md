@@ -3,12 +3,18 @@
 本目录提供 GVHMR **单图推理服务**的全部脚本:安装、下载权重、启动服务。
 三个脚本**自包含**(只依赖本仓库自身,不引用任何外部仓库),路径从脚本位置自动推导。
 
+当前统一入口见 [INSTALL](../docs/INSTALL.md)：Windows 用本地 uv `.venv` 与
+`tools/setup_uv.ps1`；Linux `install.sh` 按同一 `pyproject.toml/uv.lock` 安装，
+默认环境为本仓库 `.venv`，服务依赖使用 `serve` extra。`GVHMR_ENV_DIR` 仍可
+指定原有环境，`baidu/aliyun` 代理需显式选择，默认不强制代理。
+羽毛球视频-LiDAR 配对入口是 `tools/pair_badminton.py`，不通过单图服务生成时序标签。
+
 服务能力:输入图像 → 人体检测 + SMPL;或 图像 + bbox → SMPL。输出对齐下游
 `label_mocap` 的 COCO 标注格式。Flask + 有界队列 + 单 GPU worker,队列满返回 503 繁忙。
 
 ---
 
-## 本机环境快照 (已验证可跑)
+## 原 Linux 部署快照（历史环境）
 
 | 项 | 值 |
 | --- | --- |
@@ -21,9 +27,9 @@
 | 虚拟环境 | `/root/paddlejob/workspace/env_run/penghaotian/envs/gvhmr` |
 | 服务地址 | `http://10.52.104.78:8666` (内网, 无鉴权) |
 
-> 本机复用现有环境的启动命令(脚本默认就指向上面这个 env, 直接跑即可):
+> 复用此历史环境的启动命令：
 > ```bash
-> bash scripts/run_service.sh        # GPU 0, 端口 8666
+> GVHMR_ENV_DIR=/root/paddlejob/workspace/env_run/penghaotian/envs/gvhmr bash scripts/run_service.sh
 > ```
 
 ## 前置条件 (新人必读)
@@ -46,7 +52,7 @@
 
 ```bash
 # (1) 安装: 建 env + torch/pytorch3d/依赖 + editable 装 gvhmr + flask
-#     proxy 可选 baidu(默认, 国内 PIP/torch 快) | aliyun(HF 快)
+#     proxy 可选 none(默认) | baidu | aliyun；版本读取 uv.lock
 bash scripts/install.sh baidu
 
 # (2) 下权重: gvhmr/hmr2/vitpose/yolo 从 HF 拉; SMPLX 需自备(服务必需), SMPL 可选(见上)
@@ -70,7 +76,7 @@ curl http://<服务IP>:8666/health
 
 | 文件 | 项 | 当前默认值 | 覆盖方式 |
 | --- | --- | --- | --- |
-| `install.sh` / `run_service.sh` | `ENV_DIR` | `/root/paddlejob/.../envs/gvhmr` | 设 `GVHMR_ENV_DIR=/your/env` |
+| `install.sh` / `run_service.sh` | `ENV_DIR` | 本仓库 `.venv` | 设 `GVHMR_ENV_DIR=/your/env` |
 | `install.sh` / `download_models.sh` | 代理 URL | 百度/阿里内网代理 | 改脚本内 `http(s)_proxy` 段 |
 | `run_service.sh` | `GPU_ID` 默认 | `0` | 命令行第 1 个参数 |
 | `../tools/serve/call_with_bbox.py` | `URL` | `http://10.52.104.78:8666/...` | 改成你的内网 IP:端口 |

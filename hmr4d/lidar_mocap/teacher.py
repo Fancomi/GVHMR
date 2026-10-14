@@ -53,6 +53,12 @@ def _file_identity(path):
     return {"path": str(path), "size": info.st_size, "mtime_ns": info.st_mtime_ns}
 
 
+def _validate_preproc_precision(precision):
+    if precision not in ("float32", "float16"):
+        raise ValueError("preproc_precision must be 'float32' or 'float16'")
+    return precision
+
+
 def _normalize_rows(frame_rows):
     rows = []
     for row in frame_rows:
@@ -81,6 +87,13 @@ def _normalize_rows(frame_rows):
 def _provenance(video_path, rows, camera, options):
     from hmr4d import PROJ_ROOT
 
+    options = dict(options)
+    precision = _validate_preproc_precision(options.get("preproc_precision", "float32"))
+    # float32 was the original and remains the default computation. Omit its
+    # explicit option so previously produced float32 caches retain their hash.
+    # A half-precision run always has a different, recorded fingerprint.
+    if precision == "float32":
+        options.pop("preproc_precision", None)
     weights = ["yolo/yolov8x.pt", "vitpose/vitpose-h-multi-coco.pth",
                "hmr2/epoch=10-step=25000.ckpt", "gvhmr/gvhmr_siga24_release.ckpt"]
     value = {
@@ -141,36 +154,13 @@ def _iter_video_frames(video_path, rows) -> Iterator[tuple[int, dict, np.ndarray
     decoder independently verifies each requested container PTS (rounding
     tolerance 2 us), rather than trusting an imprecise OpenCV frame seek.
     """
-    import av
-
-    if not rows:
-        return
-    with av.open(str(video_path)) as container:
-        stream = container.streams.video[0]
-        stream.thread_type = "AUTO"
-        first_us = rows[0]["media_pts_us"]
-        container.seek(int(first_us / 1_000_000 / float(stream.time_base)),
-                       stream=stream, backward=True, any_frame=False)
-        wanted = 0
-        for frame in container.decode(stream):
-            if frame.pts is None:
-                raise ValueError("Source video contains a frame without a media timestamp")
-            actual_us = int(round(frame.pts * float(frame.time_base) * 1_000_000))
-            target_us = rows[wanted]["media_pts_us"]
-            if actual_us < target_us - 2:
-                continue
-            if abs(actual_us - target_us) > 2:
-                raise ValueError(f"Video PTS missing/mismatched at decode index "
-                                 f"{rows[wanted]['record_index']}: {actual_us} vs {target_us} us")
-            yield wanted, rows[wanted], frame.to_ndarray(format="rgb24")
-            wanted += 1
-            if wanted == len(rows):
-                return
-        raise ValueError(f"Source video ended before requested frame {rows[wanted]['record_index']}")
+    from .sessions import iter_native_video_frames
+    yield from iter_native_video_frames(video_path,rows)
 
 
 def _undistorter(camera):
     import cv2
+    from hmr4d.utils.geo.hmr_cam import resolve_camera_intrinsics
 
     K = np.asarray(camera["K"], dtype=np.float64).reshape(3, 3)
     distortion = np.asarray(camera.get("distortion_opencv", [0.0] * 5), dtype=np.float64)
@@ -179,6 +169,7 @@ def _undistorter(camera):
         raise ValueError("Expected camera image_size=[width,height] and Brown distortion with 5 coefficients")
     if not np.isfinite(K).all() or not np.isfinite(distortion).all():
         raise ValueError("Camera calibration contains non-finite values")
+    resolve_camera_intrinsics(K,*size)
     if not np.any(distortion):
         return lambda rgb: rgb
     map_x, map_y = cv2.initUndistortRectifyMap(K, distortion, None, K, size, cv2.CV_32FC1)
@@ -386,9 +377,10 @@ def _quiet_extractor_progress(extractor):
         module.tqdm = original
 
 
-def _extract_stage(video_path, rows, camera, segments, batch_size, stage_name):
+def _extract_stage(video_path, rows, camera, segments, batch_size, stage_name, preproc_precision="float32"):
     import torch
 
+    _validate_preproc_precision(preproc_precision)
     if stage_name == "vitpose":
         from hmr4d.utils.preproc.vitpose import VitPoseExtractor
         extractor = VitPoseExtractor(tqdm_leave=False, batch_size=batch_size)
@@ -402,12 +394,19 @@ def _extract_stage(video_path, rows, camera, segments, batch_size, stage_name):
     results = [torch.full((len(s["observations"]), *trailing_shape), float("nan")) for s in segments]
     processed = 0
     try:
-        with _quiet_extractor_progress(extractor):
+        # Keep one autocast context for the whole stage so casts of the large
+        # model weights are cached across batches, rather than repeated for
+        # every four-crop forward pass.
+        with _quiet_extractor_progress(extractor), torch.autocast(
+                device_type="cuda", dtype=torch.float16, enabled=preproc_precision == "float16"):
             for crops, bbx_xys, identifiers in _crop_batches(video_path, rows, camera, segments, batch_size):
                 if stage_name == "vitpose":
                     batch_results = extractor.extract(crops, bbx_xys)
                 else:
                     batch_results = extractor.extract_video_features(crops, bbx_xys)
+                # Keep caches and subsequent GVHMR inference in float32 even
+                # when the two image models used half-precision arithmetic.
+                batch_results = batch_results.float()
                 for value, (segment_index, local_index) in zip(batch_results, identifiers):
                     results[segment_index][local_index] = value
                 processed += len(identifiers)
@@ -430,16 +429,19 @@ def _window_ranges(length, core_frames, context_frames=60):
 
 def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume=True, *,
                 min_track_frames=8, max_track_gap_frames=1, inference_window_frames=600,
-                roi_polygon=None, roi_margin_px=40.0, detector_imgsz=1280):
+                roi_polygon=None, roi_margin_px=40.0, detector_imgsz=1280, preproc_precision="float32"):
     """Run four GPU stages independently and save every observed athlete track.
 
     ``frame_rows`` must be a continuous approximately 30 Hz subset of native
     video rows. ``roi_polygon`` uses undistorted pixels. Long tracks are inferred
     in windows with 60 frames of temporal context and unique retained cores.
     ``resume=False`` explicitly rebuilds this output directory's caches.
+    Optional ``preproc_precision='float16'`` autocasts only ViTPose and HMR2;
+    their saved outputs and the temporal GVHMR model remain float32.
     """
     import torch
 
+    _validate_preproc_precision(preproc_precision)
     if batch_size < 1 or min_track_frames < 2 or inference_window_frames < 8:
         raise ValueError("batch_size >= 1, min_track_frames >= 2, and inference_window_frames >= 8 required")
     video_path, output_dir = Path(video_path).resolve(), Path(output_dir).resolve()
@@ -447,13 +449,15 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
     _undistorter(camera)  # Validate camera before creating a cache.
     options = dict(batch_size=batch_size, min_track_frames=min_track_frames,
                    max_track_gap_frames=max_track_gap_frames, inference_window_frames=inference_window_frames,
-                   roi_polygon=roi_polygon, roi_margin_px=roi_margin_px, detector_imgsz=detector_imgsz)
+                   roi_polygon=roi_polygon, roi_margin_px=roi_margin_px, detector_imgsz=detector_imgsz,
+                   preproc_precision=preproc_precision)
     provenance, provenance_hash = _provenance(video_path, rows, camera, options)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
     if resume and manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         validate_provenance(manifest, provenance_hash)
+        manifest.setdefault("preproc_precision", "float32")
         for info in manifest["tracks"]:
             track_path = output_dir / info["path"]
             if not track_path.is_file():
@@ -475,6 +479,7 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
     manifest = {"schema": SCHEMA, "provenance_hash": provenance_hash, "provenance": provenance,
                 "frame_count": len(rows), "coordinate_space": COORDINATE_SPACE, "tracks": [],
                 "rejected_segments": rejected, "status": "complete", "static_camera": True,
+                "preproc_precision": preproc_precision,
                 "source_fps_median": 1_000_000 / float(np.median(np.diff([r["common_time_us"] for r in rows])))
                 if len(rows) > 1 else None}
     if not segments:
@@ -486,8 +491,9 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
         stage_path = output_dir / f"{stage}.pt"
         cache = _read_stage(stage_path, provenance_hash, resume)
         if cache is None:
-            values = _extract_stage(video_path, rows, camera, segments, batch_size, stage)
-            cache = {"schema": SCHEMA, "provenance_hash": provenance_hash, "values": values}
+            values = _extract_stage(video_path, rows, camera, segments, batch_size, stage, preproc_precision)
+            cache = {"schema": SCHEMA, "provenance_hash": provenance_hash, "values": values,
+                     "preproc_precision": preproc_precision}
             _save_tensor(stage_path, cache)
         if len(cache["values"]) != len(segments):
             raise ValueError(f"Teacher {stage} cache segment count mismatch")
@@ -540,6 +546,7 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
                     raise ValueError("GVHMR produced non-finite camera parameters")
                 cached_track = {
                     "schema": SCHEMA, "provenance_hash": provenance_hash, "provenance": provenance,
+                    "preproc_precision": preproc_precision,
                     "track_id": track_id, "segment_id": segment_id, "coordinate_space": COORDINATE_SPACE,
                     "smpl_model_type": "smplx_neutral_body21_betas10", "smpl_params_incam": params,
                     "kp2d": kp2d, "bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys,

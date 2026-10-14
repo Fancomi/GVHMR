@@ -7,8 +7,8 @@ try:
     from dpvo.utils import Timer
     from dpvo.dpvo import DPVO
     from dpvo.config import cfg
-except:
-    print("dpvo import error")
+except ImportError:
+    DPVO = None
 
 
 from hmr4d import PROJ_ROOT
@@ -21,6 +21,8 @@ class SLAMModel(object):
         Args:
             intrinsics: [fx, fy, cx, cy]
         """
+        if DPVO is None:
+            raise ImportError('Install the optional DPVO dependencies before using --use_dpvo')
         if intrinsics is None:
             print("Estimating focal length")
             focal_length = estimate_focal_length(width, height)

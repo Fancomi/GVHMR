@@ -1,13 +1,41 @@
 import tempfile
+import hashlib
+from dataclasses import asdict
 import unittest
 from pathlib import Path
 import joblib
 import numpy as np
 from hmr4d.lidar_mocap.export import acceptance_reasons, export_joblib
 from hmr4d.lidar_mocap.segmentation import farthest_sample
+from hmr4d.lidar_mocap.pipeline import BadmintonPipeline,write_json
+from hmr4d.lidar_mocap.fitting import FittingConfig
 
 
 class TrainingPairTests(unittest.TestCase):
+    def test_resume_requires_source_and_artifact_integrity(self):
+        pipeline = object.__new__(BadmintonPipeline)
+        pipeline.settings = {'fit_batch_size':128,'iterations':80}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            artifact = output/'ptv3.pth'
+            source = output/'source.png'
+            artifact.write_bytes(b'training data')
+            source.write_bytes(b'real cloud')
+            report = {'fit_algorithm_digest':pipeline._fit_digest(),'fitting_config':asdict(FittingConfig()),
+                      'settings':pipeline.settings,'teacher_provenance_hash':'teacher',
+                      'artifacts_sha256':{'ptv3.pth':hashlib.sha256(artifact.read_bytes()).hexdigest()},
+                      'source_lidar_sha256':{str(source):hashlib.sha256(source.read_bytes()).hexdigest()}}
+            write_json(output/'fit_report.json',report)
+            teacher = {'provenance_hash':'teacher'}
+            self.assertIsNotNone(pipeline._completed_fit(output,teacher))
+            self.assertIsNone(pipeline._completed_fit(output,{'provenance_hash':'changed'}))
+            artifact.write_bytes(b'corrupt')
+            self.assertIsNone(pipeline._completed_fit(output,teacher))
+            artifact.write_bytes(b'training data')
+            source.write_bytes(b'changed source')
+            with self.assertRaises(ValueError):
+                pipeline._completed_fit(output,teacher)
+
     def good_qa(self):
         return {'final_p2surface_mean_m':.02,'final_p2surface_p90_m':.04,'finite':True,
                 'floor_penetration_m':.01,'reprojection_mean_px':5,'reprojection_valid_joints':{'cam2':17}}
@@ -44,6 +72,10 @@ class TrainingPairTests(unittest.TestCase):
             self.assertEqual(tuple(loaded['body_pose'].shape),(1,23,3))
             np.testing.assert_array_equal(loaded['pc'][0].numpy(),sample['pc'])
             self.assertTrue(path.with_suffix('.metadata.jsonl').exists())
+            export_joblib([],path)
+            empty = joblib.load(path)
+            self.assertEqual(tuple(empty['pc'].shape),(0,256,3))
+            self.assertEqual(path.with_suffix('.metadata.jsonl').read_text(), '')
 
 
 if __name__=='__main__':

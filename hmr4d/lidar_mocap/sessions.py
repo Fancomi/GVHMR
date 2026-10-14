@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import bisect
 import json
+from fractions import Fraction
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -75,6 +76,53 @@ def decode_fixed24(path, point_grid=None) -> np.ndarray:
     encoded = encoded.reshape(3, height, width)
     valid = (encoded != 0).all(axis=0)
     return encoded[:, valid].T.astype(np.float32) / np.float32(1000) - np.float32(256)
+
+
+def iter_native_video_frames(video_path, rows):
+    """Seek to the first real media PTS and yield ``(position, row, RGB)``.
+
+    Source sidecars bind ``record_index`` to ``media_pts_us``. This decoder
+    independently verifies each requested container timestamp within 2 us.
+    Seeking starts at the preceding keyframe; no FPS arithmetic or endpoint
+    substitution is used to identify an image.
+    """
+    import av
+
+    rows = list(rows)
+    if not rows:
+        return
+    for key in ("record_index", "media_pts_us"):
+        values = [row.get(key) for row in rows]
+        if any(isinstance(value, bool) or not isinstance(value, (int, np.integer))
+               or value < 0 for value in values):
+            raise ValueError(f"Native video {key} must contain nonnegative integer source identities")
+        if any(b <= a for a, b in zip(values, values[1:])):
+            raise ValueError(f"Native video {key} must be strictly increasing")
+    with av.open(str(video_path)) as container:
+        if not container.streams.video:
+            raise ValueError(f"Source contains no video stream: {video_path}")
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        if stream.time_base is None or stream.time_base <= 0:
+            raise ValueError("Source video has no valid media time base")
+        first_pts = Fraction(int(rows[0]["media_pts_us"]), 1_000_000) / stream.time_base
+        container.seek(int(first_pts), stream=stream, backward=True, any_frame=False)
+        wanted = 0
+        for frame in container.decode(stream):
+            if frame.pts is None or frame.time_base is None:
+                raise ValueError("Source video contains a frame without a media timestamp")
+            actual_us = round(frame.pts * frame.time_base * 1_000_000)
+            target_us = int(rows[wanted]["media_pts_us"])
+            if actual_us < target_us - 2:
+                continue
+            if abs(actual_us - target_us) > 2:
+                raise ValueError(f"Video PTS missing/mismatched at decode index "
+                                 f"{rows[wanted]['record_index']}: {actual_us} vs {target_us} us")
+            yield wanted, rows[wanted], frame.to_ndarray(format="rgb24")
+            wanted += 1
+            if wanted == len(rows):
+                return
+        raise ValueError(f"Source video ended before requested frame {rows[wanted]['record_index']}")
 
 
 class SessionIndex:
@@ -340,7 +388,7 @@ class SessionIndex:
         return (points @ self.Q.T).astype(np.float32) if viewer else points
 
     def iter_video_frames(self, camera, indices: Iterable[int]):
-        """Decode increasing source indices in one stream, without per-frame seeking."""
+        """Seek once, verify real container PTS, and yield native indices/BGR."""
         indices = list(indices)
         if not indices:
             return
@@ -350,25 +398,13 @@ class SessionIndex:
             raise IndexError("Requested decode index is outside the verified video index")
         if any(b <= a for a, b in zip(indices, indices[1:])):
             raise ValueError("Video indices must be strictly increasing and unique")
-        capture = cv2.VideoCapture(str(self.video_paths[camera]))
-        if not capture.isOpened():
-            capture.release()
-            raise FileNotFoundError(f"Cannot open source video: {self.video_paths[camera]}")
-        # Decode from zero rather than trusting an approximate compressed-video
-        # seek to land on the requested MP4 frame. grab() skips color conversion.
-        current = -1
-        try:
-            for wanted in indices:
-                while current < wanted:
-                    if not capture.grab():
-                        raise RuntimeError(f"Source video ended before verified decode index {wanted}")
-                    current += 1
-                ok, image = capture.retrieve()
-                if not ok or image is None:
-                    raise RuntimeError(f"Could not decode source video index {wanted}")
-                yield int(wanted), image
-        finally:
-            capture.release()
+        rows = [self._camera_rows[camera][int(index)] for index in indices]
+        for _, row, rgb in iter_native_video_frames(self.video_paths[camera], rows):
+            yield int(row["record_index"]), rgb[:, :, ::-1].copy()
 
     def read_image(self, camera, record_index):
-        return next(self.iter_video_frames(camera, [record_index]))[1]
+        frames = self.iter_video_frames(camera, [record_index])
+        try:
+            return next(frames)[1]
+        finally:
+            frames.close()

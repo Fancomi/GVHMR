@@ -50,6 +50,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["black", "jupyter"]
 compat = ["roma==1.5.0", "loguru==0.7.3"]
+serve = ["flask>=3.0,<4.0"]
 
 [tool.setuptools.packages.find]
 include = ["hmr4d*"]

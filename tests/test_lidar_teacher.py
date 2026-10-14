@@ -15,6 +15,7 @@ from hmr4d.lidar_mocap.teacher import (
     _normalize_rows,
     _provenance,
     _split_tracks,
+    _validate_preproc_precision,
     associate_detections,
     sample_track,
     validate_provenance,
@@ -112,6 +113,27 @@ class SamplingTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_half_precision_changes_cache_hash_and_default_preserves_existing_hash(self):
+        camera = {"K": np.eye(3), "distortion_opencv": [0] * 5, "image_size": [1920, 1080]}
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "source.mp4"
+            video.write_bytes(b"source identity")
+            _, old_hash = _provenance(video, _rows(), camera, {"batch_size": 4})
+            options = {"batch_size": 4, "preproc_precision": "float32"}
+            _, explicit_default_hash = _provenance(video, _rows(), camera, options)
+            half_provenance, half_hash = _provenance(video, _rows(), camera,
+                                                    {"batch_size": 4, "preproc_precision": "float16"})
+            self.assertEqual(old_hash, explicit_default_hash)
+            self.assertEqual(options["preproc_precision"], "float32")
+            self.assertNotEqual(old_hash, half_hash)
+            self.assertEqual(half_provenance["options"]["preproc_precision"], "float16")
+            with self.assertRaisesRegex(ValueError, "provenance mismatch"):
+                validate_provenance({"schema": SCHEMA, "provenance_hash": old_hash}, half_hash)
+
+    def test_unsupported_precision_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "preproc_precision"):
+            _validate_preproc_precision("bfloat16")
+
     def test_lidar_10hz_cannot_be_called_video_30hz(self):
         rows = _rows()
         for i, row in enumerate(rows):

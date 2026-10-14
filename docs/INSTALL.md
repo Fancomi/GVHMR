@@ -1,5 +1,118 @@
 # Install
 
+## Maintained entry points
+
+The working repository is `Fancomi/GVHMR`; `origin` points there and `upstream`
+retains `zju3dv/GVHMR`. The integration includes the upstream SimpleVO updates,
+the fork's single-image Flask service/exports, and calibrated LiDAR pairing.
+Demo, service and fitting reuse `hmr4d/utils/body_model/contracts.py` for mesh
+mapping and pelvis placement. Service and teacher reuse the pinhole K validator.
+SMPL-X parameter output from the existing service remains SMPL-X; mapping its
+mesh to 6890 vertices alone does not turn its parameters into SMPL labels.
+
+`pyproject.toml` and `uv.lock` are the dependency source for both installers.
+The `serve` extra contains Flask; `compat` contains the legacy runtime imports.
+Windows uses the PowerShell bootstrap below. Linux uses:
+
+```bash
+bash scripts/install.sh             # project-local .venv; no forced proxy
+bash scripts/run_service.sh 0 8666 64
+# Existing/custom environment: export GVHMR_ENV_DIR=/path/to/gvhmr
+# The previously supported baidu/aliyun proxy choices remain explicit options.
+```
+
+The Linux script's shell syntax has been checked here; the new Linux locked
+installation has not been executed on this Windows machine.
+
+## Calibrated badminton training pairs
+
+Run from the repository root in the configured local uv environment:
+
+```powershell
+uv run --no-sync python tools/pair_badminton.py prepare
+# Real short clip, before a full run:
+uv run --no-sync python tools/pair_badminton.py run --session 20261012_154726 --duration-seconds 6 --fit-batch-size 8
+# All three recordings; native ~59.94fps -> every second video frame:
+uv run --no-sync python tools/pair_badminton.py run --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/pair_badminton.py export
+uv run --no-sync python tools/verify_badminton_dataset.py
+```
+
+Input paths default to `D:/PROJECT/LIDAR/datas/badminton/sessions` and
+`D:/PROJECT/LIDAR/lidar_project`. Override them with `--sessions-root` and
+`--lidar-project-root`. Output defaults to `outputs/badminton`; source recordings
+and the LiDAR project are read only. `--session`, `--start-seconds`,
+`--duration-seconds`, `--window-seconds`, `--batch-size`, `--fit-batch-size` and
+`--iterations` control processing. The `teacher` and `fit` stages support
+separate processing. Cache identity binds original video frame rows, calibrated
+K/d, model assets, ROI, precision and source file identity. Completed fitting
+also checks algorithm/config identity and artifact/source PNG hashes.
+Changing video calibration or time maps requires a new output root; fitting
+algorithm changes rebuild the fitted labels while preserving valid teacher
+features. Output caches are resumable and never substitute for missing sources.
+
+The pipeline freezes the explicitly adopted
+`.local/evidence/BADMINTON-CALIB-1012/multiframe/active-selection.json` and its
+hashed dependencies. A newer mtime or `.creating` candidate is not adoption.
+`prepare` checks source manifest binding, court reference plane, Q and complete
+camera frame maps. Subsequent runs use that frozen snapshot. To process a later
+adoption, prepare a separate output root instead of mixing calibration versions.
+
+LiDAR scans drive labels on their native ~10Hz timestamps. Every source scan
+is retained in `sessions/<sid>/pairs.jsonl`, including excluded empty/unmatched
+frames. Pairing uses the device scan midpoint and each camera's nearest native
+common-clock frame with an 8.5ms limit; frame numbers cannot be copied across
+cameras. The teacher retains ~29.97Hz true video PTS, interpolates rotations on
+SO(3), and records its separate model-frame error (up to 18ms), interpolation
+brackets and nearest real keypoint frame. There is no artificial 10Hz-to-30Hz
+frame relabeling or old 50ms shift.
+
+Cam2 is the primary temporal teacher. Its frames are undistorted using adopted
+Brown coefficients and original K. All people inside the projected court ROI
+are tracked; interrupted or ambiguous identities are separated. Cam1 and Cam2
+both use their full adopted raw-LiDAR-to-camera matrices for original-image
+overlay review. Exact Q transforms actual points once into viewer coordinates;
+root orientation uses the nearest proper rotation to rounded Q.
+
+For each athlete, the mapped SMPL-X mesh first initializes a neutral SMPL fit.
+Body, root and pelvis are then optimized against actual segmented LiDAR returns,
+video keypoints, pose/temporal priors and soft penetration of the frozen physical
+reference plane. A jump is not pulled onto the floor. Training `shape` is fitted
+in SMPL's basis and shared within an established person/window; it is not copied
+from SMPL-X. Track names include the window because physical identity across
+windows is not yet established. Camera-to-LiDAR calibration determines world
+placement; GVHMR's gravity/global trajectory does not supply the LiDAR frame.
+
+The quality gate requires at least 80 human returns, finite parameters, mean
+point-to-triangle distance <=65mm, P90 <=120mm, maximum floor penetration <=120mm,
+at least 6 valid primary keypoints, and primary reprojection error <=50px.
+Rejected fits remain reviewable but do not enter training. Missing returns do
+not attract invisible body surfaces: the LiDAR loss is one directional.
+The final surface metric is measured against actual SMPL triangles, using
+locally centred millimetres to avoid PyTorch3D's small-triangle epsilon bias.
+
+Each window contains teacher tracks, fitted `.npz` geometry, `quality.jsonl`,
+`ptv3.pth`, source/timestamp/QA metadata and an offline `review/index.html` with
+interactive 3D geometry and actual dual-camera overlays. `export` assembles
+`datasets/<sid>.pth` and `dataset_manifest.json`, preferring full windows over
+contained short smoke runs. Partially overlapping windows are rejected.
+Suggested train/val/test partitions hold out whole sessions; athlete identity
+overlap between sessions is unverified. Metadata point indices refer to the
+decoded valid fixed24 return list, not raw PNG pixel offsets.
+
+The three recordings contain 23,177 source scans and 23,040 nonempty valid
+dual-camera pairs. Initial real 6-second checks produced 478 accepted person
+samples across all three recordings. These are pseudo-labels: physical exposure
+accuracy, per-point scan motion correction, independent surveyed court scale
+and accuracy of occluded joints are not established. Fitting distance measures
+visible surface overlap and does not prove anatomical ground truth.
+
+The original sibling PTv3 directory is currently absent on this machine.
+The previously verified field/pelvis contract below is preserved. The current
+verification script checks sampled exported points against original PNGs and
+rebuilds stored meshes from their SMPL parameters; it cannot rerun an absent
+trainer's loader. Unit checks: `uv run --no-sync python -m unittest discover -s tests`.
+
 ## Local Windows environment with uv
 
 From the repository root, run:

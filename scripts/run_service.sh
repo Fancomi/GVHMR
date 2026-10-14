@@ -15,8 +15,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-# 默认指向本机现有环境; 别人换机器改这里或设 GVHMR_ENV_DIR。
-ENV_DIR="${GVHMR_ENV_DIR:-/root/paddlejob/workspace/env_run/penghaotian/envs/gvhmr}"
+ENV_DIR="${GVHMR_ENV_DIR:-$REPO_ROOT/.venv}"
 
 GPU_ID="${1:-0}"
 PORT="${2:-8666}"
@@ -31,6 +30,8 @@ if [ ! -f "$ACTIVATE" ]; then
 fi
 
 source "$ACTIVATE"
+TORCHLIB="$ENV_DIR/lib/python3.10/site-packages/torch/lib"
+export LD_LIBRARY_PATH="$TORCHLIB:${LD_LIBRARY_PATH:-}"
 cd "$REPO_ROOT"
 
 echo "[run] GPU=$GPU_ID  bind=0.0.0.0:$PORT  maxsize=$MAXSIZE  ENV_DIR=$ENV_DIR"

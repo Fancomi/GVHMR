@@ -18,17 +18,17 @@ import numpy as np
 import torch
 from hydra import initialize_config_module, compose
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
-from einops import einsum
 
 from hmr4d.configs import register_store_gvhmr
 from hmr4d.utils.preproc import Extractor, VitPoseExtractor
 from hmr4d.utils.preproc.vitfeat_extractor import get_batch
-from hmr4d.utils.geo.hmr_cam import estimate_K, get_bbx_xys_from_xyxy, perspective_projection
+from hmr4d.utils.geo.hmr_cam import resolve_camera_intrinsics, get_bbx_xys_from_xyxy, perspective_projection
 from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
 from hmr4d.utils.smplx_utils import make_smplx
 from hmr4d.utils.net_utils import to_cuda
 from ultralytics import YOLO
 from hmr4d import PROJ_ROOT
+from hmr4d.utils.body_model.contracts import mapped_smpl_geometry
 
 # CV->GL frame flip (rotate 180 about X). Persisted on CPU; moved per-use.
 _M = torch.diag(torch.tensor([1.0, -1.0, -1.0]))
@@ -42,20 +42,7 @@ def _resolve_K(cam_K, w, h):
     cam_K accepts: None -> estimate_K(w,h); dict {fx,fy,cx,cy}; or a 3x3
     nested list / ndarray. Raises ValueError on malformed input.
     """
-    if cam_K is None:
-        return estimate_K(w, h)
-    if isinstance(cam_K, dict):
-        try:
-            fx, fy, cx, cy = (float(cam_K[k]) for k in ("fx", "fy", "cx", "cy"))
-        except (KeyError, TypeError, ValueError):
-            raise ValueError("cam_K dict must have numeric fx, fy, cx, cy")
-        K = torch.eye(3)
-        K[0, 0], K[1, 1], K[0, 2], K[1, 2] = fx, fy, cx, cy
-        return K.float()
-    arr = np.asarray(cam_K, dtype=np.float32)
-    if arr.shape != (3, 3):
-        raise ValueError("cam_K matrix must be 3x3 or a {fx,fy,cx,cy} dict")
-    return torch.from_numpy(arr).float()
+    return resolve_camera_intrinsics(cam_K,w,h)
 
 
 def _load_cfg():
@@ -159,8 +146,7 @@ class GVHMRInfer:
 
         # --- posed joints (CV incam, pixel space): drive BOTH root_pos & keypoints ---
         smplx_out = self.smplx(**to_cuda({k: v for k, v in params.items()}))
-        verts = torch.matmul(self.smplx2smpl, smplx_out.vertices[0])  # (6890,3)
-        joints3d = einsum(self.J_regressor, verts, "j v, v i -> j i")  # (24,3) SMPL joints
+        _, joints3d = mapped_smpl_geometry(smplx_out.vertices[0], self.smplx2smpl, self.J_regressor)
 
         # root_pos = posed pelvis world position (joints3d[0]), NOT smpl transl.
         # label_mocap's forwardSmpl places the pelvis joint AT root_pos, whereas

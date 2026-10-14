@@ -18,9 +18,11 @@ from typing import Any, Mapping, Optional, Sequence
 
 import torch
 from pytorch3d.loss.point_mesh_distance import point_face_distance
+from pytorch3d.ops import knn_points
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
 
 from hmr4d import PROJ_ROOT
+from hmr4d.utils.body_model.contracts import forward_smpl_at_pelvis, map_smplx_vertices
 
 
 @dataclass(frozen=True)
@@ -42,12 +44,18 @@ class FittingConfig:
     ground_tolerance_m: float = 0.02
     max_beta: float = 4.0
     align_translation: bool = True
+    optimizer_surface: str = "full_faces"
+    candidate_neighbors: int = 8
 
     def __post_init__(self):
         if min(self.point_limit, self.qa_point_limit, self.topology_vertices) < 1:
             raise ValueError("Sampling limits must be positive")
         if min(self.learning_rate, self.conversion_lr, self.cloud_huber_m, self.max_beta) <= 0:
             raise ValueError("Optimizer rates, robust distance and shape bound must be positive")
+        if self.optimizer_surface not in {"full_faces", "candidate_faces"}:
+            raise ValueError("optimizer_surface must be 'full_faces' or 'candidate_faces'")
+        if self.candidate_neighbors < 1:
+            raise ValueError("candidate_neighbors must be positive")
 
 
 def point_to_surface_squared(
@@ -90,6 +98,120 @@ def point_to_surface_squared(
         max(counts), 1e-12 * scale * scale,
     ) / (scale * scale)
     return list(squared.split(counts))
+
+
+def vertex_face_adjacency(faces: torch.Tensor, vertex_count: int) -> torch.Tensor:
+    """Build a fixed mesh-topology lookup, padding missing incidences with -1."""
+    cpu_faces = faces.detach().to(device="cpu", dtype=torch.long)
+    if cpu_faces.ndim != 2 or cpu_faces.shape[1] != 3 or len(cpu_faces) == 0:
+        raise ValueError("faces must be a nonempty (F,3) array")
+    if vertex_count < 1 or int(cpu_faces.min()) < 0 or int(cpu_faces.max()) >= vertex_count:
+        raise ValueError("Faces reference invalid vertices")
+    incident = [[] for _ in range(vertex_count)]
+    for face_id, triangle in enumerate(cpu_faces.tolist()):
+        for vertex_id in set(triangle):
+            incident[vertex_id].append(face_id)
+    degree = max(map(len, incident))
+    lookup = torch.full((vertex_count, degree), -1, dtype=torch.long)
+    for vertex_id, face_ids in enumerate(incident):
+        if face_ids:
+            lookup[vertex_id, :len(face_ids)] = torch.tensor(face_ids, dtype=torch.long)
+    return lookup.to(faces.device)
+
+
+def _paired_triangle_squared(points: torch.Tensor, triangles: torch.Tensor) -> torch.Tensor:
+    """Distances to explicit candidate triangles, in locally centred mm².
+
+    points has shape (...,3); triangles has shape (...,M,3,3). For an interior
+    projection use the plane distance, otherwise use the closest of all three
+    finite edge segments. Degenerate faces reduce to their edges/vertices.
+    Gradients flow to the selected triangle vertices, including edge cases.
+    """
+    a, b, c = triangles.unbind(dim=-2)
+    point = points.unsqueeze(-2)
+    ab, ac = b - a, c - a
+    ap = point - a
+    d00 = ab.square().sum(-1)
+    d01 = (ab * ac).sum(-1)
+    d11 = ac.square().sum(-1)
+    d20 = (ap * ab).sum(-1)
+    d21 = (ap * ac).sum(-1)
+    normal = torch.cross(ab, ac, dim=-1)
+    normal_squared = normal.square().sum(-1)
+    # The cross-product expression avoids cancellation of nearly equal dot
+    # products. Millimetre units keep the epsilon below meaningful face sizes.
+    denominator = normal_squared.clamp_min(1e-12)
+    u = (d11 * d20 - d01 * d21) / denominator
+    v = (d00 * d21 - d01 * d20) / denominator
+    inside = (u >= 0) & (v >= 0) & (u + v <= 1) & (normal_squared > 1e-12)
+    plane_squared = (ap * normal).sum(-1).square() / denominator
+
+    edge_squared = []
+    for start, end in ((a, b), (a, c), (b, c)):
+        edge = end - start
+        relative = point - start
+        fraction = ((relative * edge).sum(-1) / edge.square().sum(-1).clamp_min(1e-12)).clamp(0, 1)
+        residual = relative - fraction.unsqueeze(-1) * edge
+        edge_squared.append(residual.square().sum(-1))
+    boundary_squared = torch.stack(edge_squared, dim=-1).min(dim=-1).values
+    return torch.where(inside, plane_squared, boundary_squared)
+
+
+def candidate_point_to_surface_squared(
+    vertices: torch.Tensor, faces: torch.Tensor, clouds: Sequence[torch.Tensor],
+    adjacency: Optional[torch.Tensor] = None, neighbors: int = 8,
+) -> list[torch.Tensor]:
+    """Fast one-sided distance over faces incident to the K nearest vertices.
+
+    Each optimization call refreshes KNN from the current mesh. The resulting
+    candidate surface distance is exact *within that candidate set*, which
+    may omit the globally closest triangle. It is an optimization term only;
+    acceptance metrics always use ``point_to_surface_squared`` over all faces.
+    KNN indices are discrete and detached; triangle vertices retain gradients.
+    """
+    if vertices.ndim != 3 or vertices.shape[-1] != 3:
+        raise ValueError("vertices must have shape (T,V,3)")
+    if len(clouds) != len(vertices):
+        raise ValueError("Each mesh must have exactly one cloud")
+    if not clouds:
+        return []
+    if neighbors < 1:
+        raise ValueError("neighbors must be positive")
+    counts = [len(cloud) for cloud in clouds]
+    if any(count == 0 for count in counts):
+        raise ValueError("Empty clouds cannot constrain a fitted label")
+    faces = faces.to(device=vertices.device, dtype=torch.long)
+    if adjacency is None:
+        adjacency = vertex_face_adjacency(faces, vertices.shape[1])
+    else:
+        adjacency = adjacency.to(device=vertices.device, dtype=torch.long)
+    if adjacency.ndim != 2 or len(adjacency) != vertices.shape[1]:
+        raise ValueError("Invalid vertex-face adjacency")
+
+    scale = 1000.0
+    local_origins = vertices.detach().mean(dim=1)
+    local_vertices = (vertices - local_origins[:, None]) * scale
+    local_points = torch.stack([
+        torch.nn.functional.pad(
+            (cloud.to(device=vertices.device, dtype=vertices.dtype) - origin) * scale,
+            (0, 0, 0, max(counts) - len(cloud)),
+        )
+        for cloud, origin in zip(clouds, local_origins)
+    ])
+    lengths = torch.tensor(counts, device=vertices.device, dtype=torch.long)
+    with torch.no_grad():
+        nearest = knn_points(
+            local_points.detach(), local_vertices.detach(), lengths1=lengths,
+            K=min(neighbors, vertices.shape[1]), return_nn=False,
+        ).idx
+        candidate_faces = adjacency[nearest].flatten(start_dim=-2)
+        candidate_valid = candidate_faces >= 0
+        candidate_vertex_ids = faces[candidate_faces.clamp_min(0)]
+    frame_ids = torch.arange(len(vertices), device=vertices.device)[:, None, None, None]
+    triangles = local_vertices[frame_ids, candidate_vertex_ids]
+    squared = _paired_triangle_squared(local_points, triangles)
+    squared = squared.masked_fill(~candidate_valid, torch.inf).min(dim=-1).values / (scale * scale)
+    return [distance[:count] for distance, count in zip(squared, counts)]
 
 
 def robust_surface_loss(distances_squared: Sequence[torch.Tensor], delta: float = 0.08):
@@ -240,22 +362,14 @@ class SMPLFitter:
         if self.mapping.shape != (6890, 10475):
             raise ValueError("Unexpected SMPL-X to SMPL topology mapping")
         self.faces = torch.as_tensor(self.student.faces, device=self.device, dtype=torch.long)
+        self.face_adjacency = vertex_face_adjacency(self.faces, len(self.student.v_template))
         count = min(self.config.topology_vertices, len(self.student.v_template))
         self.topology_indices = torch.linspace(0, len(self.student.v_template) - 1, count,
                                               device=self.device).long()
 
     def forward_pelvis(self, root, body, shape, pelvis):
         """SMPL geometry using the downstream pelvis translation convention."""
-        count = len(root)
-        shape = shape.reshape(-1, 10).expand(count, -1)
-        out = self.student(
-            betas=shape, body_pose=body.reshape(count, 69), global_orient=root.reshape(count, 3),
-            transl=root.new_zeros((count, 3)), return_verts=True,
-        )
-        origin = out.joints[:, :1]
-        vertices = out.vertices - origin + pelvis[:, None]
-        joints = out.joints[:, :24] - origin + pelvis[:, None]
-        return vertices, joints
+        return forward_smpl_at_pelvis(self.student, root, body, shape, pelvis)
 
     @torch.no_grad()
     def teacher_vertices(self, teacher_params, calibration, camera="cam2"):
@@ -263,7 +377,7 @@ class SMPLFitter:
                   for key, dimension in (("body_pose", 63), ("betas", 10),
                                          ("global_orient", 3), ("transl", 3))}
         source = self.teacher(**params)
-        mapped_camera = torch.stack([self.mapping @ vertices for vertices in source.vertices])
+        mapped_camera = map_smplx_vertices(source.vertices, self.mapping)
         return _camera_to_viewer(calibration, mapped_camera, camera)
 
     def fit_batch(
@@ -354,8 +468,15 @@ class SMPLFitter:
         loss_history = []
         for step in range(iterations):
             vertices, _ = self.forward_pelvis(root, body, shape, pelvis)
+            if cfg.optimizer_surface == "candidate_faces":
+                optimization_distances = candidate_point_to_surface_squared(
+                    vertices, self.faces, optimization_clouds, self.face_adjacency,
+                    neighbors=cfg.candidate_neighbors,
+                )
+            else:
+                optimization_distances = point_to_surface_squared(vertices, self.faces, optimization_clouds)
             loss = robust_surface_loss(
-                point_to_surface_squared(vertices, self.faces, optimization_clouds), cfg.cloud_huber_m,
+                optimization_distances, cfg.cloud_huber_m,
             )
             relative_vertices = vertices - pelvis[:, None]
             loss = loss + cfg.teacher_geometry_weight * (
@@ -422,6 +543,8 @@ class SMPLFitter:
                     "finite": bool(finite[index].cpu()),
                     "cloud_points": len(observed[index]), "qa_points": len(qa_clouds[index]),
                     "surface_metric": "one_sided_observed_point_to_smpl_triangle_metres",
+                    "optimizer_surface": cfg.optimizer_surface,
+                    "optimizer_candidate_neighbors": cfg.candidate_neighbors if cfg.optimizer_surface == "candidate_faces" else None,
                     "surface_mean_m": mean, "surface_median_m": float(measured.median().cpu()),
                     "surface_p90_m": float(torch.quantile(measured, 0.9).cpu()),
                     "surface_p95_m": float(torch.quantile(measured, 0.95).cpu()),
@@ -473,6 +596,7 @@ class SMPLFitter:
                 },
                 "coordinate_space": "viewer_m", "translation_convention": "pelvis_position",
                 "shape_shared_within_window": True, "shape_fixed": shape_fixed,
+                "optimizer_surface": cfg.optimizer_surface,
             }
 
     def _step(self, loss, optimizer, parameters, shape):

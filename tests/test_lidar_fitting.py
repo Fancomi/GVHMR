@@ -6,7 +6,8 @@ import torch
 
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.fitting import (
-    FittingConfig, SMPLFitter, point_to_surface_squared, robust_surface_loss,
+    FittingConfig, SMPLFitter, candidate_point_to_surface_squared,
+    point_to_surface_squared, robust_surface_loss, vertex_face_adjacency,
 )
 
 
@@ -55,6 +56,58 @@ class SurfaceDistanceTests(unittest.TestCase):
         vertices = torch.zeros(1, 3, 3)
         with self.assertRaisesRegex(ValueError, "Empty clouds"):
             point_to_surface_squared(vertices, torch.tensor([[0, 1, 2]]), [torch.empty(0, 3)])
+
+
+class CandidateSurfaceTests(unittest.TestCase):
+    def test_triangle_interior_uses_surface_and_preserves_gradient(self):
+        vertices = torch.tensor([[[0., 0., 0.], [.01, 0., 0.], [0., .01, 0.]]], requires_grad=True)
+        faces = torch.tensor([[0, 1, 2]])
+        clouds = [torch.tensor([[.003, .003, .02]])]
+        distances = candidate_point_to_surface_squared(vertices, faces, clouds, neighbors=1)
+        self.assertAlmostEqual(distances[0].item(), .0004, delta=1e-8)
+        robust_surface_loss(distances).backward()
+        self.assertTrue(torch.isfinite(vertices.grad).all())
+        self.assertLess(vertices.grad[..., 2].sum().item(), 0)
+        self.assertAlmostEqual(vertices.grad[..., :2].abs().sum().item(), 0, places=6)
+
+    def test_different_frames_and_ragged_clouds_cannot_cross_match(self):
+        triangle = torch.tensor([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]])
+        vertices = torch.stack([triangle, triangle + torch.tensor([0., 0., 2.])])
+        faces = torch.tensor([[0, 1, 2]])
+        clouds = [torch.tensor([[.2, .2, .1]]), torch.tensor([[.2, .2, .2], [.3, .2, .3]])]
+        fast = candidate_point_to_surface_squared(vertices, faces, clouds)
+        full = point_to_surface_squared(vertices, faces, clouds)
+        self.assertEqual([len(value) for value in fast], [1, 2])
+        for candidate, reference in zip(fast, full):
+            self.assertTrue(torch.allclose(candidate, reference, atol=1e-6, rtol=1e-6))
+
+    def test_missing_global_face_overestimates_instead_of_underestimating(self):
+        # The large triangle has the globally closest surface, but its vertices
+        # are distant. K=1 intentionally selects only the small raised triangle.
+        vertices = torch.tensor([[
+            [-10., -10., 0.], [10., -10., 0.], [0., 10., 0.],
+            [-.1, -.1, .1], [.1, -.1, .1], [0., .1, .1],
+        ]])
+        faces = torch.tensor([[0, 1, 2], [3, 4, 5]])
+        cloud = [torch.tensor([[0., 0., 0.]])]
+        fast = candidate_point_to_surface_squared(vertices, faces, cloud, neighbors=1)[0]
+        full = point_to_surface_squared(vertices, faces, cloud)[0]
+        self.assertAlmostEqual(fast.item(), .01, places=6)
+        self.assertAlmostEqual(full.item(), 0, places=6)
+        self.assertGreater(fast.item(), full.item())
+
+    def test_degenerate_face_reduces_to_finite_segments(self):
+        vertices = torch.tensor([[[0., 0., 0.], [.01, 0., 0.], [.02, 0., 0.]]], requires_grad=True)
+        faces = torch.tensor([[0, 1, 2]])
+        fast = candidate_point_to_surface_squared(vertices, faces, [torch.tensor([[.01, .03, 0.]])])
+        self.assertAlmostEqual(fast[0].item(), .0009, places=7)
+        fast[0].sum().backward()
+        self.assertTrue(torch.isfinite(vertices.grad).all())
+
+    def test_default_optimizer_retains_full_face_backend(self):
+        self.assertEqual(FittingConfig().optimizer_surface, "full_faces")
+        with self.assertRaises(ValueError):
+            FittingConfig(optimizer_surface="nearest_vertex")
 
 
 @unittest.skipUnless(
@@ -111,6 +164,39 @@ class PelvisConventionTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(pelvis.grad).all())
         self.assertLess(pelvis.grad[0, 0].item(), 0)
 
+    def test_candidate_faces_against_full_smpl_surface(self):
+        generator = torch.Generator().manual_seed(719)
+        root = torch.tensor([[.1, -.2, .3]])
+        body = torch.randn(1, 69, generator=generator) * .2
+        shape = torch.randn(1, 10, generator=generator) * .3
+        vertices, _ = self.fitter.forward_pelvis(root, body, shape, torch.tensor([[12., .8, -1.9]]))
+        vertices = vertices.detach()
+        face_ids = torch.randint(len(self.fitter.faces), (128,), generator=generator)
+        triangles = vertices[0, self.fitter.faces[face_ids]]
+        weights = torch.rand(128, 3, generator=generator)
+        weights = weights / weights.sum(-1, keepdim=True)
+        surface = (triangles * weights[..., None]).sum(-2)
+        shifted = surface + torch.randn(128, 3, generator=generator) * .04
+        scattered = vertices.mean(1)[0] + torch.randn(128, 3, generator=generator) * .8
+        clouds = [torch.cat([shifted, scattered])]
+        full = point_to_surface_squared(vertices, self.fitter.faces, clouds)[0].sqrt()
+        fast = candidate_point_to_surface_squared(
+            vertices, self.fitter.faces, clouds, self.fitter.face_adjacency,
+        )[0].sqrt()
+        # The candidate surface is a subset, so its distance is an upper bound.
+        self.assertTrue(torch.all(fast >= full - 1e-5))
+        # Around a realistically shifted body surface, eight vertex neighbours
+        # recover the actual closest face to millimetre precision.
+        self.assertLess((fast[:128] - full[:128]).abs().max().item(), .001)
+
+    def test_adjacency_contains_only_incident_faces(self):
+        adjacency = vertex_face_adjacency(self.fitter.faces, 6890)
+        for vertex in (0, 100, 3000, 6889):
+            face_ids = adjacency[vertex]
+            face_ids = face_ids[face_ids >= 0]
+            self.assertGreater(len(face_ids), 0)
+            self.assertTrue((self.fitter.faces[face_ids] == vertex).any(-1).all())
+
     def test_optimizer_recovers_shifted_visible_cloud_and_shared_shape(self):
         class IdentityCalibration:
             reference_plane = {"origin_viewer_m": [0., 0., -10.], "normal_viewer": [0., 0., 1.]}
@@ -124,6 +210,7 @@ class PelvisConventionTests(unittest.TestCase):
         fitter = SMPLFitter(
             device="cpu", conversion_steps=20, topology_vertices=512,
             point_limit=64, qa_point_limit=64, align_translation=False,
+            optimizer_surface="candidate_faces",
         )
         teacher = {
             "body_pose": torch.zeros(2, 63), "betas": torch.zeros(2, 10),
@@ -140,6 +227,7 @@ class PelvisConventionTests(unittest.TestCase):
         self.assertTrue(torch.equal(result["shape"][0], result["shape"][1]))
         self.assertTrue(torch.allclose(result["joints"][:, 0], result["transl"], atol=1e-6))
         self.assertEqual(tuple(result["body_pose"].shape), (2, 23, 3))
+        self.assertEqual(result["optimizer_surface"], "candidate_faces")
         for quality in result["qa"]:
             self.assertTrue(quality["finite"])
             self.assertLess(quality["final_p2surface_mean_m"], quality["init_p2surface_mean_m"] * .5)

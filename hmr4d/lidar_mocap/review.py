@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import cv2
 import numpy as np
-import torch
 
 
 EDGES = [(0,1),(0,2),(0,3),(1,4),(2,5),(3,6),(4,7),(5,8),(6,9),(7,10),
@@ -20,8 +19,6 @@ def make_review(session, calibration, window_dir, max_frames=3):
     selected = [available[i] for i in np.linspace(0,len(available)-1,min(max_frames,len(available))).astype(int)]
     output = window_dir/'review'
     output.mkdir(exist_ok=True)
-    model = torch.load(Path(__file__).resolve().parents[1]/'utils/body_model/smpl_neutral_J_regressor.pt')
-    del model
     frames = []
     colors = [(20,160,255),(220,90,60),(80,220,80),(200,80,200)]
     for lidar_index in selected:
