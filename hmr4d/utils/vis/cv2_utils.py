@@ -109,36 +109,76 @@ def draw_kpts_with_conf_batch(frames, kp2d_batch, conf_batch, thickness=2):
     return frames_
 
 
-def draw_coco17_skeleton(img, keypoints, conf_thr=0):
-    use_conf_thr = True if keypoints.shape[1] == 3 else False
+def draw_skeleton(img, keypoints, skeleton_def, conf_thr=0, color=(0, 255, 0), thickness=4):
+    """Draw skeleton on image
+    Args:
+        img: image array
+        keypoints: (J, 2) or (J, 3) with confidence
+        skeleton_def: list of [idx1, idx2] bone connections
+        conf_thr: confidence threshold
+        color: BGR color tuple
+        thickness: line thickness
+    """
+    use_conf_thr = keypoints.shape[1] == 3
     img = img.copy()
-    # fmt:off
-    coco_skel = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6], [5, 7], [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]]            
-    # fmt:on
-    for bone in coco_skel:
+    for bone in skeleton_def:
         if use_conf_thr:
-            kp1 = keypoints[bone[0]][:2].astype(int)
-            kp2 = keypoints[bone[1]][:2].astype(int)
-            kp1_c = keypoints[bone[0]][2]
-            kp2_c = keypoints[bone[1]][2]
+            kp1, kp2 = keypoints[bone[0]][:2].astype(int), keypoints[bone[1]][:2].astype(int)
+            kp1_c, kp2_c = keypoints[bone[0]][2], keypoints[bone[1]][2]
             if kp1_c > conf_thr and kp2_c > conf_thr:
-                img = cv2.line(img, (kp1[0], kp1[1]), (kp2[0], kp2[1]), (0, 255, 0), 4)
+                img = cv2.line(img, tuple(kp1), tuple(kp2), color, thickness)
             if kp1_c > conf_thr:
-                img = cv2.circle(img, (kp1[0], kp1[1]), 6, (0, 255, 0), -1)
+                img = cv2.circle(img, tuple(kp1), 6, color, -1)
             if kp2_c > conf_thr:
-                img = cv2.circle(img, (kp2[0], kp2[1]), 6, (0, 255, 0), -1)
-
+                img = cv2.circle(img, tuple(kp2), 6, color, -1)
         else:
-            kp1 = keypoints[bone[0]][:2].astype(int)
-            kp2 = keypoints[bone[1]][:2].astype(int)
-            img = cv2.line(img, (kp1[0], kp1[1]), (kp2[0], kp2[1]), (0, 255, 0), 4)
+            kp1, kp2 = keypoints[bone[0]][:2].astype(int), keypoints[bone[1]][:2].astype(int)
+            img = cv2.line(img, tuple(kp1), tuple(kp2), color, thickness)
     return img
 
 
-def draw_coco17_skeleton_batch(imgs, keypoints_batch, conf_thr=0):
+# COCO17 skeleton definition
+COCO17_SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6],
+                   [5, 7], [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]]
+
+# SMPL skeleton definition (24 joints)
+SMPL_SKELETON = [[0, 1], [0, 2], [0, 3], [1, 4], [2, 5], [3, 6], [4, 7], [5, 8], [6, 9],
+                 [7, 10], [8, 11], [9, 12], [9, 13], [9, 14], [12, 15], [13, 16], [14, 17],
+                 [16, 18], [17, 19], [18, 20], [19, 21]]
+
+
+def draw_coco17_skeleton(img, keypoints, conf_thr=0, color=(0, 255, 0), thickness=4):
+    """Draw COCO17 skeleton on image"""
+    return draw_skeleton(img, keypoints, COCO17_SKELETON, conf_thr, color, thickness)
+
+
+def draw_smpl_skeleton(img, keypoints, color=(0, 0, 255), thickness=4):
+    """Draw SMPL skeleton on image"""
+    return draw_skeleton(img, keypoints, SMPL_SKELETON, 0, color, thickness)
+
+
+def draw_coco17_skeleton_batch(imgs, keypoints_batch, conf_thr=0, color=(0, 255, 0)):
+    """Draw COCO17 skeleton on batch of images"""
     assert len(imgs) == len(keypoints_batch)
     keypoints_batch = to_numpy(keypoints_batch)
+    return [draw_coco17_skeleton(imgs[i], keypoints_batch[i], conf_thr, color) for i in range(len(imgs))]
+
+
+def draw_dual_skeletons_batch(imgs, vitpose_batch, smpl_kp2d_batch, conf_thr=0):
+    """Draw both ViTPose (green) and SMPL (red) skeletons
+    Args:
+        imgs: list of images
+        vitpose_batch: (B, 17, 3) ViTPose COCO17 keypoints with confidence
+        smpl_kp2d_batch: (B, 24, 2) SMPL projected keypoints
+        conf_thr: confidence threshold for ViTPose
+    """
+    assert len(imgs) == len(vitpose_batch) == len(smpl_kp2d_batch)
+    vitpose_batch = to_numpy(vitpose_batch)
+    smpl_kp2d_batch = to_numpy(smpl_kp2d_batch)
+    
     imgs_out = []
     for i in range(len(imgs)):
-        imgs_out.append(draw_coco17_skeleton(imgs[i], keypoints_batch[i], conf_thr))
+        img = draw_coco17_skeleton(imgs[i], vitpose_batch[i], conf_thr, color=(0, 255, 0), thickness=3)
+        img = draw_smpl_skeleton(img, smpl_kp2d_batch[i], color=(0, 0, 255), thickness=3)
+        imgs_out.append(img)
     return imgs_out

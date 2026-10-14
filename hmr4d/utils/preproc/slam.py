@@ -8,7 +8,7 @@ try:
     from dpvo.dpvo import DPVO
     from dpvo.config import cfg
 except:
-    pass
+    print("dpvo import error")
 
 
 from hmr4d import PROJ_ROOT
