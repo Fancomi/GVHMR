@@ -4,6 +4,7 @@ import torch
 from pathlib import Path
 import shutil
 import ffmpeg
+import imageio_ffmpeg
 from tqdm import tqdm
 import cv2
 
@@ -101,7 +102,7 @@ def merge_videos_horizontal(in_video_paths: list, out_video_path: str):
     inputs = [ffmpeg.input(path) for path in in_video_paths]
     merged_video = ffmpeg.filter(inputs, "hstack", inputs=len(inputs))
     output = ffmpeg.output(merged_video, out_video_path)
-    ffmpeg.run(output, overwrite_output=True, quiet=True)
+    ffmpeg.run(output, cmd=shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe(), overwrite_output=True, quiet=True)
 
 
 def merge_videos_vertical(in_video_paths: list, out_video_path: str):
@@ -110,4 +111,4 @@ def merge_videos_vertical(in_video_paths: list, out_video_path: str):
     inputs = [ffmpeg.input(path) for path in in_video_paths]
     merged_video = ffmpeg.filter(inputs, "vstack", inputs=len(inputs))
     output = ffmpeg.output(merged_video, out_video_path)
-    ffmpeg.run(output, overwrite_output=True, quiet=True)
+    ffmpeg.run(output, cmd=shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe(), overwrite_output=True, quiet=True)

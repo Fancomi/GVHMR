@@ -11,7 +11,10 @@ from hmr4d.utils.geo.flip_utils import flip_heatmap_coco17
 
 
 class VitPoseExtractor:
-    def __init__(self, tqdm_leave=True):
+    def __init__(self, tqdm_leave=True, batch_size=16):
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        self.batch_size = batch_size
         ckpt_path = "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"
         self.pose = build_model("ViTPose_huge_coco_256x192", ckpt_path)
         self.pose.cuda().eval()
@@ -30,7 +33,7 @@ class VitPoseExtractor:
 
         # Inference
         L, _, H, W = imgs.shape  # (L, 3, H, W)
-        batch_size = 16
+        batch_size = self.batch_size
         vitpose = []
         for j in tqdm(range(0, L, batch_size), desc="ViTPose", leave=self.tqdm_leave):
             # Heat map

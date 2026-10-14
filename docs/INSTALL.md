@@ -1,5 +1,166 @@
 # Install
 
+## Local Windows environment with uv
+
+From the repository root, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/setup_uv.ps1
+uv run --no-sync python tools/check_env.py
+uv run --no-sync python tools/check_env.py --require-assets
+uv run --no-sync python tools/demo/demo.py --video docs/example_video/tennis.mp4 -s --preproc_batch_size 4
+```
+
+The project uses `.venv`, Python 3.10, PyTorch 2.3.0 / torchvision 0.18.0
+with CUDA 12.1, and a committed `uv.lock`. NumPy remains at 1.23.5 for
+the legacy SMPL/chumpy pickle loader. The bootstrap script installs torch
+before resolving PyTorch3D, whose source metadata imports torch.
+The large Windows torch wheel is fetched from the official PyTorch index
+using parallel ranges and verified against that index's SHA-256 before
+installation with `uv pip`.
+Windows builds PyTorch3D 0.7.6 from its pinned upstream source in
+`.build-tools/pytorch3d` (a shorter path avoids MSVC object-file path limits); Linux uses
+the original upstream wheel. Install Visual Studio's C++ workload and a
+CUDA 12.x toolkit before running the Windows script. The build targets
+the installed GPU and defaults to two compiler jobs.
+The Windows build replaces Pulsar's two `uint`/`ushort` preprocessor
+macros with equivalent C++ type aliases, avoiding token expansion inside
+CUDA 12.8's tuple headers. This compatibility patch is applied only to
+the local checkout by the setup script.
+
+On this machine CUDA Toolkit 12.8 and MSVC 19.51 are installed. The script
+fetches a project-local MSVC 14.38 toolset from Microsoft's VS 2022 feed,
+verifies the package SHA-256 values, and uses it with the existing Windows
+SDK. The installed Visual Studio is not modified.
+The local compiler layout also includes the VS `vcvarsall.bat` entrypoint
+required by NVCC; builds use the developer environment already loaded
+by the setup script.
+`check_env.py` checks actual CUDA KNN forward/backward and mesh
+rasterization, as well as the demo imports and Hydra configuration.
+It reports missing assets separately; the `--require-assets` option exits
+with status 2 when assets are missing. Full video inference still requires
+all six assets listed below. DPVO is optional and is not installed.
+The demo's `--preproc_batch_size 4` option reduces ViTPose/HMR2 activation
+memory on this 12 GB GPU. HMR2 image crops are transferred to the GPU per
+batch rather than retaining every frame's crop in GPU memory.
+Video merging uses the bundled `imageio-ffmpeg` executable when there is
+no system `ffmpeg` on PATH.
+
+If Google Drive's shared-download quota is exhausted, the
+[demo linked by the project README](https://huggingface.co/spaces/LittleFrog/GVHMR/blob/main/app.py)
+uses the following public Hugging Face mirrors. These commands pin the
+repository revisions used for this local setup:
+
+```powershell
+$env:HF_HUB_DISABLE_XET = '1'
+uv tool run --python 3.10 --from huggingface_hub hf download camenduru/GVHMR --revision 21b32d5389e2e59c0737d4c4095bbc0b8c23f66b gvhmr/gvhmr_siga24_release.ckpt 'hmr2/epoch=10-step=25000.ckpt' vitpose/vitpose-h-multi-coco.pth yolo/yolov8x.pt --local-dir inputs/checkpoints
+uv tool run --python 3.10 --from huggingface_hub hf download camenduru/SMPLer-X --revision 9e5548b70b48efe6992faa3b2a418df108542bf7 SMPLX_NEUTRAL.npz --local-dir inputs/checkpoints/body_models/smplx
+```
+
+This setup reuses the sibling project's existing neutral SMPL file as
+`inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl`.
+
+## Using GVHMR results with the sibling single-frame PTv3 project
+
+Code reviewed in `../rollout_lidar_mocap_badminton`:
+`src/data/single_frame.py`, `src/models/frame_model_backbone.py`,
+`src/trainers/frame_trainer.py`, and
+`third_party/vis/vis_tools/smpl/SMPL.py`.
+
+The interface can be connected through model conversion. GVHMR's
+`hmr4d_results.pt` is **SMPL-X parameters**, even though its keys are named
+`smpl_params_incam` and `smpl_params_global`. Its 63-dimensional body pose
+contains 21 local body rotations plus a separate root rotation, and its
+betas have 10 dimensions. The downstream trainer uses **neutral SMPL**,
+24 joints, and 10 betas. Its network predicts 24 rotation-6D vectors, which
+the trainer derives from the axis-angle labels; labels should stay in
+axis-angle representation.
+
+| Downstream joblib field | Shape | Meaning |
+| --- | --- | --- |
+| `root_pose` | `(N, 1, 3)` | Target-frame root axis angle, radians |
+| `body_pose` | `(N, 23, 3)` | SMPL local body rotations, radians |
+| `shape` | `(N, 10)` | Fitted neutral SMPL betas |
+| `transl` | `(N, 3)` | **Global pelvis position**, metres |
+| `pc` | `(N, 256, 3)` | Points in the same target frame, metres |
+| `motion_id` | `(N,)` | Clip identifier used to split sequences |
+
+The first 22 kinematic joints correspond (pelvis through both wrists).
+SMPL adds the two terminal hand joints. Zero padding these two rotations
+is an initialization only: **SMPL-X and SMPL shape spaces are different,
+so copying betas and padding pose does not produce aligned geometry**.
+Use the bundled `hmr4d/utils/body_model/smplx2smpl_sparse.pt` to map
+SMPL-X vertices to SMPL topology (10475 -> 6890 vertices), then fit neutral
+SMPL pose, shape, and translation to that mesh. The matrix transforms
+vertices, not model parameters. Prefer one fitted shape per person/clip,
+and recompute all 24 joint targets using the downstream `PySMPL`.
+See the [SMPL-X model-transfer documentation](https://github.com/vchoutas/smplx/blob/main/transfer_model/README.md).
+
+There is a second compatibility issue: standard SMPL/SMPL-X `transl` is
+an additive mesh offset; the downstream `PySMPL` subtracts the shaped
+pelvis before adding its `transl`. After fitting with a standard SMPL
+implementation, export `fitted_output.joints[:, 0]` as downstream
+`transl`, rather than copying the fitted offset. This preserves the mesh
+position under the downstream pelvis-centred forward convention.
+
+The downstream target frame is right-handed: X forward/depth, Y left,
+Z up. For GVHMR **camera-frame** geometry (x right, y down, z forward),
+the camera-axis remapping is:
+
+```python
+R = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
+R_root_target = R @ R_root_camera
+pelvis_target = R @ pelvis_camera  # add calibrated translation if needed
+points_target = points_camera @ R.T
+```
+
+Local body rotations stay unchanged under a global frame transform.
+For real LiDAR supervision, use synchronized frame IDs, calibrated
+camera-to-LiDAR extrinsics, metric alignment, and point-cloud-based
+position/shape refinement. GVHMR global output has Y up but an arbitrary
+initial heading/origin; it is not already in the LiDAR coordinate frame.
+Its monocular metric estimates also need validation against the sensor.
+The default demo selects one video track; match that person to the
+segmented LiDAR subject before constructing paired labels.
+
+For synthetic supervision, first fit the SMPL labels, then sample visible
+points **from that same fitted SMPL mesh** using the sensor viewpoint,
+and FPS to 256 points. The sibling project's
+`src/tools/data_convert/basic.py::sample_visible_pc` already provides
+the visibility/raycasting/FPS route (Open3D is required in that project).
+Uniform all-surface sampling has a different input distribution from
+visible LiDAR points. Split train/test by person or clip before sampling.
+GVHMR labels remain pseudo-labels; transfer/mesh residuals and video
+reprojection should be inspected before large-scale data generation.
+
+With both neutral body models available, the interface can be checked
+numerically against the actual sibling dataset loader, PySMPL forward,
+and shared single-frame decoder:
+
+```powershell
+uv run --no-sync python tools/check_ptv3_contract.py
+```
+
+This smoke check fits three generated SMPL-X poses and saves
+`outputs/setup/ptv3_contract_report.json`. Its point subsets only exercise
+the dataset format and are not simulated LiDAR or a training dataset.
+
+Local validation on the RTX 4070 SUPER passed: the three generated poses
+had a fitted mean vertex residual of 6.19 mm, and the standard-SMPL to
+downstream-PySMPL forward and coordinate transform agreed within
+`4.77e-7` metres. This checks conversion conventions, not real-video
+accuracy. The downstream loader, 24-joint shared decoder, and pose-6D
+round trip also passed. A 60-frame clip of the provided tennis video ran
+through tracking, ViTPose, HMR2 features, GVHMR inference, both renderers,
+and video merging. Reports are in `outputs/setup/environment_report.json`,
+`outputs/setup/ptv3_contract_report.json`, and
+`outputs/setup/video_smoke_report.json`.
+
+The demo writes videos at 30 fps without resampling source frames.
+Use original timestamps for synchronization, or explicitly resample
+both labels and points together. Do not infer sensor frame IDs from the
+rendered video's playback timestamps.
+
 ## Environment
 
 ```bash

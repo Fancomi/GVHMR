@@ -52,7 +52,10 @@ def parse_args_to_cfg():
         "If the camera zoom in a lot, you can try 135, 200 or even larger values.",
     )
     parser.add_argument("--verbose", action="store_true", help="If true, draw intermediate results")
+    parser.add_argument("--preproc_batch_size", type=int, default=16, help="ViTPose/HMR2 batch size; use 4 on a 12 GB GPU")
     args = parser.parse_args()
+    if args.preproc_batch_size < 1:
+        parser.error("--preproc_batch_size must be positive")
 
     # Input
     video_path = Path(args.video)
@@ -67,6 +70,7 @@ def parse_args_to_cfg():
             f"static_cam={args.static_cam}",
             f"verbose={args.verbose}",
             f"use_dpvo={args.use_dpvo}",
+            f"preproc_batch_size={args.preproc_batch_size}",
         ]
         if args.f_mm is not None:
             overrides.append(f"f_mm={args.f_mm}")
@@ -122,7 +126,7 @@ def run_preprocess(cfg):
 
     # Get VitPose
     if not Path(paths.vitpose).exists():
-        vitpose_extractor = VitPoseExtractor()
+        vitpose_extractor = VitPoseExtractor(batch_size=cfg.preproc_batch_size)
         vitpose = vitpose_extractor.extract(video_path, bbx_xys)
         torch.save(vitpose, paths.vitpose)
         del vitpose_extractor
@@ -136,7 +140,7 @@ def run_preprocess(cfg):
 
     # Get vit features
     if not Path(paths.vit_features).exists():
-        extractor = Extractor()
+        extractor = Extractor(batch_size=cfg.preproc_batch_size)
         vit_features = extractor.extract_video_features(video_path, bbx_xys)
         torch.save(vit_features, paths.vit_features)
         del extractor

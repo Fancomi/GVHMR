@@ -14,6 +14,7 @@ pipeline:
     static_conf: null
 
 ckpt_path: inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
+preproc_batch_size: 16
 
 # ================================ #
 #          global setting          #
