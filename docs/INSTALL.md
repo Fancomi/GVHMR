@@ -33,21 +33,24 @@ missing snapshot, runs all sessions, checks complete window coverage, exports
 the three datasets, and verifies sampled original returns/rebuilt SMPL meshes:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1
 ```
 
-`outputs/badminton/job_status.json` is `complete` only after export and
+`outputs/badminton_corner_fix_v1/job_status.json` is `complete` only after export and
 verification succeed. It records errors and retries failed processing up to
-three times with validated caches. The stage commands remain available below.
+three times with validated caches. It checks the active adoption before resuming
+and before publishing completion; a changed adoption requires a new output root.
+The stage commands remain available below.
 
 ```powershell
-uv run --no-sync python tools/pair_badminton.py prepare
+$pairOutput = 'outputs/badminton_corner_fix_v1'
+uv run --no-sync python tools/pair_badminton.py prepare --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
 # Real short clip, before a full run:
-uv run --no-sync python tools/pair_badminton.py run --session 20261012_154726 --duration-seconds 6 --fit-batch-size 8
+uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --session 20261012_154726 --duration-seconds 6 --fit-batch-size 8 --preproc-precision float16 --roi-margin-px 20
 # All three recordings; native ~59.94fps -> every second video frame:
-uv run --no-sync python tools/pair_badminton.py run --preproc-precision float16 --roi-margin-px 20
-uv run --no-sync python tools/pair_badminton.py export
-uv run --no-sync python tools/verify_badminton_dataset.py
+uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/pair_badminton.py export --output-root $pairOutput
+uv run --no-sync python tools/verify_badminton_dataset.py --output-root $pairOutput
 ```
 
 Input paths default to `D:/PROJECT/LIDAR/datas/badminton/sessions` and
@@ -69,6 +72,10 @@ hashed dependencies. A newer mtime or `.creating` candidate is not adoption.
 `prepare` checks source manifest binding, court reference plane, Q and complete
 camera frame maps. Subsequent runs use that frozen snapshot. To process a later
 adoption, prepare a separate output root instead of mixing calibration versions.
+The current explicitly adopted version is `corner-fix-v1`. Its ground footprint
+uses the full `Rz @ Ry @ Rx` bbox rotation and the frozen shared reference plane.
+The earlier incomplete `outputs/badminton` run is superseded and preserved for
+comparison; it must not be combined with the new calibration's training labels.
 
 LiDAR scans drive labels on their native ~10Hz timestamps. Every source scan
 is retained in `sessions/<sid>/pairs.jsonl`, including excluded empty/unmatched
@@ -113,8 +120,13 @@ overlap between sessions is unverified. Metadata point indices refer to the
 decoded valid fixed24 return list, not raw PNG pixel offsets.
 
 The three recordings contain 23,177 source scans and 23,040 nonempty valid
-dual-camera pairs. Initial real 6-second checks produced 478 accepted person
-samples across all three recordings. These are pseudo-labels: physical exposure
+dual-camera pairs. Current `corner-fix-v1` real 6-second checks produced 479 accepted
+person samples from 480 fits across all three recordings. Mean visible-surface
+distances for the three clips were 19.17, 18.14 and 19.81 mm. Source verification
+checked 16 exported samples per session: point coordinates matched the original
+returns exactly, and rebuilding SMPL vertices differed by at most `9.54e-7` m.
+These checks cover short clips and representative samples, not full-run completion.
+These are pseudo-labels: physical exposure
 accuracy, per-point scan motion correction, independent surveyed court scale
 and accuracy of occluded joints are not established. Fitting distance measures
 visible surface overlap and does not prove anatomical ground truth.

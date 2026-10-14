@@ -16,6 +16,8 @@ def main():
     parser.add_argument('--output-root',type=Path,default=Path('outputs/badminton'))
     parser.add_argument('--samples-per-session',type=int,default=16)
     args = parser.parse_args()
+    if args.samples_per_session<1:
+        parser.error('samples-per-session must be positive')
     torch.set_num_threads(4)
     root = Path(__file__).resolve().parents[1]
     calibration = CalibrationSnapshot.load(args.output_root/'calibration/calibration_snapshot.json')

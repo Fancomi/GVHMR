@@ -55,7 +55,8 @@ class BadmintonPipeline:
         return self.calibration
 
     def _fit_digest(self):
-        paths = [Path(__file__).with_name(name+'.py') for name in ('fitting','segmentation','export')]
+        paths = [Path(__file__).with_name(name+'.py') for name in
+                 ('pipeline','fitting','segmentation','export','calibration','sessions')]
         paths.append(Path(__file__).parents[1]/'utils/body_model/contracts.py')
         digest = hashlib.sha256()
         for path in paths:
@@ -326,7 +327,7 @@ class BadmintonPipeline:
                 chosen.append(config)
                 for line in (path/'quality.jsonl').read_text(encoding='utf-8').splitlines():
                     row = json.loads(line)
-                    if acceptance_reasons(row['qa'],row['source_point_count']):
+                    if not row.get('accepted',False) or acceptance_reasons(row['qa'],row['source_point_count']):
                         continue
                     with np.load(row['fit_path']) as fit:
                         sample = {name:fit[name].copy() for name in ('pc','root_pose','body_pose','shape','transl')}

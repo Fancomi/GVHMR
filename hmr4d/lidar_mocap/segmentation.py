@@ -3,6 +3,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
+from .calibration import bbox_rotation_matrix
 
 
 def court_polygon(calibration, camera):
@@ -19,11 +20,11 @@ def court_polygon(calibration, camera):
         raise ValueError('Adopted bbox has no ground footprint')
     center = np.asarray(ground['center'], dtype=float)
     size = np.asarray(ground['size'], dtype=float)
-    yaw = ground.get('yaw_deg', ground.get('yaw', ground.get('rotation_deg', [0,0,0])[2]))
-    angle = np.deg2rad(float(yaw))
-    rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
-    corners = np.array([[-1,-1],[1,-1],[1,1],[-1,1]], dtype=float) * size[:2] / 2
-    xy = corners @ rotation.T + center[:2]
+    frozen_rotation = calibration.data.get('bbox_geometry',{}).get('ground_rotation_local_to_viewer')
+    rotation = np.asarray(frozen_rotation) if frozen_rotation is not None else bbox_rotation_matrix(
+        ground.get('rotation_deg',[0,0,ground.get('yaw_deg',ground.get('yaw',0.0))]))
+    corners = np.column_stack([np.array([[-1,-1],[1,-1],[1,1],[-1,1]],dtype=float)*size[:2]/2,np.zeros(4)])
+    xy = (corners @ rotation.T + center)[:,:2]
     plane = calibration.reference_plane
     origin = np.asarray(plane['origin_viewer_m'])
     normal = np.asarray(plane['normal_viewer'])

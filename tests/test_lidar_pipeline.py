@@ -1,7 +1,9 @@
 import tempfile
 import hashlib
+import json
 from dataclasses import asdict
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 import joblib
 import numpy as np
@@ -12,6 +14,25 @@ from hmr4d.lidar_mocap.fitting import FittingConfig
 
 
 class TrainingPairTests(unittest.TestCase):
+    def test_export_does_not_readmit_unestablished_track_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = object.__new__(BadmintonPipeline)
+            pipeline.output_root = Path(directory)
+            pipeline.calibration = SimpleNamespace(data={'sessions':{'session':{}},'snapshot_digest':'snapshot'})
+            window = pipeline.output_root/'sessions/session/windows/000000000000_000006000000'
+            window.mkdir(parents=True)
+            write_json(window/'window.json',{'left_us':0,'right_us':6000000,
+                                            'window_id':window.name,'calibration_digest':'snapshot'})
+            write_json(window/'fit_report.json',{'accepted':0})
+            # Surface QA can pass while the track has too few observations to
+            # establish one SMPL shape. Aggregation must preserve that rejection.
+            rejected = {'qa':self.good_qa(),'source_point_count':200,'accepted':False,
+                        'rejection_reasons':['track_shape_not_yet_established']}
+            (window/'quality.jsonl').write_text(json.dumps(rejected)+'\n')
+            exported = pipeline.aggregate()
+            self.assertEqual(exported['accepted'],0)
+            self.assertEqual(len(joblib.load(exported['exports']['session']['path'])['pc']),0)
+
     def test_resume_requires_source_and_artifact_integrity(self):
         pipeline = object.__new__(BadmintonPipeline)
         pipeline.settings = {'fit_batch_size':128,'iterations':80}

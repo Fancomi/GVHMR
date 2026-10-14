@@ -19,6 +19,7 @@ import numpy as np
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 _ACTIVE_RELATIVE = Path(".local/evidence/BADMINTON-CALIB-1012/multiframe/active-selection.json")
 _SCHEMA = "gvhmr-adopted-lidar-calibration-v1"
+_CORNER_VERIFICATION = "global-corner-correction-verification-v1"
 
 
 def _sha(blob):
@@ -67,6 +68,17 @@ def _proper_rotation(matrix):
     sign = np.eye(3)
     sign[2, 2] = np.linalg.det(left @ right)
     return left @ sign @ right
+
+
+def bbox_rotation_matrix(rotation_deg):
+    """Canonical BBox-local to viewer rotation, including roll and pitch."""
+    x, y, z = np.deg2rad(_matrix(rotation_deg, "bbox rotation_deg", (3,)))
+    cx, cy, cz = np.cos([x, y, z])
+    sx, sy, sz = np.sin([x, y, z])
+    rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return rz @ ry @ rx
 
 
 class CalibrationSnapshot:
@@ -126,17 +138,27 @@ class CalibrationSnapshot:
         index = linked["frame_index"]
         if calibration.get("production_admitted", False) != active.get("production_admitted", False):
             raise ValueError("Active pointer and calibration disagree on production admission")
-        if not linked["geometry_verification"].get("adopted_for_current_local_calibration"):
+        geometry_verification = linked["geometry_verification"]
+        corner_correction = geometry_verification.get("schema") == _CORNER_VERIFICATION
+        if not geometry_verification.get("adopted" if corner_correction else "adopted_for_current_local_calibration"):
             raise ValueError("Geometry verification does not attest adoption")
         if not linked["bbox_verification"].get("adopted"):
             raise ValueError("BBox verification does not attest adoption")
-        if linked["geometry_verification"].get("calibration_sha256") != active["calibration_sha256"]:
+        if geometry_verification.get("calibration_sha256") != active["calibration_sha256"]:
             raise ValueError("Geometry verification does not match the selected calibration")
         bbox_verification = linked["bbox_verification"]
-        if bbox_verification.get("bbox_sha256") != active["bbox_sha256"]:
-            raise ValueError("BBox verification does not match the selected bbox")
-        if bbox_verification.get("selected_calibration_sha256") != active["calibration_sha256"]:
-            raise ValueError("BBox verification is bound to another camera calibration")
+        if corner_correction:
+            if (bbox_verification != geometry_verification
+                    or active["bbox_verification_sha256"] != active["geometry_verification_sha256"]):
+                raise ValueError("Shared-court geometry and bbox require the same adopted verification")
+            if (geometry_verification.get("raw_points_rgb_and_frame_mapping_unchanged") is not True
+                    or geometry_verification.get("shared_court_Q_and_bbox_pose_updated_consistently") is not True):
+                raise ValueError("Shared-court adoption must attest unchanged raw sources and consistent bbox pose")
+        else:
+            if bbox_verification.get("bbox_sha256") != active["bbox_sha256"]:
+                raise ValueError("BBox verification does not match the selected bbox")
+            if bbox_verification.get("selected_calibration_sha256") != active["calibration_sha256"]:
+                raise ValueError("BBox verification is bound to another camera calibration")
         if index.get("policy_sha256") != active["timing_policy_sha256"]:
             raise ValueError("Frame index is bound to another timing policy")
         if calibration.get("timing_policy") != policy:
@@ -153,13 +175,58 @@ class CalibrationSnapshot:
         delivery_files = {entry["path"]: entry["sha256"] for entry in delivery["files"]}
         if delivery_files.get("bbox.json") != active["bbox_sha256"]:
             raise ValueError("BBox delivery freeze does not match the active selection")
-        if "fit-results.json" not in delivery_files:
-            raise ValueError("BBox delivery freeze lacks a reference-plane result")
-        fit = retain(bbox_dir / "fit-results.json", delivery_files["fit-results.json"])
-        if fit.get("camera_calibration_sha256") != active["calibration_sha256"]:
-            raise ValueError("Reference-plane result is bound to another camera calibration")
-        if fit.get("selected") != linked["bbox"]:
-            raise ValueError("Reference-plane result and adopted bbox disagree")
+        if corner_correction:
+            if (delivery_files.get("calibration.json") != active["calibration_sha256"]
+                    or delivery_files.get("verification.json") != active["geometry_verification_sha256"]):
+                raise ValueError("Shared-court delivery freeze does not match the adopted calibration and verification")
+            export_verification = retain(bbox_dir / "source-and-export-verification.json",
+                                          geometry_verification["source_and_export_verification_sha256"])
+            if (delivery_files.get("source-and-export-verification.json")
+                    != geometry_verification["source_and_export_verification_sha256"]):
+                raise ValueError("Shared-court delivery and source verification SHA256 disagree")
+            if (export_verification.get("passed") is not True
+                    or export_verification.get("raw_rgb_frame_times_unchanged") is not True
+                    or export_verification.get("shared_court_Q_and_bbox_consistent") is not True
+                    or export_verification.get("calibration_sha256") != active["calibration_sha256"]
+                    or export_verification.get("bbox_sha256") != active["bbox_sha256"]):
+                raise ValueError("Shared-court source/export verification does not bind the adopted geometry")
+            for name in ("bbox-reference-plane.json", "final-fit-provenance.json"):
+                if name not in delivery_files:
+                    raise ValueError(f"Shared-court delivery lacks {name}")
+            adopted_plane = retain(bbox_dir / "bbox-reference-plane.json", delivery_files["bbox-reference-plane.json"])
+            if adopted_plane != calibration.get("court_reference_plane"):
+                raise ValueError("Adopted SharedCourtPlane differs between calibration and frozen bbox result")
+            fit_provenance = retain(bbox_dir / "final-fit-provenance.json", delivery_files["final-fit-provenance.json"])
+            fit_name = fit_provenance["selected_fit_file"]
+            fit_sha = fit_provenance["selected_fit_sha256"]
+            if (delivery_files.get(fit_name) != fit_sha
+                    or export_verification.get("fit_results_sha256") != fit_sha
+                    or calibration["court_registration"].get("fit_results_sha256") != fit_sha):
+                raise ValueError("Shared-court selected fit SHA256 is not bound consistently")
+            fit_results = retain(_bounded(bbox_dir, fit_name), fit_sha)
+            selected_fit = fit_results["models"][fit_provenance["selected_fit_key"]]
+            if fit_results.get("complete") is not True or selected_fit.get("success") is not True:
+                raise ValueError("Shared-court selected fit is incomplete or unsuccessful")
+            court = calibration["court_registration"]
+            for fit_key, calibration_key in (("raw_to_court_R", "R_raw_lidar_to_court"),
+                                             ("raw_to_court_t_m", "t_raw_lidar_to_court_m")):
+                if not np.array_equal(selected_fit[fit_key], court[calibration_key]):
+                    raise ValueError("Selected fit differs from the adopted shared court registration")
+            for name, camera in calibration["cameras"].items():
+                fitted_camera = selected_fit["cameras"][name]["model"]
+                for fit_key, camera_key in (("R", "R_raw_lidar_to_camera"), ("t", "t_m"),
+                                            ("K", "K"), ("d", "distortion_opencv")):
+                    if not np.array_equal(fitted_camera[fit_key], camera[camera_key]):
+                        raise ValueError("Selected fit differs from an adopted global camera model")
+            fit = {"reference_plane": adopted_plane, "limitations": [fit_provenance.get("limitations", "")]}
+        else:
+            if "fit-results.json" not in delivery_files:
+                raise ValueError("BBox delivery freeze lacks a reference-plane result")
+            fit = retain(bbox_dir / "fit-results.json", delivery_files["fit-results.json"])
+            if fit.get("camera_calibration_sha256") != active["calibration_sha256"]:
+                raise ValueError("Reference-plane result is bound to another camera calibration")
+            if fit.get("selected") != linked["bbox"]:
+                raise ValueError("Reference-plane result and adopted bbox disagree")
 
         sync_dir = _bounded(base, active["timing_policy"]).parent
         provenance = retain(sync_dir / "provenance.json")
@@ -224,9 +291,10 @@ class CalibrationSnapshot:
             sessions[sid] = dict(manifest_path=str(manifest_path), manifest_sha256=_sha(manifest_blob),
                                  frame_count=int(manifest["frame_count"]), frame_map=map_relative,
                                  frame_map_sha256=_sha(map_blob), source_clock_audit=copy.deepcopy(audit))
-        fit_q = _matrix(fit["source_rotation_raw_to_viewer"], "bbox source Q", (3, 3))
-        if not np.array_equal(fit_q, common_q):
-            raise ValueError("Reference plane and actual source Q disagree")
+        if not corner_correction:
+            fit_q = _matrix(fit["source_rotation_raw_to_viewer"], "bbox source Q", (3, 3))
+            if not np.array_equal(fit_q, common_q):
+                raise ValueError("Reference plane and actual source Q disagree")
         plane = copy.deepcopy(fit["reference_plane"])
         # Independently recompute the plane instead of trusting an unbound box
         # top surface. Rounded Q requires the exact inverse for plane normals.
@@ -240,6 +308,23 @@ class CalibrationSnapshot:
         if (not np.allclose(origin, plane["origin_viewer_m"], atol=1e-8, rtol=0)
                 or not np.allclose(normal, plane["normal_viewer"], atol=1e-8, rtol=0)):
             raise ValueError("Reference plane is inconsistent with the frozen court registration")
+        ground = next((b for b in linked["bbox"].get("boxes", []) if b.get("role") == "ground"), None)
+        bbox_geometry = {"rotation_convention": "Rz @ Ry @ Rx"}
+        if ground is not None:
+            ground_rotation = bbox_rotation_matrix(ground["rotation_deg"])
+            centre_offset = float((np.asarray(ground["center"]) - origin) @ normal)
+            upper_margin = centre_offset + float(ground["size"][2]) / 2
+            bbox_geometry.update(ground_rotation_local_to_viewer=ground_rotation.tolist(),
+                                 ground_centre_normal_offset_m=centre_offset,
+                                 ground_upper_surface_margin_m=upper_margin)
+            if corner_correction:
+                if (not np.allclose(ground_rotation[:, 2], normal, atol=1e-7, rtol=0)
+                        or not np.isclose(centre_offset, plane["ground_bbox_centre_normal_offset_m"], atol=1e-8, rtol=0)
+                        or not np.isclose(upper_margin, plane["ground_bbox_upper_surface_margin_m"], atol=1e-8, rtol=0)):
+                    raise ValueError("SharedCourtPlane and full ground bbox pose/margins disagree")
+        elif corner_correction:
+            raise ValueError("Shared-court adopted bbox lacks an explicit ground role")
+        plane.setdefault("source", plane.get("note", "Frozen raw-to-court registration, court Z=0"))
         cameras = copy.deepcopy(calibration["cameras"])
         for camera in cameras.values():
             camera["image_size"] = calibration["image_size"]
@@ -249,6 +334,9 @@ class CalibrationSnapshot:
                     lidar_project_root=str(source_root), sessions_root=str(sessions_root),
                     cameras=cameras, Q_raw_to_viewer=common_q.tolist(), reference_plane=plane,
                     bbox=linked["bbox"], court_registration=court, timing_policy=policy,
+                    geometry_variant=active.get("geometry_variant"),
+                    adoption_verification_schema=geometry_verification.get("schema"),
+                    bbox_rotation_convention="Rz @ Ry @ Rx", bbox_geometry=bbox_geometry,
                     sessions=sessions, artifacts=artifacts,
                     coordinate_convention=calibration["coordinate_convention"],
                     production_admitted=bool(calibration.get("production_admitted", False)),

@@ -79,7 +79,7 @@ class SnapshotFixture:
                                            manifest_sha256=manifest_hash, tracks=dict(cam1=dict(rows=2), cam2=dict(rows=2)))]))
         write_json(self.base / "selected-sync-v1/delivery-freeze.json",
                    dict(files=[dict(path=str(self.base / "selected-sync-v1/provenance.json"), sha256=provenance_hash)]))
-        bbox = dict(version=1, boxes=[dict(center=[0, 0, -2.8], size=[6.1, 13.4, .27], rotation_deg=[0, 0, 3])])
+        bbox = dict(version=1, boxes=[dict(role="ground", center=[0, 0, -2.8], size=[6.1, 13.4, .27], rotation_deg=[0, 0, 3])])
         bbox_hash = write_json(self.base / "cam2-bbox-v1/bbox.json", bbox)
         bbox_verify_hash = write_json(self.base / "cam2-bbox-v1/verification.json",
                                       dict(adopted=True, bbox_sha256=bbox_hash, selected_calibration_sha256=calib_hash))
@@ -105,6 +105,65 @@ class SnapshotFixture:
 
     def freeze(self):
         return CalibrationSnapshot.freeze(self.project, self.sessions, self.output)
+
+    def promote_to_corner(self):
+        """Adopt a newer shared plane, with raw source Q and timing unchanged."""
+        stage = self.base / "corner-fix-v1"
+        config = json.loads((self.base / self.active["calibration"]).read_text(encoding="utf-8"))
+        shared_r = module.bbox_rotation_matrix([1.4, -2., 3.])
+        shared_t = np.array([.15, -.2, 3.2])
+        transform = self.q @ shared_r.T
+        origin = -transform @ shared_t
+        normal = np.linalg.inv(transform).T @ np.array([0., 0., 1.])
+        normal /= np.linalg.norm(normal)
+        self.corner_plane = dict(origin_viewer_m=origin.tolist(), normal_viewer=normal.tolist(),
+                                 court_to_raw_R=shared_r.T.tolist(), court_origin_raw_m=(-shared_r.T @ shared_t).tolist(),
+                                 ground_bbox_centre_normal_offset_m=-.03,
+                                 ground_bbox_upper_surface_margin_m=.105,
+                                 note="New frozen shared court plane, not independently surveyed")
+        ground_rotation = module._proper_rotation(transform)
+        pitch = np.arcsin(-ground_rotation[2, 0])
+        roll = np.arctan2(ground_rotation[2, 1], ground_rotation[2, 2])
+        yaw = np.arctan2(ground_rotation[1, 0], ground_rotation[0, 0])
+        bbox = dict(version=1, boxes=[dict(role="ground", center=(origin-.03*normal).tolist(),
+                    size=[6.1, 13.4, .27], rotation_deg=np.rad2deg([roll, pitch, yaw]).tolist())])
+        bbox_hash = write_json(stage / "bbox.json", bbox)
+        config["cameras"]["cam1"]["distortion_opencv"] = [-.071, 1.89, 0., 0., 0.]
+        config["cameras"]["cam2"]["distortion_opencv"] = [-.0399, .013, 0., 0., 0.]
+        selected = dict(raw_to_court_R=shared_r.tolist(), raw_to_court_t_m=shared_t.tolist(), success=True,
+                        cameras={name: {"model": {"R": camera["R_raw_lidar_to_camera"], "t": camera["t_m"],
+                                                   "K": camera["K"], "d": camera["distortion_opencv"]}}
+                                 for name, camera in config["cameras"].items()})
+        fit_name = "plane-refine-fit-results.json"
+        fit_hash = write_json(stage / fit_name, dict(complete=True, models=dict(plane_lens_mask8=selected)))
+        config["court_registration"] = dict(R_raw_lidar_to_court=shared_r.tolist(),
+                                             t_raw_lidar_to_court_m=shared_t.tolist(), fit_results_sha256=fit_hash)
+        config["court_reference_plane"] = self.corner_plane
+        config_hash = write_json(stage / "calibration.json", config)
+        plane_hash = write_json(stage / "bbox-reference-plane.json", self.corner_plane)
+        provenance_hash = write_json(stage / "final-fit-provenance.json", dict(selected_fit_file=fit_name,
+                                      selected_fit_key="plane_lens_mask8", selected_fit_sha256=fit_hash,
+                                      limitations="Unsurveyed normative shared plane"))
+        source_export_hash = write_json(stage / "source-and-export-verification.json",
+                                        dict(passed=True, raw_rgb_frame_times_unchanged=True,
+                                             shared_court_Q_and_bbox_consistent=True, calibration_sha256=config_hash,
+                                             bbox_sha256=bbox_hash, fit_results_sha256=fit_hash))
+        verification_hash = write_json(stage / "verification.json", dict(schema=module._CORNER_VERIFICATION,
+                                          adopted=True, calibration_sha256=config_hash,
+                                          raw_points_rgb_and_frame_mapping_unchanged=True,
+                                          shared_court_Q_and_bbox_pose_updated_consistently=True,
+                                          source_and_export_verification_sha256=source_export_hash))
+        files = {"calibration.json": config_hash, "bbox.json": bbox_hash,
+                 "bbox-reference-plane.json": plane_hash, "final-fit-provenance.json": provenance_hash,
+                 fit_name: fit_hash, "source-and-export-verification.json": source_export_hash,
+                 "verification.json": verification_hash}
+        write_json(stage / "delivery-freeze.json", dict(files=[dict(path=name, sha256=sha) for name, sha in files.items()]))
+        self.active.update(geometry_variant="corner_fix_shared_plane", calibration="corner-fix-v1/calibration.json",
+                           calibration_sha256=config_hash, geometry_verification="corner-fix-v1/verification.json",
+                           geometry_verification_sha256=verification_hash, bbox="corner-fix-v1/bbox.json",
+                           bbox_sha256=bbox_hash, bbox_verification="corner-fix-v1/verification.json",
+                           bbox_verification_sha256=verification_hash)
+        write_json(self.active_path, self.active)
 
 
 class CalibrationTests(unittest.TestCase):
@@ -218,6 +277,44 @@ class CalibrationTests(unittest.TestCase):
         delivery["files"][1]["sha256"] = new_hash
         write_json(delivery_path, delivery)
         with self.assertRaisesRegex(ValueError, "court registration"):
+            self.fixture.freeze()
+        self.assertFalse(self.fixture.output.exists())
+
+    def test_shared_corner_adoption_replaces_plane_not_raw_source_q(self):
+        old = self.fixture.freeze()
+        old_plane = old.reference_plane
+        self.fixture.promote_to_corner()
+        self.fixture.output = self.fixture.workspace / "corner-snapshot"
+        snapshot = self.fixture.freeze()
+        np.testing.assert_array_equal(snapshot.Q, old.Q)
+        self.assertEqual(snapshot.data["geometry_variant"], "corner_fix_shared_plane")
+        self.assertEqual(snapshot.data["adoption_verification_schema"], module._CORNER_VERIFICATION)
+        self.assertEqual(snapshot.data["bbox_rotation_convention"], "Rz @ Ry @ Rx")
+        np.testing.assert_allclose(snapshot.reference_plane["origin_viewer_m"], self.fixture.corner_plane["origin_viewer_m"])
+        self.assertGreater(np.linalg.norm(np.array(old_plane["origin_viewer_m"])-snapshot.reference_plane["origin_viewer_m"]), .2)
+        rotation = np.asarray(snapshot.data["bbox_geometry"]["ground_rotation_local_to_viewer"])
+        np.testing.assert_allclose(rotation[:, 2], snapshot.reference_plane["normal_viewer"], atol=1e-7)
+        self.assertNotEqual(snapshot.data["bbox"]["boxes"][0]["rotation_deg"][:2], [0, 0])
+        self.assertAlmostEqual(snapshot.data["bbox_geometry"]["ground_upper_surface_margin_m"], .105)
+        # Old snapshots remain usable independently after a new global adoption.
+        self.assertEqual(CalibrationSnapshot.load(old.snapshot_json).reference_plane, old_plane)
+        camera_points = np.array([[.2, -.1, 2.], [1, .3, 5.]])
+        np.testing.assert_allclose(snapshot.viewer_to_camera(snapshot.camera_to_viewer(camera_points, "cam1"), "cam1"),
+                                   camera_points, atol=1e-13)
+
+    def test_shared_corner_plane_tampering_rejected(self):
+        self.fixture.promote_to_corner()
+        plane_path = self.fixture.base / "corner-fix-v1/bbox-reference-plane.json"
+        plane_path.write_bytes(plane_path.read_bytes() + b" ")
+        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+            self.fixture.freeze()
+        self.assertFalse(self.fixture.output.exists())
+
+    def test_shared_corner_source_export_binding_rejected(self):
+        self.fixture.promote_to_corner()
+        source_path = self.fixture.base / "corner-fix-v1/source-and-export-verification.json"
+        source_path.write_bytes(source_path.read_bytes() + b" ")
+        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
             self.fixture.freeze()
         self.assertFalse(self.fixture.output.exists())
 
