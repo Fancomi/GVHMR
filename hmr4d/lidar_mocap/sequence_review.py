@@ -90,7 +90,33 @@ def choose_windows(windows, count, seconds):
     return sorted(zip(selected,allocation),key=lambda v:(v[0][0],v[0][1]['left_us']))
 
 
-def plan_clips(output_root, calibration, count=10, seconds=5):
+def _recorded_clip(sid, window, clip_id, pairs, by_scan, start, seconds):
+    end=start+round(seconds*1e6)
+    frames=[]
+    for pair in pairs:
+        if pair['scan_mid_us']<start:continue
+        if pair['scan_mid_us']>=end:break
+        if any(pair['cameras'][c]['record_index'] is None for c in ('cam1','cam2')):
+            raise ValueError('Both native camera frames are needed for review')
+        athletes=[{k:r[k] for k in ('motion_id','fit_path','accepted','qa','rejection_reasons')}
+                  for r in by_scan[pair['lidar_index']]]
+        frames.append({'scan_mid_us':pair['scan_mid_us'],'offset_s':(pair['scan_mid_us']-start)/1e6,
+                       'lidar_index':pair['lidar_index'],'lidar_path':pair['lidar_path'],
+                       'scan_start_us':pair['scan_start_us'],'scan_end_us':pair['scan_end_us'],
+                       'pair_status':pair['status'],'cameras':pair['cameras'],'athletes':athletes})
+    names=sorted({a['motion_id'] for f in frames for a in f['athletes']})
+    rows=[a for f in frames for a in f['athletes']]
+    return {'id':clip_id,'session_id':sid,'source_window':str(window),
+            'left_us':start,'right_us':end,'duration_s':seconds,'frames':frames,
+            'motion_colors':{name:COLORS[i%len(COLORS)] for i,name in enumerate(names)},
+            'summary':{'scans':len(frames),'fitted_person_frames':len(rows),
+                       'accepted':sum(r['accepted'] for r in rows),
+                       'scans_without_fits':sum(not f['athletes'] for f in frames),
+                       'mean_surface_mm':float(np.mean([r['qa']['final_p2surface_mean_m'] for r in rows])*1000) if rows else None,
+                       'mean_frame_p90_mm':float(np.mean([r['qa']['final_p2surface_p90_m'] for r in rows])*1000) if rows else None}}
+
+
+def plan_clips(output_root, calibration, count=10, seconds=5, required_cases=()):
     clips = []
     for (sid,config,window),amount in choose_windows(completed_windows(output_root,calibration),count,seconds):
         session = SessionIndex.load(Path(calibration.data['sessions_root'])/sid,calibration.frame_map_path(sid))
@@ -111,28 +137,25 @@ def plan_clips(output_root, calibration, count=10, seconds=5):
             end = start+round(seconds*1e6)
             if end>config['right_us']:
                 raise ValueError('Clip extends beyond the completed window')
-            frames = []
-            for pair in remaining:
-                if pair['scan_mid_us']>=end:
-                    break
-                if any(pair['cameras'][c]['record_index'] is None for c in ('cam1','cam2')):
-                    raise ValueError('Both native camera frames are needed for review')
-                athletes = [{k:r[k] for k in ('motion_id','fit_path','accepted','qa','rejection_reasons')}
-                            for r in by_scan[pair['lidar_index']]]
-                frames.append({'scan_mid_us':pair['scan_mid_us'],'offset_s':(pair['scan_mid_us']-start)/1e6,
-                               'lidar_index':pair['lidar_index'],'lidar_path':pair['lidar_path'],
-                               'scan_start_us':pair['scan_start_us'],'scan_end_us':pair['scan_end_us'],
-                               'pair_status':pair['status'],'cameras':pair['cameras'],'athletes':athletes})
-            names = sorted({a['motion_id'] for f in frames for a in f['athletes']})
-            rows = [a for f in frames for a in f['athletes']]
-            clips.append({'id':f'clip{len(clips)+1:02d}','session_id':sid,'source_window':str(window),
-                          'left_us':start,'right_us':end,'duration_s':seconds,'frames':frames,
-                          'motion_colors':{name:COLORS[i%len(COLORS)] for i,name in enumerate(names)},
-                          'summary':{'scans':len(frames),'fitted_person_frames':len(rows),
-                                     'accepted':sum(r['accepted'] for r in rows),
-                                     'scans_without_fits':sum(not f['athletes'] for f in frames),
-                                     'mean_surface_mm':float(np.mean([r['qa']['final_p2surface_mean_m'] for r in rows])*1000) if rows else None,
-                                     'mean_frame_p90_mm':float(np.mean([r['qa']['final_p2surface_p90_m'] for r in rows])*1000) if rows else None}})
+            clips.append(_recorded_clip(sid,window,f'clip{len(clips)+1:02d}',remaining,by_scan,start,seconds))
+    replaced=set()
+    for sid,scan in required_cases:
+        session=SessionIndex.load(Path(calibration.data['sessions_root'])/sid,calibration.frame_map_path(sid))
+        pairs=session.pairs()
+        pair=next(p for p in pairs if p['lidar_index']==scan)
+        start=pair['scan_mid_us'];end=start+round(seconds*1e6)
+        eligible=[(c,p) for s,c,p in completed_windows(output_root,calibration)
+                  if s==sid and c['left_us']<=start and end<=c['right_us']]
+        if not eligible:raise ValueError(f'Required case {sid}:{scan} is not fully fitted')
+        config,window=max(eligible,key=lambda v:v[0]['right_us']-v[0]['left_us'])
+        by_scan=defaultdict(list)
+        for line in (window/'quality.jsonl').read_text('utf-8').splitlines():
+            row=json.loads(line);by_scan[row['lidar_index']].append(row)
+        choices=[i for i,c in enumerate(clips) if c['session_id']==sid and i not in replaced]
+        if not choices:raise ValueError('No review slot available for required session')
+        i=choices[-1];replaced.add(i)
+        clips[i]=_recorded_clip(sid,window,clips[i]['id'],pairs,by_scan,start,seconds)
+        clips[i]['required_case']={'session_id':sid,'first_lidar_index':scan}
     return clips
 
 
@@ -226,7 +249,7 @@ def write_page(review_dir,manifest,faces):
         (review_dir/name).write_bytes((assets/name).read_bytes())
 
 
-def render_sequences(output_root,review_dir,*,count=10,seconds=5,image_width=1280,html_only=False):
+def render_sequences(output_root,review_dir,*,count=10,seconds=5,image_width=1280,html_only=False,required_cases=()):
     output_root,review_dir = Path(output_root).resolve(),Path(review_dir).resolve()
     workspace = Path(__file__).resolve().parents[2]
     if not review_dir.is_relative_to(workspace):
@@ -242,7 +265,7 @@ def render_sequences(output_root,review_dir,*,count=10,seconds=5,image_width=128
         manifest['selection_sha256'] = review_selection_digest(manifest)
         write_json(review_dir/'manifest.json',manifest)
     else:
-        clips = plan_clips(output_root,calibration,count,seconds)
+        clips = plan_clips(output_root,calibration,count,seconds,required_cases)
         manifest = {'schema':'badminton-continuous-review-v1','state':'rendering',
                     'output_root':str(output_root),'calibration_snapshot':str(calibration.snapshot_json),
                     'calibration_digest':calibration.data['snapshot_digest'],'geometry_variant':calibration.data.get('geometry_variant'),

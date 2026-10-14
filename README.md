@@ -26,6 +26,44 @@
 
 Please see [installation](docs/INSTALL.md) for details.
 
+## Badminton video / LiDAR labels
+
+Use the project-local uv environment described in [INSTALL](docs/INSTALL.md).
+The calibrated full-session job fits every athlete, exports neutral SMPL with
+24 joints and real fixed24 LiDAR returns, and verifies the paired dataset:
+
+```powershell
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1_continuity
+```
+
+Start the review finalizer in a separate process while fitting runs. It waits
+for successful full export, then regenerates 10 five-second clips from the
+current fits, includes the reported `20261012_163452` scan-9 case, checks both
+cameras, evaluates native person masks and court projections, and verifies the
+rendered SMPL geometry in an isolated browser:
+
+```powershell
+uv run --no-sync python tools/finalize_badminton_reviews.py --output-root outputs/badminton_corner_fix_v1_continuity --wait-for-job
+```
+
+`job_status.json` records dataset progress; `review_job_status.json` records the
+later review stages and failures. The final review is
+`outputs/badminton_corner_fix_v1_continuity/sequence_review/index.html`.
+Changing adopted calibration requires a new output root and a complete rerun;
+the pipeline rejects mixing frozen calibration versions. Unchanged teacher
+caches are reused only after their input/calibration identity is validated.
+
+For the controlled same-cloud, fixed-shape four-athlete comparison, run:
+
+```powershell
+uv run --no-sync python tools/compare_badminton_refinement.py --output-root outputs/badminton_corner_fix_v1 --benchmark-prefix outputs/badminton_corner_fix_v1/calibration_refinement/fit_continuity_benchmark.final --variant batch128_weight0.2 --all-tracks --production-root outputs/badminton_corner_fix_v1_continuity --review-dir outputs/badminton_corner_fix_v1/calibration_refinement/all_tracks_comparison
+```
+
+The synchronized page separates the fixed-shape experiment from production
+shape fitting, retains rejected-frame markers, and displays recorded geometry
+without interpolation. Surface residuals, RGB masks and triangulated detector
+hips measure agreement with observations; they are not anatomical ground truth.
+
 ## Quick Start
 
 ### [<img src="https://i.imgur.com/QCojoJk.png" width="30"> Google Colab demo for GVHMR](https://colab.research.google.com/drive/1N9WSchizHv2bfQqkE9Wuiegw_OT7mtGj?usp=sharing)

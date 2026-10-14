@@ -1,5 +1,5 @@
 /* Validate all portable clips in an isolated Chrome for Testing session. */
-import {spawn} from 'node:child_process';
+import {spawn,execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -31,7 +31,7 @@ try{
  const identity=await send(browser,'Browser.getBrowserCommandLine'),processes=await send(browser,'SystemInfo.getProcessInfo');verifyBrowserIdentity({binary:chrome,pid:child.pid,profile,port},identity.arguments,processes.processInfo);
  const target=await send(browser,'Target.createTarget',{url:'about:blank'}),tabs=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
  page=await connect(tabs.find(t=>t.id===target.targetId).webSocketDebuggerUrl);attach(page);await send(page,'Runtime.enable');await send(page,'Page.enable');
- await send(page,'Page.navigate',{url:pathToFileURL(path.join(review,'index.html')).href});
+ await send(page,'Page.navigate',{url:pathToFileURL(path.join(review,args.includes('--viewer')?'viewer.html':'index.html')).href});
  if(args.includes('--gallery')){
   await pause(500);await evaluate(`(()=>{document.querySelectorAll('img').forEach(i=>i.loading='eager');const first=document.querySelector('.grid');if(first)first.parentElement.open=true;})()`);
   let gallery;for(let i=0;i<100;i++){await pause(100);gallery=await evaluate(`(()=>{const imgs=[...document.images];return {title:document.title,images:imgs.length,loaded:imgs.filter(i=>i.complete&&i.naturalWidth>0).length,table_rows:document.querySelectorAll('table tr').length};})()`);if(gallery.images&&gallery.images===gallery.loaded)break;}
@@ -39,6 +39,21 @@ try{
   const layout=await send(page,'Page.getLayoutMetrics'),size=layout.cssContentSize;const shot=await send(page,'Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:size.width,height:Math.min(size.height,3600),scale:1}});
   fs.writeFileSync(path.join(review,'gallery_screenshot.png'),Buffer.from(shot.data,'base64'));
   fs.writeFileSync(path.join(review,'browser_verification.json'),JSON.stringify({passed:true,gallery,exceptions},null,2));console.log(`Verified native-image gallery: ${gallery.loaded} photos and ${gallery.table_rows} comparison rows`);
+ }else if(args.includes('--synchronized')){
+  async function syncReady(frame){for(let i=0;i<250;i++){await pause(100);const s=await evaluate('window.SYNC_STATE');
+   if(s?.ready&&s.frame===frame&&s.views.length===3&&s.views.every(v=>v&&v.frame===frame&&v.scan===s.scan&&v.webglError===0)&&s.images.length===3&&s.images.every(row=>row.length===2&&row.every(i=>i.ready)))return s;
+   if(exceptions.length)throw new Error(exceptions.join('\n'));}throw new Error('Synchronized comparison did not load frame '+frame);}
+  const first=await syncReady(0),checked=[first];
+  for(const frame of [5,6,14,15,16,28,29,30,31,49]){await evaluate(`window.SYNC_SEEK(${frame})`);checked.push(await syncReady(frame));}
+  await evaluate(`(()=>{const a=document.getElementById('athlete');a.selectedIndex=2;a.dispatchEvent(new Event('change'));})()`);await pause(300);
+  const filtered=await evaluate('window.SYNC_STATE');if(filtered.views.some(v=>v.visibleMeshCount!==1||!v.visibleMotion.endsWith(':2:0')))throw new Error('Blue track filter failed');
+  await evaluate(`(()=>{const a=document.getElementById('athlete');a.selectedIndex=0;a.dispatchEvent(new Event('change'));window.SYNC_SEEK(0);window.SYNC_PLAY();})()`);await pause(1400);
+  const animated=await evaluate('window.SYNC_STATE');if(animated.frame<4||!animated.playing)throw new Error('Shared native-time playback failed');
+  const paused=await evaluate('(()=>{window.SYNC_PLAY();return window.SYNC_STATE;})()');const settled=await syncReady(paused.frame);
+  const layout=await send(page,'Page.getLayoutMetrics'),size=layout.cssContentSize,shot=await send(page,'Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:size.width,height:Math.min(size.height,3600),scale:1}});
+  fs.writeFileSync(path.join(review,'synchronized_screenshot.png'),Buffer.from(shot.data,'base64'));
+  fs.writeFileSync(path.join(review,'browser_verification.json'),JSON.stringify({passed:true,synchronized:true,checked_frames:checked,blue_track_filter:filtered,playback:animated,settled_playback:settled,exceptions},null,2));
+  console.log('Verified synchronized 3-version comparison: four athletes, six actual photos, native-time seek/playback, blue-track isolation');
  }else{
  await ready('clip01',0);
  const clips=await evaluate('window.REVIEW_MANIFEST.clips.map(c=>c.id)'),checked=[];
@@ -54,8 +69,20 @@ try{
  }
  await evaluate('window.REVIEW_LOAD_CLIP(0)');await ready('clip01',0);await evaluate('window.REVIEW_PLAY()');await pause(1200);const animated=await evaluate('window.REVIEW_STATE');
  if(animated.frame<5||!animated.playing)throw new Error('Playback failed to advance on native timestamps');await evaluate('window.REVIEW_PLAY()');
- const result={passed:true,checked_clips:checked.length,clips:checked,playback: animated,exceptions};fs.writeFileSync(path.join(review,'browser_verification.json'),JSON.stringify(result,null,2));
+ const result={passed:true,checked_clips:checked.length,clips:checked,playback: animated,exceptions};fs.writeFileSync(path.join(review,args.includes('--viewer')?'viewer_browser_verification.json':'browser_verification.json'),JSON.stringify(result,null,2));
  console.log(`Verified ${checked.length} clips: real first/middle/last photos, WebGL geometry, 5-second durations and advancing playback`);
  }
  await send(browser,'Browser.close');browser.close();browser=null;page.close();page=null;
-}finally{if(page)page.close();if(browser)browser.close();for(let i=0;i<30&&child.exitCode===null;i++)await pause(100);if(child.exitCode===null)child.kill();}
+}finally{if(page)page.close();if(browser)browser.close();for(let i=0;i<30&&child.exitCode===null;i++)await pause(100);if(child.exitCode===null)child.kill();
+ if(args.includes('--cleanup-profile')&&fs.existsSync(profile)){
+  const resolved=fs.realpathSync(profile);if(path.dirname(resolved)!==fs.realpathSync(review)||path.basename(resolved)!=='browser-profile')throw new Error('Browser cache path left the verified review directory');
+  const literal="'"+resolved.replaceAll("'","''")+"'";
+  if(process.platform==='win32'){
+   execFileSync('powershell',['-NoProfile','-Command',`$browserCache = Get-Item -LiteralPath ${literal} -ErrorAction Stop; if (($browserCache.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Browser cache is a link' }`],{windowsHide:true,stdio:'pipe'});
+   // Chromium can release session-file handles after the main PID exits.
+   await pause(1500);
+   for(let attempt=0;;attempt++){try{execFileSync('powershell',['-NoProfile','-Command',`Remove-Item -LiteralPath ${literal} -Recurse -Force -ErrorAction Stop`],{windowsHide:true,stdio:'pipe'});break;}catch(error){if(attempt>=2)throw error;await pause(1500);}}
+   const stillExists=execFileSync('powershell',['-NoProfile','-Command',`Test-Path -LiteralPath ${literal}`],{windowsHide:true,encoding:'utf8'}).trim();
+   if(stillExists!=='False')throw new Error('Browser profile cleanup failed');
+  }else fs.rmSync(resolved,{recursive:true,force:true});
+ }}

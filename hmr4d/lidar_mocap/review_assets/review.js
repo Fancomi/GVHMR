@@ -2,6 +2,9 @@
 'use strict';
 const manifest=window.REVIEW_MANIFEST,$=id=>document.getElementById(id);
 let clip=null,clipNumber=-1,index=0,playing=false,mediaTime=0,lastTick=0,loadGeneration=0;
+let visibleMotion=null;
+const embedded=new URLSearchParams(location.search).has('embedded');
+if(embedded)document.body.classList.add('embedded');
 const canvas=$('scene'),gl=canvas.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});
 if(!gl){$('status').textContent='此浏览器未提供 WebGL2；请使用 Chrome 或 Edge。';throw new Error('WebGL2 unavailable');}
 const decoder=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0)).buffer;
@@ -50,14 +53,22 @@ const plane=manifest.reference_plane;
 const floorLines=[];const po=plane.origin_viewer_m,pn=plane.normal_viewer;
 for(let d=-10;d<=10;d++){for(const xy of [[po[0]+d,po[1]-10],[po[0]+d,po[1]+10],[po[0]-10,po[1]+d],[po[0]+10,po[1]+d]])floorLines.push(xy[0],xy[1],po[2]-((xy[0]-po[0])*pn[0]+(xy[1]-po[1])*pn[1])/pn[2]);}
 function draw(){if(!clip)return;const frame=clip.frames[index];unpackFrame(frame);
+ const athletes=frame.athletes.filter(a=>!visibleMotion||a.motion_id===visibleMotion);
  const w=Math.round(canvas.clientWidth*devicePixelRatio),h=Math.round(canvas.clientHeight*devicePixelRatio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
  gl.viewport(0,0,w,h);gl.clearColor(.035,.055,.085,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniformMatrix4fv(uniforms.uMatrix,false,matrix());
  drawArray(new Float32Array(floorLines),[.20,.27,.36,.55],gl.LINES);
- if($('mesh').checked){gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);for(const a of frame.athletes){drawArray(a._vertices,[...a.color.map(c=>c/255),Number($('opacity').value)],gl.TRIANGLES,faces,a._normals);}gl.disable(gl.CULL_FACE);}
- if($('wire').checked)for(const a of frame.athletes)drawArray(a._vertices,[...a.color.map(c=>c/255),.6],gl.LINES,lineIndices);
+ if($('mesh').checked){gl.enable(gl.CULL_FACE);gl.cullFace(gl.BACK);for(const a of athletes){drawArray(a._vertices,[...a.color.map(c=>c/255),Number($('opacity').value)],gl.TRIANGLES,faces,a._normals);}gl.disable(gl.CULL_FACE);}
+ if($('wire').checked)for(const a of athletes)drawArray(a._vertices,[...a.color.map(c=>c/255),.6],gl.LINES,lineIndices);
  if($('background').checked)drawArray(frame._cloud,[.52,.60,.69,.65],gl.POINTS,null,null,1.4);
- if($('points').checked)for(const a of frame.athletes)drawArray(a._cloud,[1,.94,.30,1],gl.POINTS,null,null,2.2);
- window.REVIEW_STATE={clip:clip.id,frame:index,scan:frame.lidar_index,frameCount:clip.frames.length,duration:clip.duration_s,meshCount:frame.athletes.length,vertexCount:frame.athletes.reduce((n,a)=>n+a._vertices.length/3,0),pointCount:frame.point_count,playing,mediaTime,webglError:gl.getError()};
+ if($('points').checked)for(const a of athletes)drawArray(a._cloud,[1,.94,.30,1],gl.POINTS,null,null,2.2);
+ if($('skeleton')?.checked){gl.disable(gl.DEPTH_TEST);for(const a of athletes){
+  const bones=new Float32Array(manifest.edges.flatMap(([x,y])=>[...a._joints.slice(x*3,x*3+3),...a._joints.slice(y*3,y*3+3)]));
+  drawArray(bones,[...a.color.map(c=>c/255),1],gl.LINES);
+  drawArray(a._joints.slice(0,3),[...a.color.map(c=>c/255),1],gl.POINTS,null,null,12);
+  drawArray(a._joints.slice(0,3),[1,1,1,1],gl.POINTS,null,null,4);
+ }gl.enable(gl.DEPTH_TEST);}
+ window.REVIEW_STATE={clip:clip.id,frame:index,scan:frame.lidar_index,frameCount:clip.frames.length,duration:clip.duration_s,meshCount:frame.athletes.length,visibleMeshCount:athletes.length,visibleMotion,rejectedActors:frame.athletes.filter(a=>!a.accepted).map(a=>a.motion_id),vertexCount:frame.athletes.reduce((n,a)=>n+a._vertices.length/3,0),pointCount:frame.point_count,playing,mediaTime,webglError:gl.getError()};
+ if(embedded)reportEmbedded();
 }
 function orient(){const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
  for(const f of clip.frames)for(const a of f.athletes){const p=floats(a.vertices);for(let i=0;i<p.length;i+=3)for(let k=0;k<3;k++){min[k]=Math.min(min[k],p[i+k]);max[k]=Math.max(max[k],p[i+k]);}}
@@ -73,7 +84,8 @@ const fmt=(n,d=2)=>Number.isFinite(n)?n.toFixed(d):'未量化';
 function showFrame(i){if(!clip)return;index=Math.max(0,Math.min(clip.frames.length-1,i));const f=clip.frames[index];$('timeline').value=index;
  $('cam1').src=f.cam1_image;$('cam2').src=f.cam2_image;
  $('clock').textContent=`${mediaTime.toFixed(2)} / ${clip.duration_s.toFixed(2)} 秒 · 帧 ${index+1}/${clip.frames.length}`;
- $('status').textContent=`${manifest.clips[clipNumber].session_id} · 扫描 ${f.lidar_index} · ${f.point_count} 个原始返回点 · ${f.athletes.length} 份拟合${f.athletes.length?'':'（本帧无拟合，未补帧）'}`;
+ const rejected=f.athletes.filter(a=>!a.accepted).map(a=>a.motion_id.split(':').slice(-2).join(':'));
+ $('status').textContent=`${manifest.clips[clipNumber].session_id} · 扫描 ${f.lidar_index} · ${f.point_count} 个原始返回点 · ${f.athletes.length} 份拟合${f.athletes.length?'':'（本帧无拟合，未补帧）'}${rejected.length?' · 拒收轨迹 '+rejected.join(', '):''}`;
  const html=f.athletes.map(a=>`<tr><td>${a.motion_id.split(':').slice(-2).join(':')}</td><td class="${a.accepted?'good':'bad'}">${a.accepted?'通过':'拒收'}</td><td>${fmt(a.qa.final_p2surface_mean_m*1000)} mm</td><td>${fmt(a.qa.final_p2surface_p90_m*1000)} mm</td><td>${fmt(a.qa.reprojection_mean_px)} px</td></tr>`).join('');
  $('metrics').innerHTML='<table><tr><th>窗口内轨迹</th><th>质量门禁</th><th>点到表面 mean</th><th>本帧点到表面 P90</th><th>Cam2 拟合残差</th></tr>'+html+'</table>';
  $('provenance').textContent=JSON.stringify({scan_mid_us:f.scan_mid_us,cameras:f.cameras,geometry_interpolated:false,athletes:f.athletes.map(a=>({motion_id:a.motion_id,accepted:a.accepted,rejection_reasons:a.rejection_reasons,qa:a.qa}))},null,2);draw();
@@ -87,20 +99,34 @@ function loadClip(i){playing=false;clipNumber=i;const generation=++loadGeneratio
 }
 // These hooks support reproducible browser validation and ordinary controls.
 window.REVIEW_LOAD_CLIP=loadClip;window.REVIEW_SEEK=seek;window.REVIEW_PLAY=()=>{$('play').click();};
+window.REVIEW_GET_VIEW=()=>({center:center.slice(),distance,yaw,pitch});
+window.REVIEW_SET_VIEW=view=>{center=view.center.slice();distance=view.distance;yaw=view.yaw;pitch=view.pitch;draw();};
+window.REVIEW_SET_MOTION=motion=>{visibleMotion=motion||null;draw();};
+window.REVIEW_SET_CONTROL=(id,value)=>{if($(id)){if($(id).type==='checkbox')$(id).checked=value;else $(id).value=value;draw();}};
+function reportEmbedded(){if(!clip||!window.REVIEW_STATE)return;parent.postMessage({type:'review-state',state:window.REVIEW_STATE,view:window.REVIEW_GET_VIEW(),
+ times:clip.frames.map(f=>({lidar_index:f.lidar_index,scan_mid_us:f.scan_mid_us,offset_s:f.offset_s})),
+ images:['cam1','cam2'].map(id=>({src:$(id).getAttribute('src'),ready:$(id).complete&&$(id).naturalWidth>0}))},'*');}
+if(embedded){$('cam1').onload=reportEmbedded;$('cam2').onload=reportEmbedded;
+ window.addEventListener('message',event=>{if(event.source!==parent||event.data?.type!=='review-command')return;const {command,value}=event.data;
+  if(command==='seek')seek(value);else if(command==='view')window.REVIEW_SET_VIEW(value);else if(command==='motion')window.REVIEW_SET_MOTION(value);else if(command==='control')window.REVIEW_SET_CONTROL(value.id,value.value);
+ });}
+function notifyView(){if(embedded)parent.postMessage({type:'review-view',view:window.REVIEW_GET_VIEW()},'*');}
 $('play').onclick=()=>{if(!clip)return;playing=!playing;lastTick=performance.now();$('play').textContent=playing?'暂停':'播放';draw();};
 $('timeline').oninput=()=>seek(Number($('timeline').value));$('prev').onclick=()=>clip&&seek(index-1);$('next').onclick=()=>clip&&seek(index+1);
-for(const id of ['mesh','wire','points','background','opacity'])$(id).oninput=draw;
-$('reset').onclick=()=>{if(defaultView){({center,distance,yaw,pitch}=defaultView);center=center.slice();draw();}};
+for(const id of ['mesh','wire','points','background','opacity','skeleton'])if($(id))$(id).oninput=draw;
+$('reset').onclick=()=>{if(defaultView){({center,distance,yaw,pitch}=defaultView);center=center.slice();draw();notifyView();}};
 let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=()=>drag=null;
-canvas.onpointermove=e=>{if(drag){yaw-=(e.clientX-drag[0])*.008;pitch=Math.max(-.1,Math.min(1.45,pitch+(e.clientY-drag[1])*.007));drag=[e.clientX,e.clientY];draw();}};
-canvas.onwheel=e=>{e.preventDefault();distance=Math.max(2,Math.min(100,distance*Math.exp(e.deltaY*.001)));draw();};window.onresize=draw;
-document.onkeydown=e=>{if(e.code==='Space'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('play').click();}else if(e.code==='ArrowRight'&&clip)seek(index+1);else if(e.code==='ArrowLeft'&&clip)seek(index-1);};
+canvas.onpointermove=e=>{if(drag){yaw-=(e.clientX-drag[0])*.008;pitch=Math.max(-.1,Math.min(1.45,pitch+(e.clientY-drag[1])*.007));drag=[e.clientX,e.clientY];draw();notifyView();}};
+canvas.onwheel=e=>{e.preventDefault();distance=Math.max(2,Math.min(100,distance*Math.exp(e.deltaY*.001)));draw();notifyView();};window.onresize=draw;
+document.onkeydown=e=>{if(embedded&&['Space','ArrowRight','ArrowLeft'].includes(e.code)){e.preventDefault();parent.postMessage({type:'review-transport',command:e.code},'*');return;}
+ if(e.code==='Space'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('play').click();}else if(e.code==='ArrowRight'&&clip)seek(index+1);else if(e.code==='ArrowLeft'&&clip)seek(index-1);};
 function animate(now){if(playing&&clip){mediaTime+=(now-lastTick)/1000*Number($('speed').value);if(mediaTime>=clip.duration_s){if($('loop').checked)mediaTime%=clip.duration_s;else{mediaTime=clip.duration_s;playing=false;$('play').textContent='播放';}}
  let i=0;while(i+1<clip.frames.length&&clip.frames[i+1].offset_s<=mediaTime)i++;if(i!==index)showFrame(i);else{$('clock').textContent=`${mediaTime.toFixed(2)} / ${clip.duration_s.toFixed(2)} 秒 · 帧 ${index+1}/${clip.frames.length}`;if(window.REVIEW_STATE){window.REVIEW_STATE.mediaTime=mediaTime;window.REVIEW_STATE.playing=playing;}}}lastTick=now;requestAnimationFrame(animate);}requestAnimationFrame(animate);
 $('subtitle').textContent=`${manifest.clip_count} 个 ${manifest.clip_duration_s} 秒片段 · 双相机原始影像 + 6890 顶点 SMPL 表面 · 原生约 10 Hz，无插值`;
 manifest.clips.forEach((c,i)=>{const button=document.createElement('button');button.innerHTML=`${String(i+1).padStart(2,'0')} · ${c.duration_s.toFixed(0)} 秒<small>${c.session_id}</small><small>${c.summary.scans} 扫描 · mean ${fmt(c.summary.mean_surface_mm)} mm</small>`;button.onclick=()=>loadClip(i);$('clips').appendChild(button);});
 if(manifest.review_title)document.querySelector('h1').textContent=manifest.review_title;
 if(manifest.review_description)$('subtitle').textContent=manifest.review_description;
+if(manifest.review_notice){const notice=document.createElement('p');notice.textContent=manifest.review_notice.message+' ';const a=document.createElement('a');a.href=manifest.review_notice.link;a.textContent=manifest.review_notice.label;notice.append(a);document.querySelector('header').append(notice);}
 manifest.clips.forEach((c,i)=>{if(c.label){const label=document.createElement('small');label.textContent=c.label;$('clips').children[i].appendChild(label);}});
 const totals=manifest.clips.reduce((s,c)=>({frames:s.frames+c.summary.scans,fits:s.fits+c.summary.fitted_person_frames,ok:s.ok+c.summary.accepted}),{frames:0,fits:0,ok:0});
 $('headline').innerHTML=`<div class="stat"><strong>${manifest.clip_count} × ${manifest.clip_duration_s}s</strong><small>连续片段 · ${totals.frames} 个实际扫描</small></div><div class="stat"><strong>${totals.ok} / ${totals.fits}</strong><small>预览中的通过／全部拟合</small></div><div class="stat"><strong>同一份世界网格</strong><small>两机分别使用冻结 K/d/R/t</small></div>`;
@@ -127,4 +153,8 @@ if(manifest.refinement_comparison){
  compare.innerHTML='<p>对照仅修改问题轨迹；其余运动员保留原拟合。两段均使用原始点云、原始相机帧和相同标定。点云中位位置是连续性参照，RGB 检测器是图像一致性参照；均不是骨盆或关节真值。</p><table><tr><th>问题轨迹指标</th><th>修改前</th><th>修改后</th></tr>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${fmt(r[1])}</td><td>${fmt(r[2])}</td></tr>`).join('')+'</table>';
  $('report').prepend(compare);const details=document.createElement('details');details.innerHTML='<summary>同一问题轨迹的修改前后完整指标</summary>';const pre=document.createElement('pre');pre.textContent=JSON.stringify(comparison,null,2);details.appendChild(pre);$('report').appendChild(details);
 }
-loadClip(0);
+if(manifest.finalized_reviews){const links=document.createElement('p');
+ for(const [key,title] of [['mask_alignment','双机人体 mask 与球场线投影'],['case_diagnosis','指定跳动位置 · 全量重跑诊断'],['cam1_case_check','Cam1 问题片段逐帧检查'],['cam2_case_check','Cam2 问题片段逐帧检查']]){
+  const a=document.createElement('a');a.href=manifest.finalized_reviews[key];a.textContent=title;links.append(a,' · ');
+ }$('report').prepend(links);}
+loadClip(Math.max(0,Math.min(manifest.clips.length-1,Number(new URLSearchParams(location.search).get('clip'))||0)));

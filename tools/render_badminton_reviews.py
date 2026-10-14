@@ -14,13 +14,16 @@ def main():
     parser.add_argument('--seconds',type=float,default=5)
     parser.add_argument('--image-width',type=int,default=1280)
     parser.add_argument('--html-only',action='store_true')
+    parser.add_argument('--required-case',action='append',default=[],metavar='SESSION:SCAN',
+                        help='Include a fixed diagnostic interval, replacing a slot from the same session')
     args=parser.parse_args()
     if min(args.clips,args.seconds,args.image_width)<=0:
         parser.error('Clips, duration and image width must be positive')
     torch.set_num_threads(4)
     review=args.review_dir or args.output_root/'sequence_review'
     result=render_sequences(args.output_root,review,count=args.clips,seconds=args.seconds,
-                            image_width=args.image_width,html_only=args.html_only)
+                            image_width=args.image_width,html_only=args.html_only,
+                            required_cases=[(value.rsplit(':',1)[0],int(value.rsplit(':',1)[1])) for value in args.required_case])
     print(json.dumps(result,indent=2))
 
 
