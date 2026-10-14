@@ -31,7 +31,16 @@ try{
  const identity=await send(browser,'Browser.getBrowserCommandLine'),processes=await send(browser,'SystemInfo.getProcessInfo');verifyBrowserIdentity({binary:chrome,pid:child.pid,profile,port},identity.arguments,processes.processInfo);
  const target=await send(browser,'Target.createTarget',{url:'about:blank'}),tabs=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
  page=await connect(tabs.find(t=>t.id===target.targetId).webSocketDebuggerUrl);attach(page);await send(page,'Runtime.enable');await send(page,'Page.enable');
- await send(page,'Page.navigate',{url:pathToFileURL(path.join(review,'index.html')).href});await ready('clip01',0);
+ await send(page,'Page.navigate',{url:pathToFileURL(path.join(review,'index.html')).href});
+ if(args.includes('--gallery')){
+  await pause(500);await evaluate(`(()=>{document.querySelectorAll('img').forEach(i=>i.loading='eager');const first=document.querySelector('.grid');if(first)first.parentElement.open=true;})()`);
+  let gallery;for(let i=0;i<100;i++){await pause(100);gallery=await evaluate(`(()=>{const imgs=[...document.images];return {title:document.title,images:imgs.length,loaded:imgs.filter(i=>i.complete&&i.naturalWidth>0).length,table_rows:document.querySelectorAll('table tr').length};})()`);if(gallery.images&&gallery.images===gallery.loaded)break;}
+  if(!gallery.images||gallery.images!==gallery.loaded||exceptions.length)throw new Error('Gallery images or page failed');
+  const layout=await send(page,'Page.getLayoutMetrics'),size=layout.cssContentSize;const shot=await send(page,'Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:size.width,height:Math.min(size.height,3600),scale:1}});
+  fs.writeFileSync(path.join(review,'gallery_screenshot.png'),Buffer.from(shot.data,'base64'));
+  fs.writeFileSync(path.join(review,'browser_verification.json'),JSON.stringify({passed:true,gallery,exceptions},null,2));console.log(`Verified native-image gallery: ${gallery.loaded} photos and ${gallery.table_rows} comparison rows`);
+ }else{
+ await ready('clip01',0);
  const clips=await evaluate('window.REVIEW_MANIFEST.clips.map(c=>c.id)'),checked=[];
  for(let i=0;i<clips.length;i++){
   await evaluate(`window.REVIEW_LOAD_CLIP(${i})`);const first=await ready(clips[i],0),last=first.state.frameCount-1;
@@ -41,11 +50,12 @@ try{
   const pixels=await evaluate(`(()=>{const p=new Uint8Array(gl.drawingBufferWidth*gl.drawingBufferHeight*4);gl.readPixels(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight,gl.RGBA,gl.UNSIGNED_BYTE,p);let colored=0;for(let j=0;j<p.length;j+=4)if(Math.max(p[j],p[j+1],p[j+2])-Math.min(p[j],p[j+1],p[j+2])>45&&Math.max(p[j],p[j+1],p[j+2])>70)colored++;return {colored,total:p.length/4};})()`);
   if(!pixels.colored)throw new Error('3D canvas has no colored body/point content');
   checked.push({id:clips[i],frame_count:first.state.frameCount,duration_s:first.state.duration,states:states.map(s=>s.state),images_loaded:true,canvas_pixels:pixels});
-  if([0,4,9].includes(i)){await evaluate(`window.REVIEW_SEEK(${Math.floor(last/2)})`);await ready(clips[i],Math.floor(last/2));const layout=await send(page,'Page.getLayoutMetrics');const size=layout.cssContentSize;const shot=await send(page,'Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:size.width,height:size.height,scale:1}});fs.writeFileSync(path.join(review,clips[i]+'_screenshot.png'),Buffer.from(shot.data,'base64'));}
+  if([0,4,9].includes(i)||i===clips.length-1){await evaluate(`window.REVIEW_SEEK(${Math.floor(last/2)})`);await ready(clips[i],Math.floor(last/2));const layout=await send(page,'Page.getLayoutMetrics');const size=layout.cssContentSize;const shot=await send(page,'Page.captureScreenshot',{format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width:size.width,height:size.height,scale:1}});fs.writeFileSync(path.join(review,clips[i]+'_screenshot.png'),Buffer.from(shot.data,'base64'));}
  }
  await evaluate('window.REVIEW_LOAD_CLIP(0)');await ready('clip01',0);await evaluate('window.REVIEW_PLAY()');await pause(1200);const animated=await evaluate('window.REVIEW_STATE');
  if(animated.frame<5||!animated.playing)throw new Error('Playback failed to advance on native timestamps');await evaluate('window.REVIEW_PLAY()');
  const result={passed:true,checked_clips:checked.length,clips:checked,playback: animated,exceptions};fs.writeFileSync(path.join(review,'browser_verification.json'),JSON.stringify(result,null,2));
  console.log(`Verified ${checked.length} clips: real first/middle/last photos, WebGL geometry, 5-second durations and advancing playback`);
+ }
  await send(browser,'Browser.close');browser.close();browser=null;page.close();page=null;
 }finally{if(page)page.close();if(browser)browser.close();for(let i=0;i<30&&child.exitCode===null;i++)await pause(100);if(child.exitCode===null)child.kill();}

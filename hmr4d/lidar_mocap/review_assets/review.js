@@ -99,6 +99,9 @@ function animate(now){if(playing&&clip){mediaTime+=(now-lastTick)/1000*Number($(
  let i=0;while(i+1<clip.frames.length&&clip.frames[i+1].offset_s<=mediaTime)i++;if(i!==index)showFrame(i);else{$('clock').textContent=`${mediaTime.toFixed(2)} / ${clip.duration_s.toFixed(2)} 秒 · 帧 ${index+1}/${clip.frames.length}`;if(window.REVIEW_STATE){window.REVIEW_STATE.mediaTime=mediaTime;window.REVIEW_STATE.playing=playing;}}}lastTick=now;requestAnimationFrame(animate);}requestAnimationFrame(animate);
 $('subtitle').textContent=`${manifest.clip_count} 个 ${manifest.clip_duration_s} 秒片段 · 双相机原始影像 + 6890 顶点 SMPL 表面 · 原生约 10 Hz，无插值`;
 manifest.clips.forEach((c,i)=>{const button=document.createElement('button');button.innerHTML=`${String(i+1).padStart(2,'0')} · ${c.duration_s.toFixed(0)} 秒<small>${c.session_id}</small><small>${c.summary.scans} 扫描 · mean ${fmt(c.summary.mean_surface_mm)} mm</small>`;button.onclick=()=>loadClip(i);$('clips').appendChild(button);});
+if(manifest.review_title)document.querySelector('h1').textContent=manifest.review_title;
+if(manifest.review_description)$('subtitle').textContent=manifest.review_description;
+manifest.clips.forEach((c,i)=>{if(c.label){const label=document.createElement('small');label.textContent=c.label;$('clips').children[i].appendChild(label);}});
 const totals=manifest.clips.reduce((s,c)=>({frames:s.frames+c.summary.scans,fits:s.fits+c.summary.fitted_person_frames,ok:s.ok+c.summary.accepted}),{frames:0,fits:0,ok:0});
 $('headline').innerHTML=`<div class="stat"><strong>${manifest.clip_count} × ${manifest.clip_duration_s}s</strong><small>连续片段 · ${totals.frames} 个实际扫描</small></div><div class="stat"><strong>${totals.ok} / ${totals.fits}</strong><small>预览中的通过／全部拟合</small></div><div class="stat"><strong>同一份世界网格</strong><small>两机分别使用冻结 K/d/R/t</small></div>`;
 const description=document.createElement('p');description.textContent='Cam2 像素误差是参与拟合的去畸变关键点残差。Cam1 原图叠加与独立 RGB 关键帧检查需分开理解；检测器一致性不等于人体真值。';$('report').appendChild(description);
@@ -113,5 +116,15 @@ if(quality){const speed=quality.efficiency,passed=quality.quality.passed,stages=
  </table><p class="muted">两机焦距不同，不直接横比像素数。距离是可见表面拟合残差，不是 3D 关节误差或遮挡部位真值。</p>
  <p><a href="quality_efficiency.md">完整效率／质量报告</a> · <a href="cam1_check.md">Cam1 逐片段检查</a></p>`;$('report').appendChild(stats);
 }
-for(const [title,data] of [['效率与质量报告',manifest.quality_report],['Cam1 独立关键帧检查',manifest.cam1_check]]){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=title;detail.appendChild(summary);const pre=document.createElement('pre');pre.textContent=data?JSON.stringify(data,null,2):'尚未量化；查看报告文件或后续更新。';detail.appendChild(pre);$('report').appendChild(detail);}
+if(!manifest.refinement_comparison)for(const [title,data] of [['效率与质量报告',manifest.quality_report],['Cam1 独立关键帧检查',manifest.cam1_check]]){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=title;detail.appendChild(summary);const pre=document.createElement('pre');pre.textContent=data?JSON.stringify(data,null,2):'尚未量化；查看报告文件或后续更新。';detail.appendChild(pre);$('report').appendChild(detail);}
+if(manifest.refinement_comparison){
+ const comparison=manifest.refinement_comparison,before=comparison.before,after=comparison.after,compare=document.createElement('div');
+ const rows=[['可见点到表面 mean (mm)',before.mean_surface_m*1000,after.mean_surface_m*1000],
+  ['平均每帧表面 P90 (mm)',before.mean_of_frame_p90_surface_m*1000,after.mean_of_frame_p90_surface_m*1000],
+  ['Cam1 固定 RGB 观察 mean (px)',before.rgb_fixed_observation_check.cam1.joint_pixel_error.mean,after.rgb_fixed_observation_check.cam1.joint_pixel_error.mean],
+  ['Cam2 拟合残差 mean (px)',before.mean_cam2_fitting_reprojection_px,after.mean_cam2_fitting_reprojection_px],
+  ['骨盆/点云位移差 P90 (cm)',before.pelvis_vs_cloud_step_residual_m.p90*100,after.pelvis_vs_cloud_step_residual_m.p90*100]];
+ compare.innerHTML='<p>对照仅修改问题轨迹；其余运动员保留原拟合。两段均使用原始点云、原始相机帧和相同标定。点云中位位置是连续性参照，RGB 检测器是图像一致性参照；均不是骨盆或关节真值。</p><table><tr><th>问题轨迹指标</th><th>修改前</th><th>修改后</th></tr>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${fmt(r[1])}</td><td>${fmt(r[2])}</td></tr>`).join('')+'</table>';
+ $('report').prepend(compare);const details=document.createElement('details');details.innerHTML='<summary>同一问题轨迹的修改前后完整指标</summary>';const pre=document.createElement('pre');pre.textContent=JSON.stringify(comparison,null,2);details.appendChild(pre);$('report').appendChild(details);
+}
 loadClip(0);

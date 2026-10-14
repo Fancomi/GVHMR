@@ -38,7 +38,7 @@ class FittingConfig:
     pose_prior_weight: float = 0.002
     shape_prior_weight: float = 0.00002
     root_prior_weight: float = 0.002
-    reprojection_weight: float = 0.3
+    reprojection_weight: float = 1.0
     floor_weight: float = 0.5
     temporal_weight: float = 0.02
     ground_tolerance_m: float = 0.02
@@ -46,6 +46,15 @@ class FittingConfig:
     align_translation: bool = True
     optimizer_surface: str = "full_faces"
     candidate_neighbors: int = 8
+    # Match corrections to *observed* motion, not to zero velocity. Active only
+    # when physical scan timestamps are supplied; legacy untimed calls retain
+    # their previous behavior rather than inventing a frame rate.
+    continuity_weight: float = 0.2
+    root_motion_weight: float = 0.03
+    continuity_reference_dt_s: float = 0.1
+    continuity_max_gap_s: float = 0.25
+    continuity_warm_start: bool = True
+    continuity_reference: str = "cloud_torso"
 
     def __post_init__(self):
         if min(self.point_limit, self.qa_point_limit, self.topology_vertices) < 1:
@@ -56,6 +65,12 @@ class FittingConfig:
             raise ValueError("optimizer_surface must be 'full_faces' or 'candidate_faces'")
         if self.candidate_neighbors < 1:
             raise ValueError("candidate_neighbors must be positive")
+        if min(self.continuity_reference_dt_s, self.continuity_max_gap_s) <= 0:
+            raise ValueError("Continuity time intervals must be positive")
+        if min(self.continuity_weight, self.root_motion_weight) < 0:
+            raise ValueError("Continuity weights must be nonnegative")
+        if self.continuity_reference not in {"cloud_torso", "cloud_mesh_median"}:
+            raise ValueError("Unknown physical motion reference")
 
 
 def point_to_surface_squared(
@@ -243,6 +258,56 @@ def _as_float(value, device):
     return torch.as_tensor(value, dtype=torch.float32, device=device)
 
 
+def motion_reference_loss(current, reference, timestamps_us, *, reference_dt_s=.1, max_gap_s=.25):
+    """Correction-change penalty preserving measured movement at real time gaps.
+
+    A fast translation present in both reference and fit has zero penalty.
+    Only excess changes in the fitting correction are penalized. Long missing
+    intervals break the link; timestamp subtraction occurs in int64 first.
+    """
+    times = torch.as_tensor(timestamps_us, device=current.device, dtype=torch.int64).reshape(-1)
+    if len(times) != len(current) or reference.shape != current.shape:
+        raise ValueError("Motion reference frame counts/shapes differ")
+    if len(times) < 2:
+        return current.sum() * 0
+    delta_us = times[1:] - times[:-1]
+    if bool((delta_us <= 0).any()):
+        raise ValueError("Scan timestamps must strictly increase")
+    dt = delta_us.to(current.dtype) / 1e6
+    valid = dt <= max_gap_s
+    residual = (current[1:] - current[:-1]) - (reference[1:] - reference[:-1])
+    scale = reference_dt_s / dt
+    scaled = residual * scale.reshape((-1,) + (1,) * (residual.ndim - 1))
+    per_pair = scaled.square().flatten(1).mean(1)
+    return (per_pair * valid).sum() / valid.sum().clamp_min(1)
+
+
+def rotation_motion_loss(current, reference, timestamps_us, *, reference_dt_s=.1, max_gap_s=.25,
+                         local=False):
+    """SO(3) relative-motion mismatch, invariant to a constant pose correction."""
+    times = torch.as_tensor(timestamps_us, device=current.device, dtype=torch.int64).reshape(-1)
+    if len(times) != len(current) or reference.shape != current.shape:
+        raise ValueError("Rotation reference frame counts/shapes differ")
+    if len(times) < 2:
+        return current.sum() * 0
+    delta_us = times[1:] - times[:-1]
+    if bool((delta_us <= 0).any()):
+        raise ValueError("Scan timestamps must strictly increase")
+    dt = delta_us.to(current.dtype) / 1e6
+    valid = dt <= max_gap_s
+    if local:
+        fitted_delta = current[:-1].transpose(-1, -2) @ current[1:]
+        prior_delta = reference[:-1].transpose(-1, -2) @ reference[1:]
+    else:
+        fitted_delta = current[1:] @ current[:-1].transpose(-1, -2)
+        prior_delta = reference[1:] @ reference[:-1].transpose(-1, -2)
+    residual = fitted_delta - prior_delta
+    scale = reference_dt_s / dt
+    scaled = residual * scale.reshape((-1,) + (1,) * (residual.ndim - 1))
+    per_pair = scaled.square().flatten(1).mean(1)
+    return (per_pair * valid).sum() / valid.sum().clamp_min(1)
+
+
 def _plane_tensors(calibration, device):
     plane = getattr(calibration, "reference_plane", None)
     if callable(plane):
@@ -384,6 +449,7 @@ class SMPLFitter:
         self, teacher_params: Mapping[str, Any], clouds: Sequence[Any], calibration,
         camera="cam2", keypoints=None, previous: Optional[Mapping] = None,
         iterations=80, keypoints_space="undistorted",
+        timestamps_us=None,
     ) -> dict:
         """Fit one person's contiguous window and return CPU tensors plus QA.
 
@@ -391,8 +457,16 @@ class SMPLFitter:
         shape as a boundary prior.  Setting ``shape_fixed=True`` fixes that
         track's previously estimated shape.  No cloud is manufactured or
         duplicated by this function, and no frame is implicitly accepted.
+
+        ``timestamps_us`` are actual integer scan-midpoint times. With timed
+        continuity, ``previous`` additionally uses scan_time_us, aligned_transl,
+        teacher_root_pose and teacher_body_pose from the previous accepted
+        result's ``continuity`` block. ``aligned_transl`` denotes the observed
+        centre minus anatomical video torso offset motion reference; it is not
+        an output translation or an instruction to move original returns.
         """
         cfg = self.config
+        timed_continuity = cfg.continuity_weight > 0 and timestamps_us is not None
         if iterations < 0 or cfg.conversion_steps < 0:
             raise ValueError("Optimization step counts must be nonnegative")
         params = {key: _as_float(teacher_params[key], self.device).reshape(-1, dimension)
@@ -401,6 +475,12 @@ class SMPLFitter:
         count = len(params["body_pose"])
         if count < 1 or any(len(value) != count for value in params.values()) or len(clouds) != count:
             raise ValueError("Teacher and cloud frame counts differ or are empty")
+        if timestamps_us is not None:
+            times = torch.as_tensor(timestamps_us, device=self.device, dtype=torch.int64).reshape(-1)
+            if len(times) != count or bool(((times[1:] - times[:-1]) <= 0).any()):
+                raise ValueError("Each fitted frame requires its strictly increasing physical scan timestamp")
+        else:
+            times = None
         if any(not torch.isfinite(value).all() for value in params.values()):
             raise ValueError("Nonfinite video teacher parameters")
         observed = []
@@ -461,6 +541,47 @@ class SMPLFitter:
             aligned_pelvis = pelvis.detach().clone()
             aligned_vertices, _ = self.forward_pelvis(root, body, shape, pelvis)
             aligned_distances = point_to_surface_squared(aligned_vertices, self.faces, qa_clouds)
+            motion_reference_pelvis = aligned_pelvis
+            if cfg.continuity_reference == "cloud_torso":
+                # A mesh-coordinate median can jump when arm/leg surfaces cross
+                # its percentile. The anatomical pelvis/spine/neck mean changes
+                # continuously and compensates genuine trunk lean/rotation.
+                # Actual clouds are untouched; only the relative-motion prior
+                # uses this observed-centre minus video torso-offset reference.
+                cloud_centres = torch.stack([cloud.median(0).values for cloud in observed])
+                torso_offset = converted_joints[:, [0, 3, 6, 9, 12]].mean(1) - teacher_pelvis
+                motion_reference_pelvis = cloud_centres - torso_offset
+
+            # State crosses a batch boundary only for a verified continuous
+            # track/time link. Rejected fits must not be supplied as this state.
+            previous_motion = None
+            required = ("scan_time_us", "transl", "root_pose", "body_pose", "aligned_transl",
+                        "teacher_root_pose", "teacher_body_pose")
+            if timed_continuity and previous is not None and all(previous.get(key) is not None for key in required):
+                previous_time = int(previous["scan_time_us"])
+                boundary_dt = (int(times[0]) - previous_time) / 1e6
+                if 0 < boundary_dt <= cfg.continuity_max_gap_s:
+                    previous_motion = {
+                        "times": torch.cat([times.new_tensor([previous_time]), times]),
+                        "pelvis": _as_float(previous["transl"], self.device).reshape(-1, 3)[-1:],
+                        "aligned": _as_float(previous["aligned_transl"], self.device).reshape(-1, 3)[-1:],
+                        "root": axis_angle_to_matrix(_as_float(previous["root_pose"], self.device).reshape(-1, 3)[-1:]),
+                        "teacher_root": axis_angle_to_matrix(_as_float(previous["teacher_root_pose"], self.device).reshape(-1, 3)[-1:]),
+                        "body": axis_angle_to_matrix(_as_float(previous["body_pose"], self.device).reshape(-1, 23, 3)[-1:]),
+                        "teacher_body": axis_angle_to_matrix(_as_float(previous["teacher_body_pose"], self.device).reshape(-1, 23, 3)[-1:]),
+                    }
+                    if cfg.continuity_warm_start:
+                        connected = torch.ones(count, device=self.device, dtype=torch.bool)
+                        if count > 1:
+                            connected[1:] = ((times[1:] - times[:-1]) <= round(cfg.continuity_max_gap_s * 1e6)).cumprod(0).bool()
+                        prior_root_matrix = axis_angle_to_matrix(prior_root)
+                        prior_body_matrix = axis_angle_to_matrix(prior_body.reshape(count, 23, 3))
+                        warm_root = prior_root_matrix @ previous_motion["teacher_root"].transpose(-1, -2) @ previous_motion["root"]
+                        warm_body = previous_motion["body"] @ previous_motion["teacher_body"].transpose(-1, -2) @ prior_body_matrix
+                        warm_pelvis = previous_motion["pelvis"] + motion_reference_pelvis - previous_motion["aligned"]
+                        root[connected] = matrix_to_axis_angle(warm_root[connected])
+                        body[connected] = matrix_to_axis_angle(warm_body[connected]).reshape(-1, 69)
+                        pelvis[connected] = warm_pelvis[connected]
 
         optimizer = torch.optim.Adam(parameters, lr=cfg.learning_rate)
         prior_body_matrix = axis_angle_to_matrix(prior_body.reshape(count, 23, 3))
@@ -493,7 +614,24 @@ class SMPLFitter:
                 reprojection, _ = _projection_loss(vertices, self.coco_regressor, calibration,
                                                     keypoints, camera, keypoints_space)
                 loss = loss + cfg.reprojection_weight * reprojection
-            if count > 1:
+            if timed_continuity:
+                current_pelvis, reference_pelvis = pelvis, motion_reference_pelvis
+                current_root, reference_root = root_matrix, prior_root_matrix
+                current_body, reference_body = body_matrix, prior_body_matrix
+                motion_times = times
+                if previous_motion is not None:
+                    current_pelvis = torch.cat([previous_motion["pelvis"], pelvis])
+                    reference_pelvis = torch.cat([previous_motion["aligned"], motion_reference_pelvis])
+                    current_root = torch.cat([previous_motion["root"], root_matrix])
+                    reference_root = torch.cat([previous_motion["teacher_root"], prior_root_matrix])
+                    current_body = torch.cat([previous_motion["body"], body_matrix])
+                    reference_body = torch.cat([previous_motion["teacher_body"], prior_body_matrix])
+                    motion_times = previous_motion["times"]
+                options = {"reference_dt_s": cfg.continuity_reference_dt_s, "max_gap_s": cfg.continuity_max_gap_s}
+                loss = loss + cfg.continuity_weight * motion_reference_loss(current_pelvis, reference_pelvis, motion_times, **options)
+                loss = loss + cfg.root_motion_weight * rotation_motion_loss(current_root, reference_root, motion_times, **options)
+                loss = loss + cfg.temporal_weight * rotation_motion_loss(current_body, reference_body, motion_times, local=True, **options)
+            elif count > 1:
                 # Preserve observed video articulation changes, rather than
                 # flattening the fast racket action into a static pose.
                 body_delta = body_matrix[1:] - body_matrix[:-1]
@@ -502,16 +640,16 @@ class SMPLFitter:
                 pelvis_delta = pelvis[1:] - pelvis[:-1]
                 expected_delta = aligned_pelvis[1:] - aligned_pelvis[:-1]
                 loss = loss + cfg.temporal_weight * 0.25 * (pelvis_delta - expected_delta).square().mean()
-            if previous is not None and previous.get("transl") is not None:
+            if not timed_continuity and previous is not None and previous.get("transl") is not None:
                 last_pelvis = _as_float(previous["transl"], self.device).reshape(-1, 3)[-1]
                 # Boundary continuity is a weak regularizer; a jumping/running
                 # athlete remains free to move between windows.
                 loss = loss + cfg.temporal_weight * 0.05 * (pelvis[0] - last_pelvis).square().mean()
-            if previous is not None and previous.get("body_pose") is not None:
+            if not timed_continuity and previous is not None and previous.get("body_pose") is not None:
                 last_body = _as_float(previous["body_pose"], self.device).reshape(-1, 23, 3)[-1]
                 last_body_matrix = axis_angle_to_matrix(last_body)
                 loss = loss + cfg.temporal_weight * 0.05 * (body_matrix[0] - last_body_matrix).square().mean()
-            if previous is not None and previous.get("root_pose") is not None:
+            if not timed_continuity and previous is not None and previous.get("root_pose") is not None:
                 last_root = _as_float(previous["root_pose"], self.device).reshape(-1, 3)[-1]
                 last_root_matrix = axis_angle_to_matrix(last_root)
                 loss = loss + cfg.temporal_weight * 0.05 * (root_matrix[0] - last_root_matrix).square().mean()
@@ -541,6 +679,9 @@ class SMPLFitter:
                                        if int(value[1][index].cpu()) > 0]
                 row = {
                     "finite": bool(finite[index].cpu()),
+                    "timed_continuity": timed_continuity,
+                    "continuity_previous_boundary": previous_motion is not None,
+                    "continuity_reference_kind": cfg.continuity_reference if timed_continuity else None,
                     "cloud_points": len(observed[index]), "qa_points": len(qa_clouds[index]),
                     "surface_metric": "one_sided_observed_point_to_smpl_triangle_metres",
                     "optimizer_surface": cfg.optimizer_surface,
@@ -597,6 +738,16 @@ class SMPLFitter:
                 "coordinate_space": "viewer_m", "translation_convention": "pelvis_position",
                 "shape_shared_within_window": True, "shape_fixed": shape_fixed,
                 "optimizer_surface": cfg.optimizer_surface,
+                "continuity": {
+                    "scan_time_us": times.detach().cpu() if times is not None else None,
+                    "aligned_transl": cpu(motion_reference_pelvis),
+                    "mesh_median_aligned_transl": cpu(aligned_pelvis),
+                    "reference_kind": cfg.continuity_reference,
+                    "teacher_root_pose": cpu(prior_root[:, None]),
+                    "teacher_body_pose": cpu(prior_body.reshape(count, 23, 3)),
+                    "time_checked": timed_continuity,
+                    "previous_boundary_connected": previous_motion is not None,
+                },
             }
 
     def _step(self, loss, optimizer, parameters, shape):

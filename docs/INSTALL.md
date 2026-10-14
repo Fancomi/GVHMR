@@ -33,20 +33,20 @@ missing snapshot, runs all sessions, checks complete window coverage, exports
 the three datasets, and verifies sampled original returns/rebuilt SMPL meshes:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1_continuity
 ```
 
-`outputs/badminton_corner_fix_v1/job_status.json` is `complete` only after export and
+`outputs/badminton_corner_fix_v1_continuity/job_status.json` is `complete` only after export and
 verification succeed. It records errors and retries failed processing up to
 three times with validated caches. It checks the active adoption before resuming
 and before publishing completion; a changed adoption requires a new output root.
 The stage commands remain available below.
 
 ```powershell
-$pairOutput = 'outputs/badminton_corner_fix_v1'
+$pairOutput = 'outputs/badminton_corner_fix_v1_continuity'
 uv run --no-sync python tools/pair_badminton.py prepare --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
 # Real short clip, before a full run:
-uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --session 20261012_154726 --duration-seconds 6 --fit-batch-size 8 --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
 # All three recordings; native ~59.94fps -> every second video frame:
 uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
 uv run --no-sync python tools/pair_badminton.py export --output-root $pairOutput
@@ -65,6 +65,23 @@ also checks algorithm/config identity and artifact/source PNG hashes.
 Changing video calibration or time maps requires a new output root; fitting
 algorithm changes rebuild the fitted labels while preserving valid teacher
 features. Output caches are resumable and never substitute for missing sources.
+
+Timed fitting uses actual integer scan midpoints. Each track starts with up to
+eight observations to establish shape, then uses the configured batch size.
+Only accepted fits carry the pose/translation correction across batches; gaps
+over 250 ms disconnect motion continuity. The prior follows observed cloud
+motion with the video's anatomical torso offset and relative joint rotations,
+so running and racket motion remain possible. Original XYZ is never smoothed.
+Once shape is established, a batch whose maximum Cam2 fit residual exceeds
+8 px also tries a reprojection weight of 3 (the default stays 1). The whole
+batch is selected only if mean reprojection improves by at least .5 px, mean
+surface/P90 increases stay below 1/2 mm, the fixed shape is identical, and
+every previously accepted frame still passes QA. No per-frame pose stitching
+or global increase of RGB weight is applied. The actual selected weight and
+retry decision are recorded in each frame's QA.
+The earlier `outputs/badminton_corner_fix_v1` fits and ten clips are preserved
+as the before case. The new output root uses the same adopted cameras and
+source maps; a later freeze timestamp changes its snapshot digest.
 
 The pipeline freezes the explicitly adopted
 `.local/evidence/BADMINTON-CALIB-1012/multiframe/active-selection.json` and its
@@ -232,6 +249,75 @@ This setup reuses the sibling project's existing neutral SMPL file as
 `inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl`.
 
 ## Using GVHMR results with the sibling single-frame PTv3 project
+
+The final-clip refinement has a separate joint evaluation at
+`outputs/badminton_corner_fix_v1/calibration_refinement/joint_alignment/index.html`.
+It covers 104 original camera images from the ten review clips, with 152 fixed
+person associations per camera. Twelve real court paint lines use dense Brown
+projections. Independent YOLOv8x-seg masks are predicted in original 1920x1080
+pixels; their boundary and occlusion errors are reported as limitations.
+
+The same real returns have 94.31% / 95.22% exact mask coverage in Cam1/Cam2,
+or 96.87% / 98.14% with a 3 px boundary tolerance. The corrected fitting raises
+mean SMPL silhouette IoU from .693 to .737 in Cam1 and .718 to .728 in Cam2.
+Court development RMS remains 1.233 / 4.253 px. Two small global camera
+corrections reduce Cam1 court RMS to about .96 px but slightly regress body RGB
+and mask consistency; the adopted cameras remain unchanged.
+
+For the four final-clip tracks with the same fixed original SMPL shapes, visible
+surface mean improves from 19.64 to 17.52 mm, and average per-frame surface P90
+from 39.85 to 35.20 mm. Same-observation native Brown RGB joint means improve
+9.71 to 7.46 px in Cam1 and 3.90 to 3.86 px in Cam2. The problem track's scan44
+pelvis jump improves from 30.45 to 1.68 cm while the cloud median moves 3.23 cm.
+Small other-track changes are retained in the report. These are development
+regressions and detector consistency, not ground-truth joint accuracy or proof
+of a global optimum. The three-session shape-free integration separately
+exports 479 accepted samples with exact original sampled returns.
+
+The continuous before/after page is
+`outputs/badminton_corner_fix_v1/calibration_refinement/comparison/index.html`.
+It isolates the problem track for two five-second clips; the other three
+athletes retain their original fits. The joint mask gallery separately evaluates
+all four corrected tracks. Both paths preserve original scans, video rows and
+camera parameters. Projected mesh faces use one shared triangle-union
+rasterizer; front/back face overlap cannot erase the silhouette interior.
+
+To repeat the mask check with the separately downloaded official segmentation
+checkpoint (a detection-only YOLO file cannot provide instance masks):
+
+```powershell
+uv run --no-sync python tools/evaluate_badminton_alignment.py --model inputs/checkpoints/yolo/yolov8x-seg.pt --imgsz 1920
+uv run --no-sync python tools/compare_badminton_refinement.py --benchmark-prefix outputs/badminton_corner_fix_v1/calibration_refinement/fit_continuity_benchmark.final --variant batch128_weight0.2
+```
+
+The segmentation asset is the official Ultralytics v8.2.0 `yolov8x-seg.pt`,
+144101612 bytes, SHA-256
+`c333d6a7aff884ec821050eacdab29871f3edd10d996cf48746a02f8e01f1b5d`.
+The existing uv environment and Ultralytics 8.2.42 are unchanged.
+
+The spatial follow-up is
+`outputs/badminton_corner_fix_v1/calibration_refinement/spatial_alignment/index.html`.
+Its 24 additional scan frames are selected from 13382 eligible real-cloud
+anchors and cover all 18 occupied cells of a 3x6 court grid. Session counts are
+17/5/2; all selected centres are medians after transforming every real return
+to registered court coordinates. The original 52 scans remain regression
+evidence. The SVG coverage map and all selection exclusions are preserved.
+
+A global 6DOF mask/court correction for each camera, with K/d, plane and clocks
+fixed, reduces court development RMS to .985/3.713 px but regresses original
+Cam2 point-mask hit rate from 95.22% to 92.91% and body RGB mean from 3.86 to
+4.24 px. It is retained as an unadopted candidate. The unchanged cameras give
+93.76%/94.72% exact point-mask hit rate over the combined 152 camera images,
+or 96.42%/97.99% within 3 px; optimization/regression scopes are reported
+separately.
+
+For 24 spatial fitting selections, surface mean changes 18.931 to 18.844 mm;
+seven paired diagnostic trades are listed rather than hidden in the average.
+Cases 14/22 regress in both masks in the first continuous fit. A single isolated
+weight-3 retry improves both masks, surface mean/P90 and Cam2 residual against
+that first candidate; the pipeline uses the full-batch guard described above.
+These retries do not establish superiority over the original fit in every
+metric. Original fits and every rejected camera/body candidate remain intact.
 
 Code reviewed in `../rollout_lidar_mocap_badminton`:
 `src/data/single_frame.py`, `src/models/frame_model_backbone.py`,

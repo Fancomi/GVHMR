@@ -7,7 +7,8 @@ import torch
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.fitting import (
     FittingConfig, SMPLFitter, candidate_point_to_surface_squared,
-    point_to_surface_squared, robust_surface_loss, vertex_face_adjacency,
+    motion_reference_loss, point_to_surface_squared, robust_surface_loss,
+    rotation_motion_loss, vertex_face_adjacency,
 )
 
 
@@ -108,6 +109,46 @@ class CandidateSurfaceTests(unittest.TestCase):
         self.assertEqual(FittingConfig().optimizer_surface, "full_faces")
         with self.assertRaises(ValueError):
             FittingConfig(optimizer_surface="nearest_vertex")
+
+
+class ObservedMotionTests(unittest.TestCase):
+    def test_real_fast_translation_is_preserved_while_correction_jitter_has_gradient(self):
+        # This is a fast genuine 80cm movement, not a zero-velocity prior.
+        observed = torch.tensor([[0., 0., 0.], [.8, 0., .3], [1.4, 0., .5]])
+        times = torch.tensor([1791794092000000, 1791794092100000, 1791794092200000])
+        fitted = (observed + torch.tensor([.2, 0., -.1])).requires_grad_()
+        self.assertAlmostEqual(motion_reference_loss(fitted, observed, times).item(), 0., places=12)
+        jitter = fitted.detach().clone()
+        jitter[1, 0] += .25
+        jitter.requires_grad_()
+        loss = motion_reference_loss(jitter, observed, times)
+        loss.backward()
+        self.assertGreater(loss.item(), 0.)
+        self.assertGreater(jitter.grad[1, 0].item(), 0.)
+
+    def test_real_time_scaling_and_missing_scan_boundary(self):
+        observed = torch.zeros(2, 3)
+        fitted = torch.tensor([[0., 0., 0.], [.2, 0., 0.]])
+        fast = motion_reference_loss(fitted, observed, [1_000_000, 1_100_000])
+        slow = motion_reference_loss(fitted, observed, [1_000_000, 1_200_000])
+        self.assertAlmostEqual(fast.item(), slow.item() * 4., places=7)
+        separated = motion_reference_loss(fitted, observed, [1_000_000, 1_400_000])
+        self.assertEqual(separated.item(), 0.)
+
+    def test_relative_rotations_preserve_quick_root_and_racket_motion(self):
+        from pytorch3d.transforms import axis_angle_to_matrix
+
+        reference = axis_angle_to_matrix(torch.tensor([[0., 0., 0.], [0., 0., 1.2], [0., 0., 1.8]]))
+        correction = axis_angle_to_matrix(torch.tensor([.1, -.2, 0.]))
+        times = [1_000_000, 1_100_000, 1_200_000]
+        # World root increment: a constant right correction is preserved.
+        self.assertLess(rotation_motion_loss(reference @ correction, reference, times).item(), 1e-12)
+        # Local articulated joint increment: a constant left correction is preserved.
+        self.assertLess(rotation_motion_loss(correction @ reference, reference, times, local=True).item(), 1e-12)
+
+    def test_nonincreasing_physical_times_rejected(self):
+        with self.assertRaisesRegex(ValueError, "strictly increase"):
+            motion_reference_loss(torch.zeros(2, 3), torch.zeros(2, 3), [100, 100])
 
 
 @unittest.skipUnless(
@@ -232,6 +273,40 @@ class PelvisConventionTests(unittest.TestCase):
             self.assertTrue(quality["finite"])
             self.assertLess(quality["final_p2surface_mean_m"], quality["init_p2surface_mean_m"] * .5)
             self.assertLess(quality["final_p2surface_p90_m"], quality["init_p2surface_p90_m"])
+
+    def test_batch_state_preserves_observed_jump_and_resets_after_missing_interval(self):
+        class IdentityCalibration:
+            reference_plane = {"origin_viewer_m": [0., 0., -10.], "normal_viewer": [0., 0., 1.]}
+
+            def camera_to_viewer(self, points, camera):
+                return points
+
+            def camera_rotation_to_viewer(self, camera):
+                return torch.eye(3)
+
+        calibration = IdentityCalibration()
+        teacher = {"body_pose": torch.zeros(1, 63), "betas": torch.zeros(1, 10),
+                   "global_orient": torch.zeros(1, 3), "transl": torch.tensor([[0., 0., 4.]])}
+        target = self.fitter.teacher_vertices(teacher, calibration)
+        cloud = target[0, torch.linspace(0, 6889, 16).long()]
+        initial = self.fitter.fit_batch(teacher, [cloud], calibration, iterations=0, timestamps_us=[1_000_000])
+        previous = {key: initial[key][0] for key in ('shape', 'transl', 'root_pose', 'body_pose')}
+        previous.update({key: initial['continuity'][key][0] for key in
+                         ('scan_time_us', 'aligned_transl', 'teacher_root_pose', 'teacher_body_pose')})
+        previous.update(shape_fixed=True)
+        previous['transl'] = previous['transl'] + torch.tensor([.07, 0., 0.])
+        moved_teacher = dict(teacher, transl=teacher['transl'] + torch.tensor([.6, 0., .2]))
+        moved_cloud = cloud + torch.tensor([.6, 0., .2])
+        continued = self.fitter.fit_batch(moved_teacher, [moved_cloud], calibration, previous=previous,
+                                         iterations=0, timestamps_us=[1_100_000])
+        self.assertTrue(continued['continuity']['previous_boundary_connected'])
+        self.assertTrue(torch.allclose(continued['transl'][0] - previous['transl'],
+                                       torch.tensor([.6, 0., .2]), atol=1e-5))
+        disconnected = self.fitter.fit_batch(moved_teacher, [moved_cloud], calibration, previous=previous,
+                                            iterations=0, timestamps_us=[1_400_000])
+        self.assertFalse(disconnected['continuity']['previous_boundary_connected'])
+        self.assertTrue(torch.allclose(disconnected['transl'][0],
+                                       disconnected['continuity']['mesh_median_aligned_transl'][0], atol=1e-6))
 
 
 if __name__ == "__main__":

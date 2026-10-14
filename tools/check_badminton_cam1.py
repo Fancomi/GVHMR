@@ -1,8 +1,8 @@
-"""CPU-only Cam1 RGB keypoint consistency check on sequence-review frames.
+"""CPU-only RGB keypoint observations on paired Cam1 or Cam2 review frames.
 
 This never runs HMR2/GVHMR or optimizes the fitted body. YOLO person detections
 are associated one-to-one with the fixed fitted meshes using bbox IoU, then
-ViTPose observes the original Cam1 video after calibration-based undistortion.
+ViTPose observes the original native video after calibration-based undistortion.
 These are detector consistency measurements, not human-labelled ground truth.
 """
 from __future__ import annotations
@@ -118,8 +118,43 @@ def normalized_crop(rgb, bbox):
     return image.permute(2, 0, 1), np.array([*center, size], dtype=np.float32)
 
 
+def to_raw_brown_pixels(keypoints, camera):
+    """Map fixed-baseline rectified observations back to the original image.
+
+    This changes only pixel coordinates; timestamp/confidence remain measured
+    at the same native frame. Candidate K/d refinements should compare their
+    raw Brown projection with these fixed original-image coordinates.
+    """
+    points = np.asarray(keypoints, dtype=np.float64)
+    K = np.asarray(camera["K"], dtype=np.float64)
+    rays = np.column_stack([points[:, :2], np.ones(len(points))]) @ np.linalg.inv(K).T
+    rays /= rays[:, 2:3]
+    x, y = rays[:, 0], rays[:, 1]
+    k1, k2, p1, p2, k3 = camera["distortion_opencv"]
+    r2 = x * x + y * y
+    radial = 1 + r2 * (k1 + r2 * (k2 + r2 * k3))
+    xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+    yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+    pixels = np.column_stack([xd, yd, np.ones(len(points))]) @ K.T
+    result = points.copy()
+    result[:, :2] = pixels[:, :2] / pixels[:, 2:3]
+    return result.tolist()
+
+
+def add_raw_pixel_observations(report):
+    camera = report["camera"]
+    for frame in report["frames"]:
+        for observed in frame.get("detector_observations", []):
+            if observed.get("coco17_keypoints") is not None:
+                observed["coco17_keypoints_raw_distorted"] = to_raw_brown_pixels(observed["coco17_keypoints"], camera)
+        for athlete in frame["athletes"]:
+            if athlete.get("all_coco17_observations") is not None:
+                athlete["all_coco17_observations_raw_distorted"] = to_raw_brown_pixels(athlete["all_coco17_observations"], camera)
+    report["raw_pixel_mapping"] = "Undistorted detector coordinates mapped with the frozen baseline K/Brown d; same native observation timestamp and confidence"
+
+
 class Cam1Check:
-    def __init__(self, calibration, threads=8, detector_imgsz=960, flip_test=False):
+    def __init__(self, calibration, threads=8, detector_imgsz=960, flip_test=False, camera_name="cam1"):
         import torch
         from ultralytics import YOLO
         from hmr4d.utils.preproc.vitpose_pytorch import build_model
@@ -128,7 +163,8 @@ class Cam1Check:
         torch.set_num_interop_threads(1)
         cv2.setNumThreads(2)
         self.calibration = calibration
-        self.camera = calibration.camera("cam1")
+        self.camera_name = camera_name
+        self.camera = calibration.camera(camera_name)
         self.detector_imgsz = detector_imgsz
         self.flip_test = flip_test
         self.confidence_threshold = .5
@@ -227,15 +263,15 @@ class Cam1Check:
     def check_frame(self, clip, frame):
         started = time.perf_counter()
         session = self.session(clip["session_id"])
-        camera_row = frame["cameras"]["cam1"]
-        native = session._camera_rows["cam1"][camera_row["record_index"]]
+        camera_row = frame["cameras"][self.camera_name]
+        native = session._camera_rows[self.camera_name][camera_row["record_index"]]
         for key in ("record_index", "media_pts_us", "common_time_us"):
             if int(camera_row[key]) != native[key]:
-                raise ValueError(f"Sequence manifest has mismatched Cam1 {key}")
+                raise ValueError(f"Sequence manifest has mismatched {self.camera_name} {key}")
         if int(camera_row["common_time_us"]) - int(frame["scan_mid_us"]) != int(camera_row["time_error_us"]):
-            raise ValueError("Sequence manifest Cam1 time error does not equal source time minus scan midpoint")
+            raise ValueError("Sequence camera time error does not equal source time minus scan midpoint")
         # Read unmodified native video, never the rendered review JPEG.
-        raw_bgr = session.read_image("cam1", camera_row["record_index"])
+        raw_bgr = session.read_image(self.camera_name, camera_row["record_index"])
         rgb = cv2.remap(raw_bgr[:, :, ::-1], self.map_x, self.map_y, cv2.INTER_LINEAR)
         width, height = self.camera["image_size"]
         prepared = []
@@ -247,13 +283,13 @@ class Cam1Check:
                 vertices = fit["vertices"].astype(np.float64)
             if vertices.shape != (6890, 3) or not np.isfinite(vertices).all():
                 raise ValueError(f"Expected finite fitted neutral SMPL mesh: {path}")
-            vertex_uv, depth = self.calibration.project(vertices, "cam1", distort=False)
+            vertex_uv, depth = self.calibration.project(vertices, self.camera_name, distort=False)
             joints = self.regressor @ vertices
-            joint_uv, joint_depth = self.calibration.project(joints, "cam1", distort=False)
+            joint_uv, joint_depth = self.calibration.project(joints, self.camera_name, distort=False)
             prepared.append({"athlete": athlete, "fit_path": str(path), "fit_sha256": sha256_file(path),
                              "bbox": clip_box(vertex_uv, depth, width, height),
-                             "joints_uv": joint_uv, "joints_depth": joint_depth,
-                             "vertices_camera": self.calibration.viewer_to_camera(vertices, "cam1")})
+                             "joints_uv": joint_uv, "joints_depth": joint_depth, "joints_viewer": joints,
+                             "vertices_camera": self.calibration.viewer_to_camera(vertices, self.camera_name)})
         visible = [index for index, value in enumerate(prepared) if value["bbox"] is not None]
         before_detection = time.perf_counter()
         detected = self.yolo.predict(rgb[:, :, ::-1].copy(), classes=[0], conf=.35,
@@ -262,7 +298,12 @@ class Cam1Check:
         confidences = detected.boxes.conf.cpu().numpy().astype(np.float32)
         detection_seconds = time.perf_counter() - before_detection
         matches, ambiguous = associate_boxes([prepared[index]["bbox"] for index in visible], boxes)
-        detection_indices = sorted({value["detection_index"] for value in matches.values()})
+        # Preserve candidate RGB observations even if one-to-one association is
+        # ambiguous. Those raw measurements remain diagnostic data; ambiguity
+        # still excludes them from the reported aggregate fit consistency.
+        candidates = {index: [j for j, box in enumerate(boxes)
+                              if bbox_iou(prepared[index]["bbox"], box) >= .1] for index in visible}
+        detection_indices = sorted({j for indices in candidates.values() for j in indices})
         before_pose = time.perf_counter()
         observations = self.pose_keypoints(rgb, boxes[detection_indices])
         pose_seconds = time.perf_counter() - before_pose
@@ -276,11 +317,17 @@ class Cam1Check:
             result = {"motion_id": athlete["motion_id"], "fit_path": item["fit_path"],
                       "fit_sha256": item["fit_sha256"], "fit_accepted": athlete.get("accepted"),
                       "fixed_fit_projected_bbox_xyxy": None if item["bbox"] is None else item["bbox"].tolist(),
+                      "fixed_smpl_coco17_viewer_m": item["joints_viewer"].tolist(),
+                      "fixed_smpl_geometry_time_us": int(frame["scan_mid_us"]),
+                      "all_coco17_fixed_fit_projection": item["joints_uv"].tolist(),
+                      "all_coco17_observations": None, "detector_index": None,
+                      "association_candidate_detection_indices": candidates.get(index, []),
+                      "eligible_mask": [False] * 17,
                       "cam2_optimization_residual_px": athlete.get("qa", {}).get("reprojection_by_camera_px", {}).get("cam2"),
                       "eligible_joint_count": 0, "in_view_joint_count": 0, "joint_metrics": [],
                       "eligible_joint_coverage_of_17": 0., "rejection_reasons": []}
             if item["bbox"] is None:
-                result.update(status="excluded", rejection_reasons=["fitted_body_outside_cam1_or_insufficient_image_extent"])
+                result.update(status="excluded", rejection_reasons=["fitted_body_outside_selected_camera_or_insufficient_image_extent"])
                 records.append(result)
                 continue
             if index not in matches:
@@ -306,6 +353,7 @@ class Cam1Check:
             body_scale = max(float(boxes[detected_index, 3] - boxes[detected_index, 1]), 1.)
             body_normalized = errors / body_scale
             result.update(independent_detection_bbox_xyxy=boxes[detected_index].tolist(),
+                          detector_index=int(detected_index), eligible_mask=eligible.tolist(),
                           independent_detection_confidence=float(confidences[detected_index]),
                           association_bbox_iou=match["bbox_iou"], association_margin=match["association_margin"],
                           crop_source="independent_cpu_YOLO_detection_after_unique_fixed_fit_bbox_association",
@@ -340,16 +388,28 @@ class Cam1Check:
         import torch
         if torch.cuda.is_initialized():
             raise RuntimeError("CPU independent keypoint check unexpectedly created a CUDA context")
-        return {"clip_id": clip["id"], "session_id": clip["session_id"], "scan_mid_us": frame["scan_mid_us"],
+        record = {"clip_id": clip["id"], "session_id": clip["session_id"], "scan_mid_us": frame["scan_mid_us"],
                 "lidar_index": frame["lidar_index"], "offset_s": frame.get("offset_s"),
-                "raw_cam1_video": str(session.video_paths["cam1"]), "cam1_native_source": native,
+                "camera_name": self.camera_name, "raw_camera_video": str(session.video_paths[self.camera_name]),
+                "camera_native_source": native, "observation_common_time_us": native["common_time_us"],
+                "fixed_geometry_common_time_us": int(frame["scan_mid_us"]), "geometry_interpolated": False,
                 "paired_cameras": frame["cameras"], "image_source": "original_native_video_not_review_overlay",
                 "native_bgr_image_sha256": hashlib.sha256(raw_bgr.tobytes()).hexdigest(),
                 "undistorted_rgb_image_sha256": hashlib.sha256(rgb.tobytes()).hexdigest(),
-                "image_space": "undistorted_Cam1_pixels_K_preserved", "image_original_distortion": self.camera["distortion_opencv"],
+                "image_space": f"undistorted_{self.camera_name}_pixels_K_preserved", "image_original_distortion": self.camera["distortion_opencv"],
                 "image_check_distortion": [0.] * 5, "athletes": records,
+                "detector_boxes_xyxy": boxes.tolist(), "detector_confidences": confidences.tolist(),
+                "detector_observations": [{"detector_index": j, "bbox_xyxy": boxes[j].tolist(),
+                    "detection_confidence": float(confidences[j]),
+                    "coco17_keypoints": observations[j].tolist() if j in observations else None,
+                    "pose_inferred": j in observations,
+                    "pose_selection": "fixed_mesh_bbox_iou_ge_0.1_candidate" if j in observations else "outside_fitted_person_candidates"}
+                    for j in range(len(boxes))],
                 "timing_seconds": {"detector": detection_seconds, "pose": pose_seconds,
                                    "total": time.perf_counter() - started}, "cuda_context_initialized": False}
+        if self.camera_name == "cam1":
+            record.update(raw_cam1_video=record["raw_camera_video"], cam1_native_source=native)
+        return record
 
 
 def smoke_manifest(output):
@@ -388,22 +448,24 @@ def summarize(report):
 
 
 def write_reports(path, report):
+    add_raw_pixel_observations(report)
     report["summary"] = summarize(report)
     report["per_clip"] = {clip_id: summarize({"frames": [frame for frame in report["frames"] if frame["clip_id"] == clip_id]})
                           for clip_id in sorted({frame["clip_id"] for frame in report["frames"]})}
     write_json(path, report)
     summary = report["summary"]
     error = summary["pixel_error"]
+    camera_label = report.get("camera_name", "cam1").capitalize()
     format_number = lambda value: "无有效测量" if value is None else f"{value:.3f}"
-    text = f"""# Cam1 原始 RGB 关键点一致性检查
+    text = f"""# {camera_label} 原始 RGB 关键点一致性检查
 
 检查 {summary['checked_clips']} 个片段、{summary['checked_frames']} 个真实视频帧；{summary['measured_athlete_frames']}/{summary['athlete_frame_candidates']} 个人物帧可量化，排除 {summary['excluded_athlete_frames']} 个人物帧。
 
-Cam1 像素误差 mean/median/P90：{format_number(error['mean'])}/{format_number(error['median'])}/{format_number(error['p90'])} px；合格关节 {summary['eligible_joints_in_measured_frames']} 个，占全部候选17关节的 {summary['coverage_of_candidate_17_joints']:.1%}。
+{camera_label} 像素误差 mean/median/P90：{format_number(error['mean'])}/{format_number(error['median'])}/{format_number(error['p90'])} px；合格关节 {summary['eligible_joints_in_measured_frames']} 个，占全部候选17关节的 {summary['coverage_of_candidate_17_joints']:.1%}。
 
-使用原始 Cam1 视频按记录的 native index/PTS 解码，再按冻结 K/d 去畸变。CPU YOLO 检测框与固定 SMPL 投影框唯一关联，CPU ViTPose 观测关键点；SMPL COCO17 mesh regressor 以同一 K、distort=False 投影。低置信度、图像截断、其他拟合人物遮挡及身份关联歧义均记录排除原因。没有将 Cam1 观测回馈拟合。
+使用原始 {camera_label} 视频按记录的 native index/PTS 解码，再按冻结 K/d 去畸变。CPU YOLO 检测框与固定 SMPL 投影框唯一关联，CPU ViTPose 观测关键点；SMPL COCO17 mesh regressor 以同一 K、distort=False 投影。低置信度、图像截断、其他拟合人物遮挡及身份关联歧义均记录排除原因。没有将新 RGB 观测回馈拟合。
 
-这些误差是对独立 Cam1 RGB 检测器的一致性，不是人工人体 GT 精度或严格无偏验证。关联和遮挡筛选使用既有拟合体，标定可能已利用其他 Cam1 RGB mask；自遮挡、网线和其他未建模遮挡未认证。原生时钟曝光精度与逐点扫描补偿未验证。Cam2 现有关键点误差是在去畸变像素空间参与优化后的残差，不是 held-out 验证；两相机焦距不同，另存焦距、图像对角线和独立检测框高度归一化误差。
+这些误差是对 {camera_label} RGB 检测器的一致性，不是人工人体 GT 精度或严格无偏验证。关联和遮挡筛选使用既有拟合体，标定可能已利用其他 Cam1 RGB mask；自遮挡、网线和其他未建模遮挡未认证。原生时钟曝光精度与逐点扫描补偿未验证。Cam2 现有关键点误差是在去畸变像素空间参与优化后的残差，新增 Cam2 RGB 检测仅供轨迹和时间诊断，也不是 held-out 验证。两相机焦距不同，另存焦距、图像对角线和独立检测框高度归一化误差。
 
 所有模型在 CPU 上执行；CUDA context initialized=false。详情、逐关节覆盖、源时间和模型 SHA256 见 [{path.name}]({path.name})。
 """
@@ -473,6 +535,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", type=Path, default=PROJECT_ROOT / "outputs/badminton_corner_fix_v1")
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--clip", action="append", default=[], help="Review clip ID; repeat to select multiple clips")
+    sampling = parser.add_mutually_exclusive_group()
+    sampling.add_argument("--stride", type=int, help="Observe every Nth original LiDAR scan in each selected clip")
+    sampling.add_argument("--all-frames", action="store_true", help="Observe every original LiDAR scan")
+    parser.add_argument("--camera", choices=("cam1", "cam2"), default="cam1")
+    parser.add_argument("--report-path", type=Path, help="JSON report path inside output-root; companion Markdown is written")
     parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--detector-imgsz", type=int, default=960)
@@ -483,6 +551,8 @@ def main():
     output = args.output_root.resolve()
     if not output.is_relative_to(PROJECT_ROOT / "outputs") or args.threads < 1:
         raise ValueError("Check output must stay in project outputs and CPU threads must be positive")
+    if args.stride is not None and args.stride < 1:
+        raise ValueError("--stride must be a positive integer")
     if args.benchmark_smoke:
         manifest = smoke_manifest(output)
         manifest_path = None
@@ -498,26 +568,50 @@ def main():
     calibration = CalibrationSnapshot.load(manifest["calibration_snapshot"])
     if manifest["calibration_digest"] != calibration.data["snapshot_digest"]:
         raise ValueError("Sequence manifest and frozen calibration digest differ")
-    started = time.perf_counter()
-    checker = Cam1Check(calibration, args.threads, args.detector_imgsz, args.flip_test)
-    loading_seconds = time.perf_counter() - started
+    unknown_clips = set(args.clip) - {clip["id"] for clip in manifest["clips"]}
+    if unknown_clips:
+        raise ValueError(f"Unknown review clip IDs: {sorted(unknown_clips)}")
+    selected_clips = [clip for clip in manifest["clips"] if not args.clip or clip["id"] in args.clip]
     selected = []
-    for clip in manifest["clips"]:
-        indices = sorted({0, len(clip["frames"]) // 2, len(clip["frames"]) - 1})
+    for clip in selected_clips:
+        if args.stride is not None or args.all_frames:
+            indices = list(range(0, len(clip["frames"]), args.stride or 1))
+        else:
+            indices = sorted({0, len(clip["frames"]) // 2, len(clip["frames"]) - 1})
         for index in indices:
             selected.append(({**clip, "output_root": manifest["output_root"]}, clip["frames"][index]))
-    destination = output / "sequence_review" / ("cam1_check_benchmark.json" if args.benchmark_smoke else "cam1_check.json")
-    report = {"schema": "badminton-cam1-independent-rgb-consistency-v1",
+    custom_selection = bool(args.clip or args.stride is not None or args.all_frames or args.camera != "cam1")
+    if args.report_path is not None:
+        destination = args.report_path.resolve()
+    elif custom_selection:
+        tag = "_".join(args.clip) if args.clip else "all_clips"
+        cadence = f"stride{args.stride}" if args.stride else ("all_frames" if args.all_frames else "anchors")
+        destination = output / "calibration_refinement" / f"rgb_keypoints_{args.camera}_{tag}_{cadence}.json"
+    else:
+        destination = output / "sequence_review" / ("cam1_check_benchmark.json" if args.benchmark_smoke else "cam1_check.json")
+    destination = destination.resolve()
+    if not destination.is_relative_to(output) or destination.suffix != ".json":
+        raise ValueError("--report-path must be a JSON report inside --output-root")
+    protected = output / "sequence_review/cam1_check.json"
+    if custom_selection and destination == protected.resolve():
+        raise ValueError("Custom camera/clip sampling cannot overwrite the original Cam1 check")
+    started = time.perf_counter()
+    checker = Cam1Check(calibration, args.threads, args.detector_imgsz, args.flip_test, camera_name=args.camera)
+    loading_seconds = time.perf_counter() - started
+    report = {"schema": ("badminton-rgb-keypoint-observations-v2" if custom_selection
+                         else "badminton-cam1-independent-rgb-consistency-v1"),
               "created_utc": datetime.now(timezone.utc).isoformat(), "manifest": str(manifest_path) if manifest_path else None,
               "checker_sha256": sha256_file(__file__), "completed": False,
               "manifest_sha256": sha256_file(manifest_path) if manifest_path else None,
               "selection_sha256_at_start": selection_sha256,
               "calibration_snapshot": manifest["calibration_snapshot"], "calibration_digest": manifest["calibration_digest"],
-              "camera": checker.camera, "models": checker.models, "device": "cpu", "cpu_threads": args.threads,
+              "camera_name": args.camera, "camera": checker.camera, "models": checker.models, "device": "cpu", "cpu_threads": args.threads,
               "detector_imgsz": args.detector_imgsz, "flip_test": args.flip_test,
               "confidence_threshold": .5, "minimum_eligible_joints": 6,
-              "projection_space": "undistorted_Cam1_K_preserved_distortion_zero",
+              "projection_space": f"undistorted_{args.camera}_K_preserved_distortion_zero",
               "not_ground_truth": True, "not_fed_back_to_fitting": True,
+              "metric_independence_role": ("Cam1 RGB not fed to body fitting; bbox association and camera calibration are not independent"
+                                           if args.camera == "cam1" else "Cam2 source view already used by body fitting; new RGB trajectory observations are diagnostic"),
               "association_selection_bias": "Unique IoU association and occlusion filter depend on fixed fitted meshes; not strictly unbiased",
               "calibration_independent_of_cam1_rgb": False,
               "unverified_visibility": ["self_occlusion", "net_wires", "unmodelled_people_or_objects"],
@@ -526,7 +620,11 @@ def main():
               "image_normalization_definition": "pixel_error/image_diagonal_pixels",
               "body_normalization_definition": "pixel_error/independent_YOLO_bbox_height_pixels",
               "original_exposure_accuracy_verified": False,
-              "selection": "start_middle_end_per_clip", "planned_frames": len(selected),
+              "requested_clips": args.clip, "stride": args.stride, "all_frames": args.all_frames,
+              "selection": (f"every_{args.stride}_native_lidar_scan_per_clip" if args.stride else
+                            "all_native_lidar_frames_per_clip" if args.all_frames else "start_middle_end_per_clip"),
+              "temporal_sampling_role": "Real camera common timestamps; any subsequent trajectory interpolation is diagnostic, not measured exposure truth",
+              "planned_frames": len(selected),
               "model_loading_and_hash_seconds": loading_seconds, "frames": []}
     for position, (clip, frame) in enumerate(selected):
         record = checker.check_frame(clip, frame)
@@ -539,12 +637,12 @@ def main():
                           "mean_px": report["summary"]["pixel_error"]["mean"]}, ensure_ascii=False), flush=True)
         # Evaluate a real frame before changing coverage. Do not spend more than
         # the specified total budget merely to keep the denser optional audit.
-        if position == 0 and not args.benchmark_smoke:
+        if position == 0 and not args.benchmark_smoke and not (args.stride or args.all_frames):
             estimate = loading_seconds + record["timing_seconds"]["total"] * len(selected)
             report["estimated_all_selected_seconds_after_first_frame"] = estimate
             if estimate > args.max_total_seconds:
                 middle = []
-                for candidate in manifest["clips"]:
+                for candidate in selected_clips:
                     middle.append(({**candidate, "output_root": manifest["output_root"]},
                                    candidate["frames"][len(candidate["frames"]) // 2]))
                 already = {(clip["id"], frame["lidar_index"])}

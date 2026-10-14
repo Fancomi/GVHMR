@@ -17,7 +17,7 @@ import smplx
 
 from .calibration import CalibrationSnapshot
 from .pipeline import write_json
-from .review import EDGES
+from .review import EDGES,fill_triangle_union
 from .sessions import SessionIndex
 
 
@@ -147,7 +147,9 @@ def _draw_overlay(image, frame, calibration, camera, faces, colors):
         uv,depth = calibration.project(vertices,camera,distort=True)
         valid = (depth[faces]>0).all(1)&np.isfinite(uv[faces]).all((1,2))
         triangles = np.rint(uv[faces[valid]]).astype(np.int32)
-        cv2.fillPoly(layer,list(triangles),color)
+        # Front/back faces overlap; fillPoly's even/odd multi-contour rule
+        # would cut holes in an otherwise solid projected mesh.
+        fill_triangle_union(layer,triangles,color)
         geometries.append((uv,depth,joints,cloud,color))
     image = cv2.addWeighted(layer,.23,image,.77,0)
     for uv,depth,joints,cloud,color in geometries:

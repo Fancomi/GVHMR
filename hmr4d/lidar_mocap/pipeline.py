@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict,replace
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +28,27 @@ def _hash_file(path):
         for block in iter(lambda: handle.read(1<<20), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def prefer_projection_candidate(baseline, candidate, point_counts):
+    """Select a batch retry only when observed fit quality improves together.
+
+    One shared shape and the full batch are retained. This does not stitch
+    different poses frame by frame or interpret a motion proxy as joint truth.
+    """
+    if (len(baseline['qa'])!=len(point_counts) or len(candidate['qa'])!=len(point_counts)
+            or not np.array_equal(np.asarray(baseline['shape']),np.asarray(candidate['shape']))):
+        return False
+    keys=('final_p2surface_mean_m','final_p2surface_p90_m','reprojection_mean_px')
+    before=np.array([[q.get(key,np.nan) for key in keys] for q in baseline['qa']],float)
+    after=np.array([[q.get(key,np.nan) for key in keys] for q in candidate['qa']],float)
+    if before.shape!=after.shape or not np.isfinite(before).all() or not np.isfinite(after).all():
+        return False
+    good_before=[not acceptance_reasons(q,n) for q,n in zip(baseline['qa'],point_counts)]
+    good_after=[not acceptance_reasons(q,n) for q,n in zip(candidate['qa'],point_counts)]
+    delta=after.mean(0)-before.mean(0)
+    return bool(all(not before or after for before,after in zip(good_before,good_after))
+                and delta[0]<=.001 and delta[1]<=.002 and delta[2]<=-.5)
 
 
 class BadmintonPipeline:
@@ -239,14 +260,42 @@ class BadmintonPipeline:
             entry,track,sampled = tracks[k]
             track_name = f"{session.session_id}:{output.name}:{entry['track_id']}:{entry['segment_id']}"
             previous = None
-            for start in range(0,len(frames),self.settings['fit_batch_size']):
-                batch = frames[start:start+self.settings['fit_batch_size']]
+            start = 0
+            while start<len(frames):
+                connected = (previous is not None and previous.get('scan_time_us') is not None
+                             and 0<frames[start][1]['scan_mid_us']-previous['scan_time_us']
+                             <=round(fitter.config.continuity_max_gap_s*1e6))
+                # A short observed prefix establishes one shape and correction;
+                # the expensive bulk of the track retains the configured batch.
+                size = self.settings['fit_batch_size'] if connected else min(8,self.settings['fit_batch_size'])
+                batch = frames[start:start+size]
                 indices = [f[0] for f in batch]
                 params = {name:value[indices] for name,value in sampled['smpl_params_incam'].items()}
                 clouds = [f[2]['points'] for f in batch]
                 result = fitter.fit_batch(params,clouds,self.calibration,camera=self.settings['camera'],
                                           keypoints=sampled['kp2d'][indices],previous=previous,
-                                          iterations=self.settings['iterations'])
+                                          iterations=self.settings['iterations'],
+                                          timestamps_us=[f[1]['scan_mid_us'] for f in batch])
+                chosen_weight=fitter.config.reprojection_weight
+                errors=[q.get('reprojection_mean_px') for q in result['qa']]
+                retry=(previous is not None and previous.get('shape_fixed',False)
+                       and any(e is not None and np.isfinite(e) and e>8 for e in errors))
+                if retry:
+                    base_config=fitter.config
+                    try:
+                        fitter.config=replace(base_config,reprojection_weight=3.)
+                        candidate=fitter.fit_batch(params,clouds,self.calibration,camera=self.settings['camera'],
+                                                   keypoints=sampled['kp2d'][indices],previous=previous,
+                                                   iterations=self.settings['iterations'],
+                                                   timestamps_us=[f[1]['scan_mid_us'] for f in batch])
+                    finally:
+                        fitter.config=base_config
+                    if prefer_projection_candidate(result,candidate,[len(c) for c in clouds]):
+                        result=candidate;chosen_weight=3.
+                    print(f'[projection retry] {track_name}: selected weight {chosen_weight}',flush=True)
+                for qa in result['qa']:
+                    qa['projection_retry_evaluated']=retry
+                    qa['reprojection_weight_used']=chosen_weight
                 if previous is None and len(batch)>=4 and sum(not acceptance_reasons(q,len(clouds[j])) for j,q in enumerate(result['qa'])) >= 4:
                     previous = {'shape':result['shape'][0],'shape_fixed':True}
                 for j,(_,pair,segment) in enumerate(batch):
@@ -281,7 +330,18 @@ class BadmintonPipeline:
                     metadata['fit_path'] = str(frame_path)
                     if not reasons:
                         accepted_samples.append(sample)
+                        # Carry the latest accepted correction across batches.
+                        # An occluded/rejected frame must not become the next
+                        # motion reference. The fitter disconnects long gaps.
+                        continuity = result['continuity']
+                        previous.update(scan_time_us=pair['scan_mid_us'],
+                                        transl=result['transl'][j],root_pose=result['root_pose'][j],
+                                        body_pose=result['body_pose'][j],
+                                        aligned_transl=continuity['aligned_transl'][j],
+                                        teacher_root_pose=continuity['teacher_root_pose'][j],
+                                        teacher_body_pose=continuity['teacher_body_pose'][j])
                 print(f'[fit] {track_name} {start+len(batch)}/{len(frames)}; accepted={len(accepted_samples)}',flush=True)
+                start += len(batch)
         export = export_joblib(accepted_samples,output/'ptv3.pth')
         (output/'quality.jsonl').write_text(''.join(json.dumps(r,ensure_ascii=False,allow_nan=False)+'\n' for r in reviews),encoding='utf-8')
         report = {'session_id':session.session_id,'window':output.name,'scan_count':len(pairs),
@@ -289,6 +349,9 @@ class BadmintonPipeline:
                   'fit_rejection_reasons':dict(Counter(r for q in reviews for r in q['rejection_reasons'])),
                   'segmentation_exclusions':exclusions,'export':export,
                   'fit_algorithm_digest':self._fit_digest(),'fitting_config':asdict(fitter.config),
+                  'projection_retry_policy':{'trigger_max_px':8,'weight':3.,'shape_fixed_required':True,
+                                             'batch_mean_surface_tolerance_m':.001,'batch_mean_p90_tolerance_m':.002,
+                                             'minimum_mean_reprojection_improvement_px':.5,'accepted_count_must_not_decrease':True},
                   'settings':self.settings,
                   'teacher_provenance_hash':teacher_manifest['provenance_hash'],
                   'source_lidar_sha256':{p['lidar_path']:_hash_file(p['lidar_path']) for p in pairs}}

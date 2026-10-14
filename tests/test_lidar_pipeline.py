@@ -9,11 +9,21 @@ import joblib
 import numpy as np
 from hmr4d.lidar_mocap.export import acceptance_reasons, export_joblib
 from hmr4d.lidar_mocap.segmentation import farthest_sample
-from hmr4d.lidar_mocap.pipeline import BadmintonPipeline,write_json
+from hmr4d.lidar_mocap.pipeline import BadmintonPipeline,write_json,prefer_projection_candidate
 from hmr4d.lidar_mocap.fitting import FittingConfig
 
 
 class TrainingPairTests(unittest.TestCase):
+    def test_projection_retry_preserves_shape_and_surface_quality(self):
+        before={'shape':np.zeros((2,10)), 'qa':[self.good_qa(),self.good_qa()]}
+        better={'shape':before['shape'].copy(),'qa':[{**self.good_qa(),'reprojection_mean_px':3} for _ in range(2)]}
+        self.assertTrue(prefer_projection_candidate(before,better,[200,200]))
+        for key,value in [('final_p2surface_mean_m',.03),('final_p2surface_p90_m',.05),('reprojection_mean_px',4.8),('floor_penetration_m',.2)]:
+            worse={'shape':before['shape'].copy(),'qa':[{**q,key:value} for q in better['qa']]}
+            self.assertFalse(prefer_projection_candidate(before,worse,[200,200]))
+        better['shape'][0,0]=1
+        self.assertFalse(prefer_projection_candidate(before,better,[200,200]))
+
     def test_export_does_not_readmit_unestablished_track_shape(self):
         with tempfile.TemporaryDirectory() as directory:
             pipeline = object.__new__(BadmintonPipeline)

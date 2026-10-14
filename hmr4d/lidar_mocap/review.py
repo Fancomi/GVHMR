@@ -10,6 +10,18 @@ EDGES = [(0,1),(0,2),(0,3),(1,4),(2,5),(3,6),(4,7),(5,8),(6,9),(7,10),
          (18,20),(19,21),(20,22),(21,23)]
 
 
+def fill_triangle_union(image, triangles, color):
+    """Rasterize projected mesh faces as a union, including overlapping faces.
+
+    OpenCV fillPoly with multiple contours uses the even/odd fill rule and can
+    erase overlapping front/back faces. Individual convex fills preserve the
+    solid silhouette and work for both binary masks and RGB review overlays.
+    """
+    for triangle in np.asarray(triangles, dtype=np.int32):
+        cv2.fillConvexPoly(image, triangle, color)
+    return image
+
+
 def make_review(session, calibration, window_dir, max_frames=3):
     window_dir = Path(window_dir)
     rows = [json.loads(line) for line in (window_dir/'quality.jsonl').read_text(encoding='utf-8').splitlines()]
