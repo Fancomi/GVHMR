@@ -28,6 +28,18 @@ installation has not been executed on this Windows machine.
 
 Run from the repository root in the configured local uv environment:
 
+The complete default Windows job can be run with one command. It prepares a
+missing snapshot, runs all sessions, checks complete window coverage, exports
+the three datasets, and verifies sampled original returns/rebuilt SMPL meshes:
+
+```powershell
+uv run --no-sync python tools/run_badminton_pipeline.py
+```
+
+`outputs/badminton/job_status.json` is `complete` only after export and
+verification succeed. It records errors and retries failed processing up to
+three times with validated caches. The stage commands remain available below.
+
 ```powershell
 uv run --no-sync python tools/pair_badminton.py prepare
 # Real short clip, before a full run:
