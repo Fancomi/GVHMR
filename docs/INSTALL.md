@@ -139,6 +139,40 @@ trainer's loader. Unit checks: `uv run --no-sync python -m unittest discover -s 
 
 ## Local Windows environment with uv
 
+For continuous visual review and measured efficiency/quality:
+
+```powershell
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_corner_fix_v1 --clips 10 --seconds 5
+uv run --no-sync python tools/check_badminton_cam1.py --manifest outputs/badminton_corner_fix_v1/sequence_review/manifest.json
+uv run --no-sync python tools/report_badminton_quality.py --output-dir outputs/badminton_corner_fix_v1/sequence_review
+uv run --no-sync python tools/render_badminton_reviews.py --html-only
+```
+
+Open `outputs/badminton_corner_fix_v1/sequence_review/index.html` in Chrome/Edge.
+Keep its whole folder for portable viewing. It lazily loads ten five-second
+clips with full 6890-vertex SMPL surfaces, actual LiDAR returns and two original
+camera overlays. Playback follows original ~10Hz scans, with real native camera
+PTS; missing fits are displayed, without interpolating bodies or inventing
+returns. Clips cover all available sessions, use evenly spaced positions within
+completed windows, and retain rejected fits for review. They are not selected
+by fitting error. The stable selection digest is independent of rendering status.
+
+The Cam1 checker uses CPU YOLO/ViTPose on each clip's first/middle/last original
+frame, outside the Cam2 fit, and records visibility/confidence exclusions and
+source/model hashes. It measures consistency with a 2D detector, not human GT;
+person association/occlusion filtering can depend on the fitted mesh, and camera
+calibration may use other Cam1 masks. Both reported keypoint residuals use their
+own undistorted pixel coordinates. Different focal lengths prevent interpreting
+raw Cam1/Cam2 pixel numbers as directly comparable physical accuracy.
+
+The quality report uses the full job's captured completion watermark, excludes
+smoke/currently incomplete windows, and separates end-to-end wall time from
+the older same-machine fitting-only benchmarks. Surface P90 is explicitly the
+average of per-person/scan P90 values, not a pooled recording-wide percentile.
+The Node/Chrome for Testing checker `tools/check_badminton_reviews.mjs` validates
+all clips' first/middle/last images, WebGL geometry and progressing playback in
+an isolated browser, reusing the LiDAR project's public browser identity helper.
+
 From the repository root, run:
 
 ```powershell

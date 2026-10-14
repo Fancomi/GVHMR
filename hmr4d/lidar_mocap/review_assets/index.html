@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>羽毛球 · 连续 SMPL / LiDAR 检查</title><link rel="stylesheet" href="review.css"></head>
+<body><header><div class="eyebrow">真实录制 · CORNER-FIX-V1</div><h1>连续 SMPL / LiDAR 检查</h1>
+<p id="subtitle"></p></header>
+<section class="report"><div id="headline"></div><details><summary>效率、质量与验证边界</summary><div id="report"></div></details></section>
+<main><nav id="clips"></nav><div class="workspace"><div class="transport"><button id="play">播放</button><button id="prev">← 帧</button><button id="next">帧 →</button>
+<select id="speed"><option value=".25">0.25×</option><option value=".5">0.5×</option><option value="1" selected>1×</option></select><label><input type="checkbox" id="loop" checked>循环</label><span id="clock"></span></div>
+<input type="range" id="timeline" min="0" max="49" value="0"><div id="status" role="status"></div>
+<section class="views"><div class="three"><h2>同一份 SMPL 与实际点云</h2><canvas id="scene"></canvas><div class="controls">
+<label><input id="mesh" type="checkbox" checked>SMPL 表面</label><label><input id="wire" type="checkbox">网格线</label>
+<label><input id="points" type="checkbox" checked>人体实测点</label><label><input id="background" type="checkbox">完整扫描</label>
+<label>表面透明度<input id="opacity" type="range" min=".1" max="1" step=".05" value=".55"></label><button id="reset">重置视角</button></div>
+<p class="muted">拖动旋转，滚轮缩放。黄色为真实 LiDAR 返回点；彩色为拟合网格。视角中心在片段内固定。</p></div>
+<div class="cameras"><figure><figcaption>Cam1 · 原图与 Brown 投影</figcaption><img id="cam1" alt="Cam1 实际原生帧与 SMPL 叠加"></figure>
+<figure><figcaption>Cam2 · 原图与 Brown 投影</figcaption><img id="cam2" alt="Cam2 实际原生帧与 SMPL 叠加"></figure></div></section>
+<div id="metrics"></div><details><summary>本帧实际时戳与拟合记录</summary><pre id="provenance"></pre></details></div></main>
+<footer>播放使用原始 LiDAR 约 10 Hz 扫描时戳，双机分别匹配各自真实帧；不生成插值网格或假点云。缺失拟合明确保留。
+可见表面距离与 Cam2 拟合残差不能证明遮挡关节真值。曝光、逐点扫描运动补偿及跨窗口人物身份未独立验证。</footer>
+<script>window.REVIEW_MANIFEST=__MANIFEST__;</script><script src="review.js"></script></body></html>
