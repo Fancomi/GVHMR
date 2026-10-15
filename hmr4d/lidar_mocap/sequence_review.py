@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 import smplx
 
+from hmr4d import PROJ_ROOT
+
 from .calibration import CalibrationSnapshot
 from .pipeline import write_json
 from .review import EDGES,fill_triangle_union
@@ -251,7 +253,7 @@ def write_page(review_dir,manifest,faces):
 
 def render_sequences(output_root,review_dir,*,count=10,seconds=5,image_width=1280,html_only=False,required_cases=()):
     output_root,review_dir = Path(output_root).resolve(),Path(review_dir).resolve()
-    workspace = Path(__file__).resolve().parents[2]
+    workspace = PROJ_ROOT
     if not review_dir.is_relative_to(workspace):
         raise ValueError('Generated review must stay in the GVHMR workspace')
     cv2.setNumThreads(1)
@@ -283,3 +285,59 @@ def render_sequences(output_root,review_dir,*,count=10,seconds=5,image_width=128
         write_json(review_dir/'manifest.json',manifest)
     write_page(review_dir,manifest,faces)
     return {'path':str(review_dir/'index.html'),'clips':len(manifest['clips']),'state':manifest['state']}
+
+
+def verify_native_review(output, review, report_path=None):
+    """Check stored preview geometry against native scans and neutral SMPL on CPU."""
+    output, review = Path(output).resolve(), Path(review).resolve()
+    import torch
+    from hmr4d.utils.body_model.contracts import forward_smpl_at_pelvis
+
+    torch.set_num_threads(4)
+    calibration=CalibrationSnapshot.load(output/'calibration/calibration_snapshot.json')
+    manifest=json.loads((review/'manifest.json').read_text(encoding='utf-8'))
+    if (manifest['calibration_digest'] != calibration.data['snapshot_digest']
+            or manifest['selection_sha256'] != review_selection_digest(manifest)):
+        raise ValueError('Review selection/calibration does not match its frozen source')
+    model=smplx.create(PROJ_ROOT/'inputs/checkpoints/body_models',model_type='smpl',gender='neutral')
+    sessions={};checked=0;mesh_error=0.;source_error=0.
+    for clip in manifest['clips']:
+        sid=clip['session_id']
+        if sid not in sessions:
+            session=SessionIndex.load(Path(calibration.data['sessions_root'])/sid,calibration.frame_map_path(sid))
+            sessions[sid]=(session,session.pairs())
+        session,pairs=sessions[sid]
+        raw=(review/clip['id']/'data.js').read_text('utf-8')
+        payload=json.loads(raw[len('window.REVIEW_CLIP_READY('):-3])
+        for i in sorted({0,len(clip['frames'])//2,len(clip['frames'])-1}):
+            frame=clip['frames'][i];stored=payload['frames'][i]
+            if stored['lidar_index']!=frame['lidar_index'] or stored['scan_mid_us']!=frame['scan_mid_us']:
+                raise ValueError('Rendered source clock differs from the selection')
+            cloud=session.read_cloud(pairs[frame['lidar_index']])
+            unpack=lambda value:np.frombuffer(base64.b64decode(value),dtype='<f4').reshape(-1,3)
+            np.testing.assert_array_equal(unpack(stored['cloud']),cloud)
+            by_id={a['motion_id']:a for a in stored['athletes']}
+            for athlete in frame['athletes']:
+                path=Path(athlete['fit_path']).resolve()
+                if not path.is_relative_to(output/'sessions'):
+                    raise ValueError('Final review contains a fit from another output root')
+                with np.load(path) as fit:
+                    source=cloud[fit['source_indices']]
+                    np.testing.assert_array_equal(source,fit['source_cloud'])
+                    source_error=max(source_error,float(np.abs(source-fit['source_cloud']).max()))
+                    geometry=by_id[athlete['motion_id']]
+                    for key in ('vertices','joints'):
+                        np.testing.assert_array_equal(unpack(geometry[key]),fit[key])
+                    np.testing.assert_array_equal(unpack(geometry['cloud']),source)
+                    tensor=lambda key:torch.from_numpy(fit[key].copy())[None]
+                    with torch.no_grad():
+                        vertices,joints=forward_smpl_at_pelvis(model,tensor('root_pose'),tensor('body_pose'),tensor('shape'),tensor('transl'))
+                    error=max(float((vertices[0]-torch.from_numpy(fit['vertices'])).abs().max()),
+                              float((joints[0]-torch.from_numpy(fit['joints'])).abs().max()))
+                    if error>3e-6:raise ValueError('Stored review mesh is not its native neutral SMPL')
+                    mesh_error=max(mesh_error,error);checked+=1
+    result={'passed':True,'clips':len(manifest['clips']),'native_person_frames_checked':checked,
+            'source_cloud_max_error_m':source_error,'native_smpl_max_error_m':mesh_error,
+            'all_fit_paths_inside_current_output':True,'geometry_interpolated':False}
+    write_json(report_path or review/'geometry_verification.json',result)
+    return result

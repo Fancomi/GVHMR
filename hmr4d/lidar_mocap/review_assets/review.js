@@ -142,19 +142,5 @@ if(quality){const speed=quality.efficiency,passed=quality.quality.passed,stages=
  </table><p class="muted">两机焦距不同，不直接横比像素数。距离是可见表面拟合残差，不是 3D 关节误差或遮挡部位真值。</p>
  <p><a href="quality_efficiency.md">完整效率／质量报告</a> · <a href="cam1_check.md">Cam1 逐片段检查</a></p>`;$('report').appendChild(stats);
 }
-if(!manifest.refinement_comparison)for(const [title,data] of [['效率与质量报告',manifest.quality_report],['Cam1 独立关键帧检查',manifest.cam1_check]]){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=title;detail.appendChild(summary);const pre=document.createElement('pre');pre.textContent=data?JSON.stringify(data,null,2):'尚未量化；查看报告文件或后续更新。';detail.appendChild(pre);$('report').appendChild(detail);}
-if(manifest.refinement_comparison){
- const comparison=manifest.refinement_comparison,before=comparison.before,after=comparison.after,compare=document.createElement('div');
- const rows=[['可见点到表面 mean (mm)',before.mean_surface_m*1000,after.mean_surface_m*1000],
-  ['平均每帧表面 P90 (mm)',before.mean_of_frame_p90_surface_m*1000,after.mean_of_frame_p90_surface_m*1000],
-  ['Cam1 固定 RGB 观察 mean (px)',before.rgb_fixed_observation_check.cam1.joint_pixel_error.mean,after.rgb_fixed_observation_check.cam1.joint_pixel_error.mean],
-  ['Cam2 拟合残差 mean (px)',before.mean_cam2_fitting_reprojection_px,after.mean_cam2_fitting_reprojection_px],
-  ['骨盆/点云位移差 P90 (cm)',before.pelvis_vs_cloud_step_residual_m.p90*100,after.pelvis_vs_cloud_step_residual_m.p90*100]];
- compare.innerHTML='<p>对照仅修改问题轨迹；其余运动员保留原拟合。两段均使用原始点云、原始相机帧和相同标定。点云中位位置是连续性参照，RGB 检测器是图像一致性参照；均不是骨盆或关节真值。</p><table><tr><th>问题轨迹指标</th><th>修改前</th><th>修改后</th></tr>'+rows.map(r=>`<tr><td>${r[0]}</td><td>${fmt(r[1])}</td><td>${fmt(r[2])}</td></tr>`).join('')+'</table>';
- $('report').prepend(compare);const details=document.createElement('details');details.innerHTML='<summary>同一问题轨迹的修改前后完整指标</summary>';const pre=document.createElement('pre');pre.textContent=JSON.stringify(comparison,null,2);details.appendChild(pre);$('report').appendChild(details);
-}
-if(manifest.finalized_reviews){const links=document.createElement('p');
- for(const [key,title] of [['mask_alignment','双机人体 mask 与球场线投影'],['case_diagnosis','指定跳动位置 · 全量重跑诊断'],['cam1_case_check','Cam1 问题片段逐帧检查'],['cam2_case_check','Cam2 问题片段逐帧检查']]){
-  const a=document.createElement('a');a.href=manifest.finalized_reviews[key];a.textContent=title;links.append(a,' · ');
- }$('report').prepend(links);}
+for(const [title,data] of [['效率与质量报告',manifest.quality_report],['Cam1 独立关键帧检查',manifest.cam1_check]]){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=title;detail.appendChild(summary);const pre=document.createElement('pre');pre.textContent=data?JSON.stringify(data,null,2):'尚未量化；查看报告文件或后续更新。';detail.appendChild(pre);$('report').appendChild(detail);}
 loadClip(Math.max(0,Math.min(manifest.clips.length-1,Number(new URLSearchParams(location.search).get('clip'))||0)));

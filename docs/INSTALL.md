@@ -26,169 +26,122 @@ installation has not been executed on this Windows machine.
 
 ## Calibrated badminton training pairs
 
-Run from the repository root in the configured local uv environment:
-
-The complete default Windows job can be run with one command. It prepares a
-missing snapshot, runs all sessions, checks complete window coverage, exports
-the three datasets, and verifies sampled original returns/rebuilt SMPL meshes:
+The canonical entry prepares inputs, processes all sessions, checks window
+coverage, exports three datasets, and verifies original returns/native SMPL:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1_continuity
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
 ```
 
-`outputs/badminton_corner_fix_v1_continuity/job_status.json` is `complete` only after export and
-verification succeed. It records errors and retries failed processing up to
-three times with validated caches. It checks the active adoption before resuming
-and before publishing completion; a changed adoption requires a new output root.
-The stage commands remain available below.
+Use a new output folder for a new calibration. `job_status.json` is `complete`
+only after export and verification; failed processing retries up to three times
+using validated caches. `--prepare-only` runs source/calibration/pairing checks
+without inference and records `prepared`, which does not mean fitted.
 
-```powershell
-$pairOutput = 'outputs/badminton_corner_fix_v1_continuity'
-uv run --no-sync python tools/pair_badminton.py prepare --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
-# Real short clip, before a full run:
-uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
-# All three recordings; native ~59.94fps -> every second video frame:
-uv run --no-sync python tools/pair_badminton.py run --output-root $pairOutput --preproc-precision float16 --roi-margin-px 20
-uv run --no-sync python tools/pair_badminton.py export --output-root $pairOutput
-uv run --no-sync python tools/verify_badminton_dataset.py --output-root $pairOutput
-```
-
-Input paths default to `D:/PROJECT/LIDAR/datas/badminton/sessions` and
+Default inputs are `D:/PROJECT/LIDAR/datas/badminton/sessions` and
 `D:/PROJECT/LIDAR/lidar_project`. Override them with `--sessions-root` and
-`--lidar-project-root`. Output defaults to `outputs/badminton`; source recordings
-and the LiDAR project are read only. `--session`, `--start-seconds`,
-`--duration-seconds`, `--window-seconds`, `--batch-size`, `--fit-batch-size` and
-`--iterations` control processing. The `teacher` and `fit` stages support
-separate processing. Cache identity binds original video frame rows, calibrated
-K/d, model assets, ROI, precision and source file identity. Completed fitting
-also checks algorithm/config identity and artifact/source PNG hashes.
-Changing video calibration or time maps requires a new output root; fitting
-algorithm changes rebuild the fitted labels while preserving valid teacher
-features. Output caches are resumable and never substitute for missing sources.
+`--lidar-project-root`. The only calibration inputs are the five files in the
+latter root's `config/calibration/badminton-20261012/`: `calibration.json`,
+`sources.json`, `sync-policy.json`, `bbox.json`, `roi-config.txt`. LiDAR owns
+K/d5/R/t, court geometry and their joint projection evaluation; GVHMR consumes
+these fixed inputs and fits bodies. No calibration optimizer or experimental
+worktree is a runtime dependency.
 
-Timed fitting uses actual integer scan midpoints. Each track starts with up to
-eight observations to establish shape, then uses the configured batch size.
-Only accepted fits carry the pose/translation correction across batches; gaps
-over 250 ms disconnect motion continuity. The prior follows observed cloud
-motion with the video's anatomical torso offset and relative joint rotations,
-so running and racket motion remain possible. Original XYZ is never smoothed.
-Once shape is established, a batch whose maximum Cam2 fit residual exceeds
-8 px also tries a reprojection weight of 3 (the default stays 1). The whole
-batch is selected only if mean reprojection improves by at least .5 px, mean
-surface/P90 increases stay below 1/2 mm, the fixed shape is identical, and
-every previously accepted frame still passes QA. No per-frame pose stitching
-or global increase of RGB weight is applied. The actual selected weight and
-retry decision are recorded in each frame's QA.
-The earlier `outputs/badminton_corner_fix_v1` fits and ten clips are preserved
-as the before case. The new output root uses the same adopted cameras and
-source maps; a later freeze timestamp changes its snapshot digest.
+`prepare` checks both complete cameras, exact raw-to-viewer SourceM, shared
+court/plane/bbox geometry, canonical file hashes and source identities. It
+rebuilds all timestamp maps from original scan clocks and native camera
+sidecars, checks their bytes against the published map SHAs, then freezes its
+own bundle. The accepted-source calibration SHA is original provenance; actual
+portable-file SHAs are recorded separately. SourceM is rounded: point transforms
+use its true inverse, while body orientation uses the nearest proper rotation.
+Historical v1 bundles remain independently loadable. Reusing one through
+`prepare` requires equivalent geometry, timing, original source hashes and maps;
+its bytes/digest are preserved. A changed source requires a new run.
 
-The pipeline freezes the explicitly adopted
-`.local/evidence/BADMINTON-CALIB-1012/multiframe/active-selection.json` and its
-hashed dependencies. A newer mtime or `.creating` candidate is not adoption.
-`prepare` checks source manifest binding, court reference plane, Q and complete
-camera frame maps. Subsequent runs use that frozen snapshot. To process a later
-adoption, prepare a separate output root instead of mixing calibration versions.
-The current explicitly adopted version is `corner-fix-v1`. Its ground footprint
-uses the full `Rz @ Ry @ Rx` bbox rotation and the frozen shared reference plane.
-The earlier incomplete `outputs/badminton` run is superseded and preserved for
-comparison; it must not be combined with the new calibration's training labels.
+The internal stage adapter supports bounded processing and export operations:
 
-LiDAR scans drive labels on their native ~10Hz timestamps. Every source scan
-is retained in `sessions/<sid>/pairs.jsonl`, including excluded empty/unmatched
-frames. Pairing uses the device scan midpoint and each camera's nearest native
-common-clock frame with an 8.5ms limit; frame numbers cannot be copied across
-cameras. The teacher retains ~29.97Hz true video PTS, interpolates rotations on
-SO(3), and records its separate model-frame error (up to 18ms), interpolation
-brackets and nearest real keypoint frame. There is no artificial 10Hz-to-30Hz
-frame relabeling or old 50ms shift.
+```powershell
+uv run --no-sync python tools/pair_badminton.py run --output-root outputs/badminton_smoke --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/pair_badminton.py export --output-root outputs/badminton_run
+uv run --no-sync python tools/verify_badminton_dataset.py --output-root outputs/badminton_run
+```
 
-Cam2 is the primary temporal teacher. Its frames are undistorted using adopted
-Brown coefficients and original K. All people inside the projected court ROI
-are tracked; interrupted or ambiguous identities are separated. Cam1 and Cam2
-both use their full adopted raw-LiDAR-to-camera matrices for original-image
-overlay review. Exact Q transforms actual points once into viewer coordinates;
-root orientation uses the nearest proper rotation to rounded Q.
+Its stages are `prepare`, `teacher`, `fit`, `run`, `export`. Options include
+`--session`, `--start-seconds`, `--duration-seconds`, `--window-seconds`,
+`--batch-size`, `--fit-batch-size`, `--iterations`. Full-run settings remain Cam2,
+60-second windows, teacher stride 2, batch 4, fit batch 128, 80 fitting iterations,
+float16 preprocessing and 20px ROI margin. Teacher cache identity includes original
+video rows, camera model, assets, ROI and precision; fit caches additionally bind
+algorithm/config and artifact/source PNG hashes. An algorithm change conservatively
+invalidates fits while preserving independently validated teacher features.
 
-For each athlete, the mapped SMPL-X mesh first initializes a neutral SMPL fit.
-Body, root and pelvis are then optimized against actual segmented LiDAR returns,
-video keypoints, pose/temporal priors and soft penetration of the frozen physical
-reference plane. A jump is not pulled onto the floor. Training `shape` is fitted
-in SMPL's basis and shared within an established person/window; it is not copied
-from SMPL-X. Track names include the window because physical identity across
-windows is not yet established. Camera-to-LiDAR calibration determines world
-placement; GVHMR's gravity/global trajectory does not supply the LiDAR frame.
+Every source scan remains in `sessions/<sid>/pairs.jsonl`, including exclusions.
+Labels use integer device scan midpoints and nearest native camera frames with
+an 8.5ms tolerance; ties choose the earlier frame, and missing clocks/range do
+not reuse endpoints. The ~29.97Hz teacher uses true video PTS and SO(3)
+interpolation with recorded brackets/model-frame error (up to 18ms). It never
+relabels rendered-video frame numbers as sensor timestamps.
 
-The quality gate requires at least 80 human returns, finite parameters, mean
-point-to-triangle distance <=65mm, P90 <=120mm, maximum floor penetration <=120mm,
-at least 6 valid primary keypoints, and primary reprojection error <=50px.
-Rejected fits remain reviewable but do not enter training. Missing returns do
-not attract invisible body surfaces: the LiDAR loss is one directional.
-The final surface metric is measured against actual SMPL triangles, using
-locally centred millimetres to avoid PyTorch3D's small-triangle epsilon bias.
+The mapped SMPL-X mesh initializes neutral SMPL; shape is fitted in SMPL's own
+basis. Pose/pelvis are refined using actual segmented returns, video keypoints,
+pose/motion priors and a soft physical-floor constraint. Shape is shared per
+person/window. Up to eight observations establish it; accepted corrections carry
+across batches only through gaps <=250ms. Continuity follows observed cloud torso
+motion and relative video rotations. Original point coordinates are untouched.
 
-Each window contains teacher tracks, fitted `.npz` geometry, `quality.jsonl`,
-`ptv3.pth`, source/timestamp/QA metadata and an offline `review/index.html` with
-interactive 3D geometry and actual dual-camera overlays. `export` assembles
-`datasets/<sid>.pth` and `dataset_manifest.json`, preferring full windows over
-contained short smoke runs. Partially overlapping windows are rejected.
-Suggested train/val/test partitions hold out whole sessions; athlete identity
-overlap between sessions is unverified. Metadata point indices refer to the
-decoded valid fixed24 return list, not raw PNG pixel offsets.
+The primary RGB weight is 1. A shape-fixed batch with a maximum residual >8px
+also tries weight 3. It is selected as a whole only with >=0.5px mean reprojection
+gain, <=1/2mm mean surface/P90 increases, identical shape and every previously
+accepted frame still accepted. Decisions are retained in frame QA.
 
-The three recordings contain 23,177 source scans and 23,040 nonempty valid
-dual-camera pairs. Current `corner-fix-v1` real 6-second checks produced 479 accepted
-person samples from 480 fits across all three recordings. Mean visible-surface
-distances for the three clips were 19.17, 18.14 and 19.81 mm. Source verification
-checked 16 exported samples per session: point coordinates matched the original
-returns exactly, and rebuilding SMPL vertices differed by at most `9.54e-7` m.
-These checks cover short clips and representative samples, not full-run completion.
-These are pseudo-labels: physical exposure
-accuracy, per-point scan motion correction, independent surveyed court scale
-and accuracy of occluded joints are not established. Fitting distance measures
-visible surface overlap and does not prove anatomical ground truth.
+Acceptance requires >=80 returns, finite parameters, mean visible point-to-SMPL
+triangle distance <=65mm, P90 <=120mm, floor penetration <=120mm, >=6 primary
+keypoints and primary reprojection <=50px. Surface distance uses actual triangles
+in locally centred millimetres. Rejected fits remain reviewable and are excluded
+from training. Each window stores teacher tracks, fitted `.npz`, `quality.jsonl`,
+`ptv3.pth`, source/QA metadata and an offline 3D/dual-camera preview. Aggregate
+export prefers full windows over contained smoke windows and rejects partial
+overlaps. Point indices refer to the decoded valid fixed24 list, not PNG pixels.
 
-The original sibling PTv3 directory is currently absent on this machine.
-The previously verified field/pelvis contract below is preserved. The current
-verification script checks sampled exported points against original PNGs and
-rebuilds stored meshes from their SMPL parameters; it cannot rerun an absent
-trainer's loader. Unit checks: `uv run --no-sync python -m unittest discover -s tests`.
+The retained complete run `outputs/badminton_corner_fix_v1_continuity` contains
+3 sessions, 40 windows, 23,177 original scans / 23,040 valid nonempty dual-camera
+pairs and 59,972 accepted person-frame labels (60,847 fitted; 875 rejected).
+Keep historical runs read-only. Physical exposure timing, per-point scan motion,
+independently surveyed court scale and occluded-joint accuracy remain unverified;
+`production_admitted=false`. Visible-surface residual is not anatomical GT.
+Suggested train/val/test splits hold out whole sessions; athlete identity overlap
+is unverified. The original sibling PTv3 trainer is absent locally, so native
+point/SMPL verification cannot claim to rerun that loader.
+
+For offline previews and measured fit quality/efficiency:
+
+```powershell
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --clips 10 --seconds 5
+uv run --no-sync python tools/report_badminton_quality.py --output-root outputs/badminton_run --output-dir outputs/badminton_run/sequence_review
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --html-only
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --verify-only
+```
+
+Open `sequence_review/index.html` and retain its whole folder. It uses native
+scans/meshes and actual paired camera images without interpolating geometry.
+The quality report counts full-job completed windows including validated cached
+windows, and discloses cache reuse in throughput. Reported surface P90 is the
+average per-person/frame P90, not a pooled percentile. Optional independent
+`tools/check_badminton_cam1.py --output-root outputs/badminton_run` checks detector
+agreement on CPU. Its association/occlusion filtering can use fitted geometry;
+its pixels are undistorted and do not establish independent anatomical truth.
+
+To inspect an immutable run, supply `--verification-report` to the preview verifier
+or `--report` to the dataset verifier, targeting a new output path. The optional
+browser checker requires Node with built-in WebSocket and an explicit separately
+installed Chrome for Testing binary; it never reuses a personal browser profile:
+
+```powershell
+node tools/check_badminton_reviews.mjs --review-dir outputs/badminton_run/sequence_review --browser C:/tools/chrome-for-testing/chrome.exe --cleanup-profile
+uv run --no-sync python -m unittest discover -s tests
+```
 
 ## Local Windows environment with uv
-
-For continuous visual review and measured efficiency/quality:
-
-```powershell
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_corner_fix_v1 --clips 10 --seconds 5
-uv run --no-sync python tools/check_badminton_cam1.py --manifest outputs/badminton_corner_fix_v1/sequence_review/manifest.json
-uv run --no-sync python tools/report_badminton_quality.py --output-dir outputs/badminton_corner_fix_v1/sequence_review
-uv run --no-sync python tools/render_badminton_reviews.py --html-only
-```
-
-Open `outputs/badminton_corner_fix_v1/sequence_review/index.html` in Chrome/Edge.
-Keep its whole folder for portable viewing. It lazily loads ten five-second
-clips with full 6890-vertex SMPL surfaces, actual LiDAR returns and two original
-camera overlays. Playback follows original ~10Hz scans, with real native camera
-PTS; missing fits are displayed, without interpolating bodies or inventing
-returns. Clips cover all available sessions, use evenly spaced positions within
-completed windows, and retain rejected fits for review. They are not selected
-by fitting error. The stable selection digest is independent of rendering status.
-
-The Cam1 checker uses CPU YOLO/ViTPose on each clip's first/middle/last original
-frame, outside the Cam2 fit, and records visibility/confidence exclusions and
-source/model hashes. It measures consistency with a 2D detector, not human GT;
-person association/occlusion filtering can depend on the fitted mesh, and camera
-calibration may use other Cam1 masks. Both reported keypoint residuals use their
-own undistorted pixel coordinates. Different focal lengths prevent interpreting
-raw Cam1/Cam2 pixel numbers as directly comparable physical accuracy.
-
-The quality report uses the full job's captured completion watermark, excludes
-smoke/currently incomplete windows, and separates end-to-end wall time from
-the older same-machine fitting-only benchmarks. Surface P90 is explicitly the
-average of per-person/scan P90 values, not a pooled recording-wide percentile.
-The Node/Chrome for Testing checker `tools/check_badminton_reviews.mjs` validates
-all clips' first/middle/last images, WebGL geometry and progressing playback in
-an isolated browser, reusing the LiDAR project's public browser identity helper.
 
 From the repository root, run:
 
@@ -245,84 +198,11 @@ uv tool run --python 3.10 --from huggingface_hub hf download camenduru/GVHMR --r
 uv tool run --python 3.10 --from huggingface_hub hf download camenduru/SMPLer-X --revision 9e5548b70b48efe6992faa3b2a418df108542bf7 SMPLX_NEUTRAL.npz --local-dir inputs/checkpoints/body_models/smplx
 ```
 
-This setup reuses the sibling project's existing neutral SMPL file as
-`inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl`.
+Provide the licensed neutral SMPL model at
+`inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl`; runtime does not fetch it
+from another local project.
 
 ## Using GVHMR results with the sibling single-frame PTv3 project
-
-The final-clip refinement has a separate joint evaluation at
-`outputs/badminton_corner_fix_v1/calibration_refinement/joint_alignment/index.html`.
-It covers 104 original camera images from the ten review clips, with 152 fixed
-person associations per camera. Twelve real court paint lines use dense Brown
-projections. Independent YOLOv8x-seg masks are predicted in original 1920x1080
-pixels; their boundary and occlusion errors are reported as limitations.
-
-The same real returns have 94.31% / 95.22% exact mask coverage in Cam1/Cam2,
-or 96.87% / 98.14% with a 3 px boundary tolerance. The corrected fitting raises
-mean SMPL silhouette IoU from .693 to .737 in Cam1 and .718 to .728 in Cam2.
-Court development RMS remains 1.233 / 4.253 px. Two small global camera
-corrections reduce Cam1 court RMS to about .96 px but slightly regress body RGB
-and mask consistency; the adopted cameras remain unchanged.
-
-For the four final-clip tracks with the same fixed original SMPL shapes, visible
-surface mean improves from 19.64 to 17.52 mm, and average per-frame surface P90
-from 39.85 to 35.20 mm. Same-observation native Brown RGB joint means improve
-9.71 to 7.46 px in Cam1 and 3.90 to 3.86 px in Cam2. The problem track's scan44
-pelvis jump improves from 30.45 to 1.68 cm while the cloud median moves 3.23 cm.
-Small other-track changes are retained in the report. These are development
-regressions and detector consistency, not ground-truth joint accuracy or proof
-of a global optimum. The three-session shape-free integration separately
-exports 479 accepted samples with exact original sampled returns.
-
-The continuous before/after page is
-`outputs/badminton_corner_fix_v1/calibration_refinement/comparison/index.html`.
-It isolates the problem track for two five-second clips; the other three
-athletes retain their original fits. The joint mask gallery separately evaluates
-all four corrected tracks. Both paths preserve original scans, video rows and
-camera parameters. Projected mesh faces use one shared triangle-union
-rasterizer; front/back face overlap cannot erase the silhouette interior.
-
-To repeat the mask check with the separately downloaded official segmentation
-checkpoint (a detection-only YOLO file cannot provide instance masks):
-
-```powershell
-uv run --no-sync python tools/evaluate_badminton_alignment.py --model inputs/checkpoints/yolo/yolov8x-seg.pt --imgsz 1920
-uv run --no-sync python tools/compare_badminton_refinement.py --benchmark-prefix outputs/badminton_corner_fix_v1/calibration_refinement/fit_continuity_benchmark.final --variant batch128_weight0.2
-```
-
-The segmentation asset is the official Ultralytics v8.2.0 `yolov8x-seg.pt`,
-144101612 bytes, SHA-256
-`c333d6a7aff884ec821050eacdab29871f3edd10d996cf48746a02f8e01f1b5d`.
-The existing uv environment and Ultralytics 8.2.42 are unchanged.
-
-The spatial follow-up is
-`outputs/badminton_corner_fix_v1/calibration_refinement/spatial_alignment/index.html`.
-Its 24 additional scan frames are selected from 13382 eligible real-cloud
-anchors and cover all 18 occupied cells of a 3x6 court grid. Session counts are
-17/5/2; all selected centres are medians after transforming every real return
-to registered court coordinates. The original 52 scans remain regression
-evidence. The SVG coverage map and all selection exclusions are preserved.
-
-A global 6DOF mask/court correction for each camera, with K/d, plane and clocks
-fixed, reduces court development RMS to .985/3.713 px but regresses original
-Cam2 point-mask hit rate from 95.22% to 92.91% and body RGB mean from 3.86 to
-4.24 px. It is retained as an unadopted candidate. The unchanged cameras give
-93.76%/94.72% exact point-mask hit rate over the combined 152 camera images,
-or 96.42%/97.99% within 3 px; optimization/regression scopes are reported
-separately.
-
-For 24 spatial fitting selections, surface mean changes 18.931 to 18.844 mm;
-seven paired diagnostic trades are listed rather than hidden in the average.
-Cases 14/22 regress in both masks in the first continuous fit. A single isolated
-weight-3 retry improves both masks, surface mean/P90 and Cam2 residual against
-that first candidate; the pipeline uses the full-batch guard described above.
-These retries do not establish superiority over the original fit in every
-metric. Original fits and every rejected camera/body candidate remain intact.
-
-Code reviewed in `../rollout_lidar_mocap_badminton`:
-`src/data/single_frame.py`, `src/models/frame_model_backbone.py`,
-`src/trainers/frame_trainer.py`, and
-`third_party/vis/vis_tools/smpl/SMPL.py`.
 
 The interface can be connected through model conversion. GVHMR's
 `hmr4d_results.pt` is **SMPL-X parameters**, even though its keys are named

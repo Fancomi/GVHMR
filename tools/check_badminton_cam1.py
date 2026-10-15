@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sys
 import time
 from datetime import datetime, timezone
 
@@ -24,9 +23,7 @@ import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
+from hmr4d import PROJ_ROOT as PROJECT_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.sessions import SessionIndex
 
@@ -412,21 +409,6 @@ class Cam1Check:
         return record
 
 
-def smoke_manifest(output):
-    session_id = "20261012_154726"
-    window = output / "sessions" / session_id / "windows/000000000000_000006000000"
-    quality = [json.loads(line) for line in (window / "quality.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    indices = sorted({row["lidar_index"] for row in quality})
-    selected = indices[len(indices) // 2]
-    athletes = [row for row in quality if row["lidar_index"] == selected]
-    frame = {"scan_mid_us": athletes[0]["scan_mid_us"], "lidar_index": selected,
-             "cameras": athletes[0]["cameras"], "offset_s": 0.,
-             "athletes": [{key: row[key] for key in ("motion_id", "fit_path", "accepted", "qa")} for row in athletes]}
-    return {"output_root": str(output), "calibration_snapshot": str(output / "calibration/calibration_snapshot.json"),
-            "calibration_digest": athletes[0]["calibration_digest"],
-            "clips": [{"id": "benchmark_smoke", "session_id": session_id, "source_window": str(window), "frames": [frame]}]}
-
-
 def summarize(report):
     records = [athlete for frame in report["frames"] for athlete in frame["athletes"]]
     measured = [record for record in records if record["status"] == "measured"]
@@ -541,7 +523,6 @@ def main():
     sampling.add_argument("--all-frames", action="store_true", help="Observe every original LiDAR scan")
     parser.add_argument("--camera", choices=("cam1", "cam2"), default="cam1")
     parser.add_argument("--report-path", type=Path, help="JSON report path inside output-root; companion Markdown is written")
-    parser.add_argument("--benchmark-smoke", action="store_true")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--detector-imgsz", type=int, default=960)
     parser.add_argument("--flip-test", action="store_true")
@@ -553,18 +534,12 @@ def main():
         raise ValueError("Check output must stay in project outputs and CPU threads must be positive")
     if args.stride is not None and args.stride < 1:
         raise ValueError("--stride must be a positive integer")
-    if args.benchmark_smoke:
-        manifest = smoke_manifest(output)
-        manifest_path = None
-    else:
-        manifest_path = (args.manifest or output / "sequence_review/manifest.json").resolve()
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    selection_sha256 = None
-    if manifest_path is not None:
-        from hmr4d.lidar_mocap.sequence_review import review_selection_digest
-        selection_sha256 = review_selection_digest(manifest)
-        if manifest.get("selection_sha256") != selection_sha256:
-            raise ValueError("Review manifest stable source selection digest is invalid")
+    manifest_path = (args.manifest or output / "sequence_review/manifest.json").resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from hmr4d.lidar_mocap.sequence_review import review_selection_digest
+    selection_sha256 = review_selection_digest(manifest)
+    if manifest.get("selection_sha256") != selection_sha256:
+        raise ValueError("Review manifest stable source selection digest is invalid")
     calibration = CalibrationSnapshot.load(manifest["calibration_snapshot"])
     if manifest["calibration_digest"] != calibration.data["snapshot_digest"]:
         raise ValueError("Sequence manifest and frozen calibration digest differ")
@@ -588,7 +563,7 @@ def main():
         cadence = f"stride{args.stride}" if args.stride else ("all_frames" if args.all_frames else "anchors")
         destination = output / "calibration_refinement" / f"rgb_keypoints_{args.camera}_{tag}_{cadence}.json"
     else:
-        destination = output / "sequence_review" / ("cam1_check_benchmark.json" if args.benchmark_smoke else "cam1_check.json")
+        destination = output / "sequence_review" / "cam1_check.json"
     destination = destination.resolve()
     if not destination.is_relative_to(output) or destination.suffix != ".json":
         raise ValueError("--report-path must be a JSON report inside --output-root")
@@ -600,9 +575,9 @@ def main():
     loading_seconds = time.perf_counter() - started
     report = {"schema": ("badminton-rgb-keypoint-observations-v2" if custom_selection
                          else "badminton-cam1-independent-rgb-consistency-v1"),
-              "created_utc": datetime.now(timezone.utc).isoformat(), "manifest": str(manifest_path) if manifest_path else None,
+              "created_utc": datetime.now(timezone.utc).isoformat(), "manifest": str(manifest_path),
               "checker_sha256": sha256_file(__file__), "completed": False,
-              "manifest_sha256": sha256_file(manifest_path) if manifest_path else None,
+              "manifest_sha256": sha256_file(manifest_path),
               "selection_sha256_at_start": selection_sha256,
               "calibration_snapshot": manifest["calibration_snapshot"], "calibration_digest": manifest["calibration_digest"],
               "camera_name": args.camera, "camera": checker.camera, "models": checker.models, "device": "cpu", "cpu_threads": args.threads,
@@ -637,7 +612,7 @@ def main():
                           "mean_px": report["summary"]["pixel_error"]["mean"]}, ensure_ascii=False), flush=True)
         # Evaluate a real frame before changing coverage. Do not spend more than
         # the specified total budget merely to keep the denser optional audit.
-        if position == 0 and not args.benchmark_smoke and not (args.stride or args.all_frames):
+        if position == 0 and not (args.stride or args.all_frames):
             estimate = loading_seconds + record["timing_seconds"]["total"] * len(selected)
             report["estimated_all_selected_seconds_after_first_frame"] = estimate
             if estimate > args.max_total_seconds:
@@ -650,8 +625,7 @@ def main():
                 report["selection"] = "middle_per_clip_plus_initial_runtime_probe"
                 report["coverage_reduction_reason"] = "Actual first-frame CPU time predicts more than 15 minutes for 30 selected frames"
                 report["planned_frames"] = len(selected)
-    if manifest_path is not None:
-        verify_current_selection(manifest_path, report)
+    verify_current_selection(manifest_path, report)
     report["completed"] = True
     report["total_seconds"] = time.perf_counter() - started
     write_reports(destination, report)

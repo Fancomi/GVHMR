@@ -149,22 +149,6 @@ def shape_audit(rows):
             "scope": "Same tracked segment/window only; person identity and shape consistency across windows are not established"}
 
 
-def read_benchmarks(benchmark_root):
-    results = []
-    for count in (60, 582):
-        path = Path(benchmark_root) / f"fit_benchmark_{count}.json"
-        if not path.exists():
-            continue
-        stored = read_json(path)
-        variants = {}
-        for variant in ("full_faces", "candidate_faces"):
-            value = stored[variant]
-            variants[variant] = dict(value, fitted_samples_per_second=count / value["seconds"])
-        results.append({"path": str(path.resolve()), "person_scan_batch_size": count, "variants": variants,
-                        "scope": "Same-machine old-calibration fitting-only benchmark; 60 conversion + 80 fitting iterations + full-triangle QA; excludes teacher and I/O; batch sizes differ"})
-    return results
-
-
 def read_cam1_check(output_root, explicit_path, calibration_digest):
     path = Path(explicit_path) if explicit_path is not None else Path(output_root) / "sequence_review/cam1_check.json"
     if not path.exists():
@@ -199,7 +183,7 @@ def read_cam1_check(output_root, explicit_path, calibration_digest):
     }
 
 
-def build_report(output_root, benchmark_root, cam1_report=None):
+def build_report(output_root, cam1_report=None):
     from hmr4d.lidar_mocap.export import acceptance_reasons
 
     root = Path(output_root).resolve()
@@ -302,7 +286,6 @@ def build_report(output_root, benchmark_root, cam1_report=None):
                        "validated_cache_passed": cached_passed, "validated_cache_source_seconds": cached_seconds,
                        "total_export_source_seconds": seconds,
                        "scope": "Pairing-run wall time through the progress watermark includes teacher, fitting and source I/O; reused pre-job fit caches are included in quality but excluded from throughput numerators. Teacher feature caches may also be reused. Later dataset export, verification and final continuous reviews are excluded; this is not uncached model inference throughput"},
-        "old_calibration_fitting_only_benchmarks": read_benchmarks(benchmark_root),
         "cam1_rgb_check": cam1_check,
         "current_aggregate_manifest": {"path": str(dataset_path), "accepted": dataset.get("accepted"),
                                        "selected_windows": dataset.get("selected_windows")}
@@ -373,15 +356,8 @@ def markdown_report(report):
         f"已记录人物/扫描分割失败 {report['scan_and_segmentation_counts'].get('person_scan_segmentation_failures',0)} 次。",
         f"拟合拒绝原因：{json.dumps(report['fit_rejection_reasons'],ensure_ascii=False)}。",
         f"分割失败原因：{json.dumps(report['segmentation_failure_reasons'],ensure_ascii=False)}。", "",
-        "同机旧标定专项拟合基准（60 次转换 + 80 次拟合 + 全三角面 QA；不含 teacher/I/O；批大小不同）：", "",
-        "| 人物/扫描批大小 | full_faces（秒） | candidate_faces（秒） |",
-        "|---:|---:|---:|",
+        "点云残差和 cam2 重投影均来自拟合约束；没有独立 3D 姿态真值，遮挡部位质量及 MPJPE 尚无法量化。",
     ])
-    for benchmark in report["old_calibration_fitting_only_benchmarks"]:
-        value = benchmark["variants"]
-        lines.append(f"| {benchmark['person_scan_batch_size']} | {value['full_faces']['seconds']:.3f} | {value['candidate_faces']['seconds']:.3f} |")
-    lines.extend(["", "专项基准不能当作当前角点修正标定的端到端速度，也不能把不同批大小直接比较。", "",
-                  "点云残差和 cam2 重投影均来自拟合约束；没有独立 3D 姿态真值，遮挡部位质量及 MPJPE 尚无法量化。"])
     cam1 = report.get("cam1_rgb_check")
     if cam1 and cam1.get("completed") and cam1.get("summary"):
         summary = cam1["summary"]
@@ -419,12 +395,11 @@ def markdown_report(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-root", type=Path, default=Path("outputs/badminton_corner_fix_v1"))
-    parser.add_argument("--benchmark-root", type=Path, default=Path("outputs/badminton"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cam1-report", type=Path,
                         help="Optional Cam1 RGB check JSON; defaults to output-root/sequence_review/cam1_check.json if present")
     args = parser.parse_args()
-    report = build_report(args.output_root, args.benchmark_root, args.cam1_report)
+    report = build_report(args.output_root, args.cam1_report)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     json_path = args.output_dir / "quality_efficiency.json"
     markdown_path = args.output_dir / "quality_efficiency.md"

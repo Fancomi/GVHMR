@@ -28,41 +28,32 @@ Please see [installation](docs/INSTALL.md) for details.
 
 ## Badminton video / LiDAR labels
 
-Use the project-local uv environment described in [INSTALL](docs/INSTALL.md).
-The calibrated full-session job fits every athlete, exports neutral SMPL with
-24 joints and real fixed24 LiDAR returns, and verifies the paired dataset:
+Start with [CODEMAP](CODEMAP.md) for workflow navigation and use the project-local
+uv environment in [INSTALL](docs/INSTALL.md). The full-session entry fits every
+athlete and exports 24-joint neutral SMPL paired with actual fixed24 LiDAR returns:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_corner_fix_v1_continuity
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
 ```
 
-Start the review finalizer in a separate process while fitting runs. It waits
-for successful full export, then regenerates 10 five-second clips from the
-current fits, includes the reported `20261012_163452` scan-9 case, checks both
-cameras, evaluates native person masks and court projections, and verifies the
-rendered SMPL geometry in an isolated browser:
+Inputs are original recordings and the LiDAR project's declared canonical
+`config/calibration/badminton-20261012` result. `--prepare-only` verifies these
+inputs and pairing without inference. GVHMR fits bodies using fixed cameras;
+LiDAR maintains camera/court calibration and its joint projection evaluation.
+`job_status.json` becomes `complete` after full export and native-source checks.
+Changed calibration requires a new output root; historical snapshots stay intact.
+
+For ten continuous five-second offline previews and a quality/efficiency report:
 
 ```powershell
-uv run --no-sync python tools/finalize_badminton_reviews.py --output-root outputs/badminton_corner_fix_v1_continuity --wait-for-job
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --clips 10 --seconds 5
+uv run --no-sync python tools/report_badminton_quality.py --output-root outputs/badminton_run --output-dir outputs/badminton_run/sequence_review
+uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --html-only
 ```
 
-`job_status.json` records dataset progress; `review_job_status.json` records the
-later review stages and failures. The final review is
-`outputs/badminton_corner_fix_v1_continuity/sequence_review/index.html`.
-Changing adopted calibration requires a new output root and a complete rerun;
-the pipeline rejects mixing frozen calibration versions. Unchanged teacher
-caches are reused only after their input/calibration identity is validated.
-
-For the controlled same-cloud, fixed-shape four-athlete comparison, run:
-
-```powershell
-uv run --no-sync python tools/compare_badminton_refinement.py --output-root outputs/badminton_corner_fix_v1 --benchmark-prefix outputs/badminton_corner_fix_v1/calibration_refinement/fit_continuity_benchmark.final --variant batch128_weight0.2 --all-tracks --production-root outputs/badminton_corner_fix_v1_continuity --review-dir outputs/badminton_corner_fix_v1/calibration_refinement/all_tracks_comparison
-```
-
-The synchronized page separates the fixed-shape experiment from production
-shape fitting, retains rejected-frame markers, and displays recorded geometry
-without interpolation. Surface residuals, RGB masks and triangulated detector
-hips measure agreement with observations; they are not anatomical ground truth.
+Open the run's `sequence_review/index.html`. Preview geometry uses original scans
+and native video timestamps without interpolation. These are pseudo-labels;
+surface and RGB residuals measure observation agreement, not anatomical truth.
 
 ## Quick Start
 
@@ -71,7 +62,7 @@ hips measure agreement with observations; they are not anatomical ground truth.
 ### [<img src="https://s2.loli.net/2024/09/15/aw3rElfQAsOkNCn.png" width="20"> HuggingFace demo for GVHMR](https://huggingface.co/spaces/LittleFrog/GVHMR)
 
 ### Demo
-Demo entries are provided in `tools/demo`. Use `-s` to skip visual odometry if you know the camera is static, otherwise the camera will be estimated by DPVO.
+Demo entries are provided in `tools/demo`. Use `-s` to skip visual odometry if you know the camera is static, otherwise the camera motion is estimated by SimpleVO (DPVO is optional).
 We also provide a script `demo_folder.py` to inference a entire folder.
 ```shell
 python tools/demo/demo.py --video=docs/example_video/tennis.mp4 -s

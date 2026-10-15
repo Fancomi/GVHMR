@@ -1,4 +1,10 @@
-"""Calibrated video/LiDAR -> neutral SMPL -> PTv3 single-frame pairs."""
+"""Stage adapter for the badminton pipeline; full jobs use run_badminton_pipeline.py.
+
+Input: declared canonical LiDAR calibration and original session recordings.
+Output: immutable snapshot, tracks/fits and PTv3 single-frame pairs in output-root.
+Use local uv with body-model assets (CUDA required for teacher/fitting stages).
+Changed calibration/source identity needs a new output root; see job status/errors.
+"""
 import argparse
 import json
 import torch
