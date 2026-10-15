@@ -144,6 +144,12 @@ class ExportIntegrityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Source tensors/metadata changed'):
             export_reviewed(self.source,self.output,self.review_path)
 
+    def test_failed_final_validation_does_not_publish_a_complete_manifest(self):
+        with patch('hmr4d.lidar_mocap.dual_view._verify_export_data',side_effect=ValueError('invalid final values')):
+            with self.assertRaisesRegex(ValueError,'invalid final values'):
+                export_reviewed(self.source,self.output,self.review_path)
+        self.assertFalse((self.output/'datasets/dataset_manifest.json').exists())
+
     def test_automatic_export_needs_both_detections_but_no_review(self):
         person=dict(detector_index=0,independent_detection_bbox_xyxy=[10,20,100,300],
                     independent_detection_confidence=.7,association_bbox_iou=.6,association_margin=.2)

@@ -48,7 +48,6 @@ def main():
     if args.stage in ('export','finalize'):
         review=args.review or (args.output_root/'native_visual_review.jsonl' if args.policy=='full_body' else None)
         result = export_reviewed(args.source_root,args.output_root,review,detection_only=args.policy=='bilateral_detection',full_observation_manifest=args.full_observations)
-        verify_export(args.output_root)
     print(json.dumps(result,indent=2))
 
 

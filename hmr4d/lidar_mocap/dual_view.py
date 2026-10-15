@@ -1,8 +1,8 @@
-"""Strict, auditable dual-view subsets of existing native SMPL/LiDAR labels.
+"""Auditable dual-camera person-presence subsets of existing SMPL/LiDAR labels.
 
-Camera-frame matching alone never qualifies a person. Independent native RGB
-observations, whole-body extent, limb visibility, association, occlusion and
-bilateral residuals are required. Original tensors/fits are never optimized here.
+Timestamp matching alone never qualifies a person. The default rule requires a
+corresponding native detection in both cameras. Optional whole-body diagnostics
+and review do not add gates to this rule. Source tensors/fits are not optimized.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from .sessions import SessionIndex
 
 @dataclass(frozen=True)
 class DualViewGate:
-    policy: str = 'full_body'
+    policy: str = 'bilateral_detection'
     detection_confidence: float = .35
     detection_minimum_bbox_iou: float = .1
     detection_minimum_association_margin: float = .08
@@ -228,7 +228,7 @@ def audit_cached(source_root, output_root, report_paths, gate=DualViewGate(), di
                                       output/'native_evidence.sqlite' if disk_evidence else None)
     counts, failures, candidates = Counter(), Counter(), []
     regressor_path = PROJ_ROOT/'hmr4d/utils/body_model/smpl_coco17_J_regressor.pt'
-    regressor = torch.load(regressor_path, map_location='cpu').float().numpy()
+    regressor = torch.load(regressor_path, map_location='cpu').float().numpy() if gate.policy=='full_body' else None
     exclusion_path = output/'excluded.jsonl'
     with exclusion_path.open('w', encoding='utf-8') as excluded:
         for sid, entry in dataset['exports'].items():
@@ -247,9 +247,10 @@ def audit_cached(source_root, output_root, report_paths, gate=DualViewGate(), di
                         if not fit_path.is_relative_to(source/'sessions'):
                             raise ValueError('Source fit escapes the selected frozen run')
                         fit_sha = file_sha(fit_path)
-                        with np.load(fit_path, allow_pickle=False) as fit:
-                            vertices = fit['vertices'].astype(np.float64)
-                        joints = regressor @ vertices
+                        if gate.policy=='full_body':
+                            with np.load(fit_path, allow_pickle=False) as fit:
+                                vertices = fit['vertices'].astype(np.float64)
+                            joints = regressor @ vertices
                         reasons += ['source_fit:' + reason for reason in acceptance_reasons(metadata['qa'], metadata['source_point_count'])]
                         for camera, record in pair.items():
                             person, frame = record['person'], record['frame']
@@ -257,19 +258,25 @@ def audit_cached(source_root, output_root, report_paths, gate=DualViewGate(), di
                             expected = frame['camera_native_source']
                             if (person['fit_sha256'] != fit_sha or frame['scan_mid_us'] != metadata['scan_mid_us']
                                     or any(native[k] != expected[k] for k in ('record_index','media_pts_us','common_time_us'))
-                                    or native['status'] != 'matched' or abs(native['time_error_us']) > 8500
-                                    or not np.allclose(joints, person['fixed_smpl_coco17_viewer_m'], atol=1e-6, rtol=0)):
+                                    or native['status'] != 'matched' or abs(native['time_error_us']) > 8500):
                                 raise ValueError(f'Native image/fit/source binding mismatch: {key} {camera}')
-                            uv, depth = calibration.project(vertices, camera, distort=False)
-                            raw_uv, _ = calibration.project(vertices, camera, distort=True)
-                            projected, _ = calibration.project(joints, camera, distort=False)
-                            if not np.allclose(projected, person['all_coco17_fixed_fit_projection'], atol=1e-3, rtol=0):
-                                raise ValueError('Cached joint projection is not the selected native SMPL')
-                            rejected, facts = view_reasons(person, uv, depth, raw_uv, calibration.camera(camera)['image_size'], gate)
-                            facts['full_body_diagnostic_reasons'] = rejected
-                            facts['person_detection_present'] = not detection_reasons(person,gate)
                             if gate.policy == 'bilateral_detection':
                                 rejected = detection_reasons(person,gate)
+                                facts=dict(person_detection_present=not rejected,
+                                           association_bbox_iou=person.get('association_bbox_iou'),
+                                           association_margin=person.get('association_margin'),
+                                           body_visibility_diagnostics='not_recomputed_presence_only_rule')
+                            else:
+                                if not np.allclose(joints, person['fixed_smpl_coco17_viewer_m'], atol=1e-6, rtol=0):
+                                    raise ValueError('Cached joints do not match the selected native SMPL')
+                                uv, depth = calibration.project(vertices, camera, distort=False)
+                                raw_uv, _ = calibration.project(vertices, camera, distort=True)
+                                projected, _ = calibration.project(joints, camera, distort=False)
+                                if not np.allclose(projected, person['all_coco17_fixed_fit_projection'], atol=1e-3, rtol=0):
+                                    raise ValueError('Cached joint projection is not the selected native SMPL')
+                                rejected, facts = view_reasons(person, uv, depth, raw_uv, calibration.camera(camera)['image_size'], gate)
+                                facts['full_body_diagnostic_reasons'] = rejected
+                                facts['person_detection_present'] = not detection_reasons(person,gate)
                             reasons += [camera+':'+reason for reason in rejected]
                             views[camera] = dict(facts=facts, observation=person, native=frame['camera_native_source'],
                                                  raw_image_sha256=frame['native_bgr_image_sha256'],
@@ -357,10 +364,11 @@ def render_candidate_crops(source_root, output_root):
     return audit
 
 
-def export_reviewed(source_root, output_root, review_path=None, *, detection_only=False, full_observation_manifest=None):
+def export_reviewed(source_root, output_root, review_path=None, *, detection_only=None, full_observation_manifest=None):
     source, output = _bound_output(source_root, output_root)
     _require_unpublished(output)
     audit = _read(output/'audit.json')
+    if detection_only is None:detection_only=audit['gate'].get('policy','full_body')=='bilateral_detection'
     valid_state = audit['state'] == 'native_images_verified'
     if detection_only and full_observation_manifest:
         observations = _read(full_observation_manifest)
@@ -453,7 +461,13 @@ def export_reviewed(source_root, output_root, review_path=None, *, detection_onl
                     coordinate_space='lidar_viewer_xyz_m',point_count=256,transl_convention='shaped_pelvis_position',
                     split_limit='Whole sessions disjoint; cross-session physical identities unverified; not unseen-person generalization',
                     observation_limit='Independent native person detections with fixed-fit identity association; diagnostic pose/visibility/reprojection fields are not anatomical ground truth')
-    write_json(output/'datasets/dataset_manifest.json',manifest)
+    # The consumer watches status=complete. Validate all values before the
+    # atomic manifest write, so training cannot start on an unchecked export.
+    verification=_verify_export_data(manifest)
+    manifest_path=output/'datasets/dataset_manifest.json'
+    write_json(manifest_path,manifest)
+    verification.update(dataset_manifest=str(manifest_path),dataset_manifest_sha256=file_sha(manifest_path))
+    write_json(output/'verification.json',verification)
     return manifest
 
 
@@ -463,12 +477,19 @@ def verify_export(output_root):
     manifest_path=output/'datasets/dataset_manifest.json'
     manifest=_read(manifest_path)
     if manifest.get('status')!='complete':raise ValueError('Dataset is not complete')
+    result=_verify_export_data(manifest)
+    result.update(dataset_manifest=str(manifest_path),dataset_manifest_sha256=file_sha(manifest_path))
+    write_json(output/'verification.json',result)
+    return result
+
+
+def _verify_export_data(manifest):
     source=_read(manifest['source_dataset_manifest'])
     if file_sha(manifest['source_dataset_manifest'])!=manifest['source_dataset_manifest_sha256']:
         raise ValueError('Original source manifest changed')
     if manifest.get('audit_sha256') and file_sha(manifest['audit'])!=manifest['audit_sha256']:
         raise ValueError('Dataset audit changed')
-    result=dict(dataset_manifest=str(manifest_path),dataset_manifest_sha256=file_sha(manifest_path),sessions={})
+    result=dict(sessions={})
     for sid,entry in manifest['exports'].items():
         tensor_sha,metadata_sha=file_sha(entry['path']),file_sha(entry['metadata'])
         if (entry.get('sha256') and tensor_sha!=entry['sha256']) or (entry.get('metadata_sha256') and metadata_sha!=entry['metadata_sha256']):
@@ -493,5 +514,4 @@ def verify_export(output_root):
                                      export_hashes_bound_in_manifest='sha256' in entry and 'metadata_sha256' in entry)
     result['accepted']=sum(e['accepted'] for e in result['sessions'].values())
     if result['accepted']!=manifest['accepted']:raise ValueError('Delivered total differs from manifest')
-    write_json(output/'verification.json',result)
     return result
