@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from hmr4d.lidar_mocap.source_index import SourceIndexedSession, _bound_file, validate_coordinate_contract
+from hmr4d.lidar_mocap.source_index import SourceIndexedSession, _bound_file, validate_coordinate_contract, require_camera_applicability, verify_camera_applicability
 
 
 class ExternalSourceContractTests(unittest.TestCase):
@@ -40,6 +40,40 @@ class ExternalSourceContractTests(unittest.TestCase):
                 camera_calibration_admitted=False,production_admitted=False)))
             with self.assertRaisesRegex(ValueError,'pending.*no fitting admission'):
                 SourceIndexedSession.load_source_index(path,root)
+
+    def test_camera_admission_and_body_label_admission_are_distinct(self):
+        index=dict(camera_calibration_admitted=True,production_admitted=False,
+                   coordinate_contract=dict(physical_camera_applicability='sampled_visual_accepted'))
+        require_camera_applicability(index)
+        index['coordinate_contract']['physical_camera_applicability']='pending'
+        with self.assertRaisesRegex(ValueError,'pending'):require_camera_applicability(index)
+
+    def test_camera_certificate_binds_source_matrix_and_actual_review_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);review=root/'native-review.json';review.write_bytes(b'reviewed native projection')
+            review_entry=dict(kind='native_projection',file=review.name,sha256=hashlib.sha256(review.read_bytes()).hexdigest())
+            index=copy.deepcopy(self.index)
+            index.update(source_id='recording',camera_calibration_admitted=True,production_admitted=False,
+                         accepted_calibration_sha256='calibration',accepted_bundle_sha256={'calibration.json':'calibration'})
+            index['coordinate_contract']['physical_camera_applicability']='sampled_visual_accepted'
+            for name in ('source_manifest','common_clock','frame_map','native_videos','canonical_video_sidecars'):
+                index[name]={'sha256':name,'file':name}
+            source={name:copy.deepcopy(index[name]) for name in ('source_manifest','common_clock','frame_map','native_videos','canonical_video_sidecars')}
+            source.update(status='sampled_visual_accepted',camera_calibration_admitted=True,
+                          body_labels_production_admitted=False,review_evidence=[review_entry],review_limits=['sampled review'])
+            certificate=dict(schema='badminton-camera-applicability-v1',accepted_calibration_sha256='calibration',
+                             accepted_bundle_sha256=index['accepted_bundle_sha256'],application_raw_to_viewer_M=index['coordinate_contract']['application_raw_to_viewer_M'],sources={'recording':source})
+            path=root/'applicability.json'
+            def publish():
+                path.write_text(json.dumps(certificate))
+                index['camera_applicability']=dict(file=path.name,sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            publish()
+            self.assertFalse(verify_camera_applicability(index,root)['body_labels_production_admitted'])
+            certificate['sources']['recording']['frame_map']['sha256']='wrong-source';publish()
+            with self.assertRaisesRegex(ValueError,'source binding mismatch'):verify_camera_applicability(index,root)
+            certificate['sources']['recording']['frame_map']=copy.deepcopy(index['frame_map']);publish()
+            review.write_bytes(b'changed native projection')
+            with self.assertRaisesRegex(ValueError,'SHA256 mismatch'):verify_camera_applicability(index,root)
 
     def test_root_escape_and_changed_file_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -157,6 +157,18 @@ class ExportIntegrityTests(unittest.TestCase):
         metadata=json.loads(Path(result['exports'][self.sid]['metadata']).read_text())
         self.assertIsNone(metadata['dualcam']['native_visual_review'])
 
+    def test_full_export_rejects_source_changed_since_observation_started(self):
+        path=self.output/'audit.json';audit=json.loads(path.read_text())
+        audit.update(counts={'source_accepted':2},evidence_reports=[])
+        entry=audit['source_exports'][self.sid]
+        entry.update(path=str(self.source/'datasets/source.pth'),metadata=str(self.source/'datasets/source.metadata.jsonl'))
+        path.write_text(json.dumps(audit))
+        observations=dict(completed=True,source_accepted=2,reports=[],identity=dict(source=dict(files=[
+            dict(path=entry['path'],sha256='older-original-tensor-sha'),dict(path=entry['metadata'],sha256=entry['metadata_sha256'])])))
+        observation_path=self.output/'observer.json';observation_path.write_text(json.dumps(observations))
+        with self.assertRaisesRegex(ValueError,'changed after native observation began'):
+            export_reviewed(self.source,self.output,detection_only=True,full_observation_manifest=observation_path)
+
     def test_resume_repairs_only_partial_tail_and_rejects_changed_source(self):
         frame=dict(lidar_index=1,scan_mid_us=100,cameras={},athletes=[dict(motion_id='a')])
         record=dict(lidar_index=1,scan_mid_us=100,paired_cameras={},camera_name='cam1',

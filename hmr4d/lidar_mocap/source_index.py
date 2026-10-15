@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from .dual_view import file_sha
-from .sessions import SessionIndex, _integer, _read_json
+from .sessions import SessionIndex, _integer, _read_json, _read_jsonl
 
 
 def _bound_file(data_root, entry, verify=True):
@@ -45,6 +45,37 @@ def validate_coordinate_contract(index):
     return matrix
 
 
+def require_camera_applicability(index):
+    # Body-label admission happens after fitting/QA. Requiring it to admit a
+    # source would incorrectly make new, unfitted recordings impossible to use.
+    if (index.get('camera_calibration_admitted') is not True
+            or index.get('coordinate_contract',{}).get('physical_camera_applicability')!='sampled_visual_accepted'):
+        raise ValueError('External source calibration applicability is pending; preparation only, no fitting admission')
+
+
+def verify_camera_applicability(index,data_root):
+    require_camera_applicability(index)
+    entry=index.get('camera_applicability')
+    if not isinstance(entry,dict):raise ValueError('Admitted external camera source needs an applicability certificate')
+    path=_bound_file(data_root,entry);certificate=_read_json(path)
+    if (certificate.get('schema')!='badminton-camera-applicability-v1'
+            or certificate.get('accepted_calibration_sha256')!=index['accepted_calibration_sha256']
+            or certificate.get('accepted_bundle_sha256')!=index['accepted_bundle_sha256']
+            or not np.array_equal(certificate.get('application_raw_to_viewer_M'),index['coordinate_contract']['application_raw_to_viewer_M'])):
+        raise ValueError('Camera applicability certificate calibration/M binding mismatch')
+    source=certificate.get('sources',{}).get(index['source_id'])
+    if not source or source.get('status')!='sampled_visual_accepted' or source.get('camera_calibration_admitted') is not True:
+        raise ValueError('Camera applicability certificate does not admit this recording')
+    for name in ('source_manifest','common_clock','frame_map','native_videos','canonical_video_sidecars'):
+        if source.get(name)!=index[name]:raise ValueError(f'Camera applicability certificate source binding mismatch: {name}')
+    evidence=source.get('review_evidence')
+    if not isinstance(evidence,list) or not evidence:
+        raise ValueError('Camera applicability certificate lacks native review evidence')
+    for review in evidence:_bound_file(data_root,review)
+    return dict(file=str(path),sha256=entry['sha256'],status=source['status'],
+                review_limits=source.get('review_limits'),body_labels_production_admitted=source.get('body_labels_production_admitted'))
+
+
 class SourceIndexedSession(SessionIndex):
     @classmethod
     def load_source_index(cls,index_path,data_root,*,expected_sha256=None,require_admitted=True):
@@ -55,9 +86,10 @@ class SourceIndexedSession(SessionIndex):
         index=_read_json(index_path)
         if index['schema'] not in ('badminton-source-index-candidate-v1','badminton-source-index-v1'):
             raise ValueError('Unsupported external source-index schema')
-        if require_admitted and not (index.get('camera_calibration_admitted') is True and index.get('production_admitted') is True):
-            raise ValueError('External source calibration applicability is pending; preparation only, no fitting admission')
+        if require_admitted:require_camera_applicability(index)
         self=cls();self.source_index=index;self.source_index_path=index_path;self.source_index_sha256=digest
+        self.camera_applicability=(verify_camera_applicability(index,data_root)
+                                   if require_admitted or index.get('camera_applicability') else None)
         self.session_id=index['source_id'];self.session_dir=data_root/'sessions'/self.session_id
         self.Q=validate_coordinate_contract(index)
         self.lidar_dir=data_root
@@ -106,9 +138,40 @@ class SourceIndexedSession(SessionIndex):
             frame_id=_integer(row.get('frame_id'),'external clock frame_id')
             if frame_id is None or frame_id in self._lidar_clock:raise ValueError('Missing/duplicate external clock frame_id')
             self._lidar_clock[frame_id]=row
-        self._frozen=self._load_frozen_map(frame_map_path)
+        map_rows=_read_jsonl(frame_map_path)
+        self._frozen={_integer(row['lidar_frame'],'external original map index'):row for row in map_rows}
+        if (len(self._frozen)!=len(map_rows) or len(map_rows)!=index['frame_map']['rows']
+                or None in self._frozen):
+            raise ValueError('External original frame map contains duplicate/missing indexes or wrong row count')
+        selected=[_integer(frame.get('frame_map_lidar_frame',i),'external PNG-to-map index') for i,frame in enumerate(frames)]
+        if len(set(selected))!=len(selected) or any(i not in self._frozen for i in selected):
+            raise ValueError('External PNG ordinals do not map uniquely to original clock/map rows')
+        omitted=index.get('nonexported_original_clock_rows',[])
+        declared={row['lidar_frame'] for row in omitted}
+        if len(declared)!=len(omitted) or set(self._frozen)-set(selected)!=declared:
+            raise ValueError('Missing source PNGs need explicit original frame-map omission evidence')
+        begin=self.common_clock['common_overlap_begin_us'];end=self.common_clock['common_overlap_end_us']
+        for row in omitted:
+            clock=self._lidar_clock[row['original_frame_id']]
+            start=clock['common_time_us'];last=clock['end_common_time_us'];mid=start+(last-start)//2
+            if (row.get('exported_png_present') is not False or row['device_first_us']!=start
+                    or row['device_last_us']!=last or row['scan_mid_us']!=mid or begin<=mid<=end):
+                raise ValueError('An omitted source frame is inside usable common coverage or has invalid packet timing')
+            frozen=self._frozen[row['lidar_frame']]
+            if any(frozen.get(k)!=row[k] for k in ('device_first_us','device_last_us','scan_mid_us')):
+                raise ValueError('Omitted original frame-map timing differs from clock evidence')
+            for camera in self.video_paths:
+                nearest=self._frozen_camera(camera,row['lidar_frame'],mid)
+                if nearest['status']!='outside_video_time_range' or row['cameras'][camera]!=frozen['cameras'][camera]:
+                    raise ValueError('An omitted source frame could affect paired camera coverage')
+        exported_ids={frame['original_frame_id'] for frame in frames}
+        if set(self._lidar_clock)-exported_ids!={row['original_frame_id'] for row in omitted}:
+            raise ValueError('Original device clock has unexplained missing source frames')
+        self._lidar_clock={key:value for key,value in self._lidar_clock.items() if key in exported_ids}
+        self._frozen={i:self._frozen[original] for i,original in enumerate(selected)}
         self._pairs=self._build_pairs()
         for frame,pair in zip(frames,self._pairs):
+            pair['source_frame_map_lidar_frame']=frame.get('frame_map_lidar_frame',frame['frame_index'])
             for camera,expected in frame['cameras'].items():
                 actual=pair['cameras'][camera]
                 for name in ('status','record_index','media_pts_us','time_error_us'):
@@ -136,7 +199,10 @@ def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=
     return dict(schema='badminton-external-source-prepare-v1',source_id=session.session_id,
                 source_index=str(session.source_index_path),source_index_sha256=session.source_index_sha256,
                 frames=len(pairs),paired=sum(p['status']=='paired' for p in pairs),samples=samples,
+                original_clock_rows=session.source_index.get('raw_clock_rows',len(pairs)),
+                nonexported_original_clock_rows=session.source_index.get('nonexported_original_clock_rows',[]),
                 calibration_applicability=session.source_index['coordinate_contract']['physical_camera_applicability'],
+                camera_applicability_certificate=session.camera_applicability,
                 camera_calibration_admitted=session.source_index['camera_calibration_admitted'],
                 production_admitted=session.source_index['production_admitted'],
                 body_fitting_started=False,source_files_modified=False)

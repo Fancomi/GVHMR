@@ -368,6 +368,11 @@ def export_reviewed(source_root, output_root, review_path=None, *, detection_onl
             raise ValueError('Full export requires completed native observations of every source label')
         if set(observations['reports']) != {r['path'] for r in audit['evidence_reports']}:
             raise ValueError('Full observation manifest and audited evidence reports differ')
+        frozen_inputs={entry['path']:entry['sha256'] for entry in observations['identity']['source']['files']}
+        for entry in audit['source_exports'].values():
+            if (frozen_inputs.get(entry['path'])!=entry['sha256']
+                    or frozen_inputs.get(entry['metadata'])!=entry['metadata_sha256']):
+                raise ValueError('Source training tensors/metadata changed after native observation began')
         valid_state = True
     if not valid_state or file_sha(output/'candidates.jsonl') != audit['candidate_file_sha256']:
         raise ValueError('Export needs verified native camera images and unchanged candidates')
