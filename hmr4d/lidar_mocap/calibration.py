@@ -167,6 +167,9 @@ class CalibrationSnapshot:
             raise ValueError("Unsupported canonical calibration/sources schema")
         if set(calibration.get("cameras", {})) != {"cam1", "cam2"}:
             raise ValueError("Canonical calibration requires both complete cameras: cam1 and cam2")
+        result_files = sources.get("result_files")
+        if result_files is not None and result_files != {name: hashes[name] for name in _CONFIG_FILES if name != "sources.json"}:
+            raise ValueError("Canonical result file SHA256 mismatch")
         for key, actual in (("accepted_bbox_sha256", hashes["bbox.json"]),
                             ("sync_policy_sha256", hashes["sync-policy.json"])):
             if sources.get(key) != actual:

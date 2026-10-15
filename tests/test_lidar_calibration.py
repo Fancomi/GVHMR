@@ -252,6 +252,19 @@ class CalibrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.fixture.freeze()
 
+    def test_published_result_file_hashes_are_bound_to_actual_canonical_bytes(self):
+        self.fixture.sources["result_files"] = {
+            name: sha((self.fixture.base / name).read_bytes())
+            for name in module._CONFIG_FILES if name != "sources.json"
+        }
+        write_json(self.fixture.base / "sources.json", self.fixture.sources)
+        self.fixture.freeze()
+        path = self.fixture.base / "calibration.json"
+        path.write_bytes(path.read_bytes()+b" ")
+        self.fixture.output = self.fixture.workspace / "fresh-snapshot"
+        with self.assertRaisesRegex(ValueError, "result file SHA256"):
+            self.fixture.freeze()
+
     def test_source_manifest_change_rejected_on_existing_freeze(self):
         self.fixture.freeze()
         self.fixture.manifest_path.write_bytes(self.fixture.manifest_path.read_bytes()+b" ")
