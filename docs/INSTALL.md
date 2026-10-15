@@ -161,6 +161,24 @@ Explicit dataset-only `video_sidecars` require
 the original host receive-axis rejection. Unknown/lost device synchronization,
 synthetic frames and video discontinuities cannot provide valid pair evidence.
 
+Receive a sealed native rally collection with:
+
+```powershell
+uv run --no-sync python tools/prepare_badminton_rallies.py --acquisition-manifest <acquisition-manifest.json> --acquisition-sha256 <digest> --data-root <badminton-data-root> --output-root outputs/rally_intake
+```
+
+This CPU preparation verifies immutable native analysis, counted rally bounds,
+the source/camera contracts and all frame-map identities. `prepared_ranges.jsonl`
+preserves the declared review order, parent PNG ordinals, original clock/map
+indices and frame IDs. Its SHA is bound by `verification.json`, which also
+provides deduplicated frame ranges. Camera-bound summaries describe the first
+and last **jointly matched** camera rows inside each full parent range.
+The accounting end is the last scan's start time; use the authoritative PNG
+range for later processing, since filtering scan midpoints by that end would
+drop the terminal frame. Overlapping windows count once per source. Window
+minutes include pre-roll/cooldown and do not certify qualified training time.
+This command starts no model inference or body fitting.
+
 For offline previews and measured fit quality/efficiency:
 
 ```powershell

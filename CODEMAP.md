@@ -25,6 +25,9 @@ whole-body/pose diagnostics do not add training admission gates.
 `tools/prepare_badminton_source.py` / `source_index.py` inspect an explicitly
 provided upstream source index on CPU. Candidate calibration applicability
 does not admit fitting; default session loading remains unchanged.
+`tools/prepare_badminton_rallies.py` / `rally_inventory.py` verify sealed
+acquisition/native-analysis/rally contracts and prepare exact PNG/frame-map
+ranges on CPU. Window minutes remain separate from qualified body-label minutes.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw
