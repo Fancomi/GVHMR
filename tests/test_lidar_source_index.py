@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from hmr4d.lidar_mocap.source_index import SourceIndexedSession, _bound_file, validate_coordinate_contract, require_camera_applicability, verify_camera_applicability
+from hmr4d.lidar_mocap.source_index import SourceIndexedSession, _bound_file, validate_coordinate_contract, require_camera_applicability, verify_camera_applicability, video_sidecar_contract
 
 
 class ExternalSourceContractTests(unittest.TestCase):
@@ -74,6 +74,16 @@ class ExternalSourceContractTests(unittest.TestCase):
             certificate['sources']['recording']['frame_map']=copy.deepcopy(index['frame_map']);publish()
             review.write_bytes(b'changed native projection')
             with self.assertRaisesRegex(ValueError,'SHA256 mismatch'):verify_camera_applicability(index,root)
+
+    def test_dataset_only_device_time_does_not_admit_canonical_receive_axis(self):
+        sidecars={'cam1':{'file':'cam1.frames.jsonl'},'cam2':{'file':'cam2.frames.jsonl'}}
+        index=dict(video_sidecars=sidecars,video_index_contract=dict(kind='dataset_only_device_clock',canonical_receive_admitted=False))
+        self.assertEqual(video_sidecar_contract(index),('video_sidecars',sidecars))
+        index['video_index_contract']['canonical_receive_admitted']=True
+        with self.assertRaisesRegex(ValueError,'no canonical receive admission'):video_sidecar_contract(index)
+        index['video_index_contract']['canonical_receive_admitted']=False
+        index['canonical_video_sidecars']={'cam1':{'file':'wrong.frames.jsonl'}}
+        with self.assertRaisesRegex(ValueError,'Conflicting'):video_sidecar_contract(index)
 
     def test_root_escape_and_changed_file_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -53,6 +53,19 @@ def require_camera_applicability(index):
         raise ValueError('External source calibration applicability is pending; preparation only, no fitting admission')
 
 
+def video_sidecar_contract(index):
+    generic=index.get('video_sidecars');canonical=index.get('canonical_video_sidecars')
+    if generic is not None:
+        contract=index.get('video_index_contract',{})
+        if (contract.get('kind')!='dataset_only_device_clock' or contract.get('canonical_receive_admitted') is not False):
+            raise ValueError('Dataset-only sidecars require explicit device-clock scope and no canonical receive admission')
+        if canonical is not None and generic!=canonical:
+            raise ValueError('Conflicting generic and canonical video sidecar bindings')
+        return 'video_sidecars',generic
+    if canonical is None:raise ValueError('External source lacks native video index sidecars')
+    return 'canonical_video_sidecars',canonical
+
+
 def verify_camera_applicability(index,data_root):
     require_camera_applicability(index)
     entry=index.get('camera_applicability')
@@ -66,8 +79,11 @@ def verify_camera_applicability(index,data_root):
     source=certificate.get('sources',{}).get(index['source_id'])
     if not source or source.get('status')!='sampled_visual_accepted' or source.get('camera_calibration_admitted') is not True:
         raise ValueError('Camera applicability certificate does not admit this recording')
-    for name in ('source_manifest','common_clock','frame_map','native_videos','canonical_video_sidecars'):
+    sidecar_key,_=video_sidecar_contract(index)
+    for name in ('source_manifest','common_clock','frame_map','native_videos',sidecar_key):
         if source.get(name)!=index[name]:raise ValueError(f'Camera applicability certificate source binding mismatch: {name}')
+    if index.get('video_index_contract') is not None and source.get('video_index_contract')!=index['video_index_contract']:
+        raise ValueError('Camera applicability certificate does not bind dataset-only video indexing policy')
     evidence=source.get('review_evidence')
     if not isinstance(evidence,list) or not evidence:
         raise ValueError('Camera applicability certificate lacks native review evidence')
@@ -97,7 +113,8 @@ class SourceIndexedSession(SessionIndex):
         clock_path=_bound_file(data_root,index['common_clock'])
         frame_map_path=_bound_file(data_root,index['frame_map'])
         self.video_paths={name:_bound_file(data_root,index['native_videos'][name]) for name in ('cam1','cam2')}
-        sidecars={name:_bound_file(data_root,index['canonical_video_sidecars'][name]) for name in self.video_paths}
+        _,sidecar_bindings=video_sidecar_contract(index)
+        sidecars={name:_bound_file(data_root,sidecar_bindings[name]) for name in self.video_paths}
         self.video_dir=sidecars['cam1'].parent
         if any(path!=self.video_dir/f'{name}.frames.jsonl' for name,path in sidecars.items()):
             raise ValueError('External native sidecars must retain canonical camera names in one directory')
@@ -203,6 +220,7 @@ def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=
                 nonexported_original_clock_rows=session.source_index.get('nonexported_original_clock_rows',[]),
                 calibration_applicability=session.source_index['coordinate_contract']['physical_camera_applicability'],
                 camera_applicability_certificate=session.camera_applicability,
+                video_index_contract=session.source_index.get('video_index_contract'),
                 camera_calibration_admitted=session.source_index['camera_calibration_admitted'],
                 production_admitted=session.source_index['production_admitted'],
                 body_fitting_started=False,source_files_modified=False)
