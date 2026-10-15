@@ -100,6 +100,24 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(index.pairs()[1]["scan_mid_us"])
         self.assertIn("missing_lidar_clock", index.pairs()[1]["reasons"])
 
+    def test_reported_clock_loss_cannot_be_overridden_by_matching_timestamps(self):
+        clock=self.make_session()
+        clock['synchronization_lost_during_capture']=True
+        self.write('meta/synthetic/synthetic_common_clock.json',clock)
+        pairs=SessionIndex.load(self.root).pairs()
+        self.assertTrue(all(p['cameras']['cam1']['status']=='matched' for p in pairs))
+        self.assertTrue(all(p['status']=='excluded' and 'synchronization_lost_during_capture' in p['reasons'] for p in pairs))
+
+    def test_synthetic_or_discontinuous_video_rows_cannot_count_as_native(self):
+        for field,value in [('synthesized',True),('discontinuity',True),('connection_segment',1)]:
+            self.make_session()
+            path=self.video/'cam1.frames.jsonl'
+            rows=[json.loads(line) for line in path.read_text().splitlines()]
+            rows[1][field]=value
+            path.write_text('\n'.join(json.dumps(row) for row in rows))
+            with self.subTest(field=field),self.assertRaisesRegex(ValueError,'synthesized frames or a clock discontinuity'):
+                SessionIndex.load(self.root)
+
     def test_raw_viewer_rotation_once_and_count_evidence(self):
         self.make_session()
         index = SessionIndex.load(self.root)

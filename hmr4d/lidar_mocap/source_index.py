@@ -59,6 +59,9 @@ def video_sidecar_contract(index):
         contract=index.get('video_index_contract',{})
         if (contract.get('kind')!='dataset_only_device_clock' or contract.get('canonical_receive_admitted') is not False):
             raise ValueError('Dataset-only sidecars require explicit device-clock scope and no canonical receive admission')
+        if (contract.get('device_clock_status')!='verified_common_ptp_no_loss'
+                or not isinstance(contract.get('device_clock_evidence'),dict)):
+            raise ValueError('Dataset-only sidecars cannot admit missing, unknown or lost device-clock synchronization')
         if canonical is not None and generic!=canonical:
             raise ValueError('Conflicting generic and canonical video sidecar bindings')
         return 'video_sidecars',generic
@@ -114,6 +117,8 @@ class SourceIndexedSession(SessionIndex):
         frame_map_path=_bound_file(data_root,index['frame_map'])
         self.video_paths={name:_bound_file(data_root,index['native_videos'][name]) for name in ('cam1','cam2')}
         _,sidecar_bindings=video_sidecar_contract(index)
+        if 'video_sidecars' in index:
+            _bound_file(data_root,index['video_index_contract']['device_clock_evidence'])
         sidecars={name:_bound_file(data_root,sidecar_bindings[name]) for name in self.video_paths}
         self.video_dir=sidecars['cam1'].parent
         if any(path!=self.video_dir/f'{name}.frames.jsonl' for name,path in sidecars.items()):

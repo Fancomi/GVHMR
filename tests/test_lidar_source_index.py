@@ -77,11 +77,15 @@ class ExternalSourceContractTests(unittest.TestCase):
 
     def test_dataset_only_device_time_does_not_admit_canonical_receive_axis(self):
         sidecars={'cam1':{'file':'cam1.frames.jsonl'},'cam2':{'file':'cam2.frames.jsonl'}}
-        index=dict(video_sidecars=sidecars,video_index_contract=dict(kind='dataset_only_device_clock',canonical_receive_admitted=False))
+        index=dict(video_sidecars=sidecars,video_index_contract=dict(kind='dataset_only_device_clock',canonical_receive_admitted=False,
+                   device_clock_status='verified_common_ptp_no_loss',device_clock_evidence={'file':'ptp-audit.json','sha256':'audit'}))
         self.assertEqual(video_sidecar_contract(index),('video_sidecars',sidecars))
         index['video_index_contract']['canonical_receive_admitted']=True
         with self.assertRaisesRegex(ValueError,'no canonical receive admission'):video_sidecar_contract(index)
         index['video_index_contract']['canonical_receive_admitted']=False
+        index['video_index_contract']['device_clock_status']='unknown'
+        with self.assertRaisesRegex(ValueError,'unknown or lost'):video_sidecar_contract(index)
+        index['video_index_contract']['device_clock_status']='verified_common_ptp_no_loss'
         index['canonical_video_sidecars']={'cam1':{'file':'wrong.frames.jsonl'}}
         with self.assertRaisesRegex(ValueError,'Conflicting'):video_sidecar_contract(index)
 

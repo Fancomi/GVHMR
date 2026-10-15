@@ -145,6 +145,14 @@ device clocks and native camera frame maps, and decodes six spread-out source
 scans. It normalizes metadata in memory and never edits original manifests.
 Candidate calibration applicability remains preparation-only and cannot admit
 body fitting; the default pipeline session list is unchanged.
+An admitted camera source requires a hash-bound applicability certificate that
+binds its calibration, exact application M, native files and review evidence.
+Camera-source admission is separate from body-label production admission.
+Explicit dataset-only `video_sidecars` require
+`video_index_contract.kind=dataset_only_device_clock`,
+`canonical_receive_admitted=false` and verified device/PTP evidence. They retain
+the original host receive-axis rejection. Unknown/lost device synchronization,
+synthetic frames and video discontinuities cannot provide valid pair evidence.
 
 For offline previews and measured fit quality/efficiency:
 
