@@ -344,11 +344,14 @@ def render_candidate_crops(source_root, output_root):
         meta = candidate['source_metadata']
         rows.append(f'<tr><td>{candidate["id"]}<br>{html.escape(candidate["session_id"])}<br>scan {meta["lidar_index"]}<br>{html.escape(meta["motion_id"])}</td>'
                     + ''.join(f'<td><img src="crops/{candidate["id"]}_{camera}.png" height="280"></td>' for camera in ('cam1','cam2'))+'</tr>')
-    (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Native dual-camera completeness review</title>'
+    description=('All candidates have a corresponding independent person detection in both native cameras; '
+                 'individual visual review is not required by this qualification rule.'
+                 if audit['gate'].get('policy')=='bilateral_detection' else
+                 'All candidates passed both independent 12-limb/torso and whole-image extent gates.')
+    (output/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Native dual-camera person evidence</title>'
                                    '<style>body{font-family:sans-serif}td{padding:8px;border-bottom:1px solid #999}img{max-width:320px;object-fit:contain}</style>'
                                    '<h1>Native dual-camera body evidence</h1><p>Calibrated native RGB crops, without rendered SMPL overlays. '
-                                   'All candidates passed both independent 12-limb/torso and whole-image extent gates.</p><table>'
-                                   + ''.join(rows)+'</table>',encoding='utf-8')
+                                   + description+'</p><table>'+''.join(rows)+'</table>',encoding='utf-8')
     audit.update(state='native_images_verified',native_camera_frames=len(groups),candidate_crops=2*len(candidates))
     write_json(output/'audit.json',audit)
     return audit
