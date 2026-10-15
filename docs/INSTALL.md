@@ -119,6 +119,13 @@ person-frame, even when video timestamps match. Full-body keypoint confidence,
 net tape, occlusion and reprojection diagnostics are retained as metadata and do
 not add admission conditions. Individual visual review is not required.
 
+The delivered `outputs/badminton_dualcam_paired_full_v2` contains 59,408
+qualified person-frames: train 14,664 / validation 10,787 / test 33,957.
+Its `datasets/dataset_manifest.json` binds tensor/metadata hashes and whole-session
+splits. `verification.json` checks every exported value against the original
+source subset; `quality_summary.json` reports retained-fit quality and measured
+cache/inference scope. A complete manifest is published only after validation.
+
 ```powershell
 uv run --no-sync python tools/observe_badminton_dual_view.py --output-root outputs/my_paired_run --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam1_check.json --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam2_check.json
 uv run --no-sync python tools/export_badminton_dual_view.py finalize --output-root outputs/my_paired_run --full-observations outputs/my_paired_run/observations/manifest.json --wait
