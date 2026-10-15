@@ -1,3 +1,6 @@
+# Temporary experiments are never production runtime inputs.
+.local/
+
 .vscode
 .hydra
 inputs

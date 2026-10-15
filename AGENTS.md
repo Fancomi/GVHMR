@@ -2,6 +2,9 @@
 
 This file provides guidance to agents when working with code in this repository.
 
+Start with [CODEMAP.md](CODEMAP.md) to locate the target workflow and
+[TODO.md](TODO.md) for active ownership. Do not scan unrelated workflows.
+
 ## 项目概述
 GVHMR - 基于重力视图坐标的世界定位人体运动恢复系统，使用 PyTorch Lightning + Hydra 配置框架。
 

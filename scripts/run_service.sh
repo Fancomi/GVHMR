@@ -13,6 +13,16 @@
 # 注: 绑定 0.0.0.0 以便内网经 IP:PORT 访问; 服务无鉴权, 仅限内网。
 set -e
 
+case "${1:-}" in
+    -h|--help)
+        printf '%s\n' 'Usage: bash scripts/run_service.sh [GPU_ID] [PORT] [MAXSIZE]' \
+            'Requires the project uv environment and licensed model/checkpoint assets in inputs/.' \
+            'Starts tools/serve/app.py; defaults: GPU 0, port 8666, queue 64.' \
+            'Set GVHMR_ENV_DIR to use another installed environment.'
+        exit 0
+        ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 ENV_DIR="${GVHMR_ENV_DIR:-$REPO_ROOT/.venv}"
