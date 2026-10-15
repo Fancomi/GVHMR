@@ -110,8 +110,41 @@ Keep historical runs read-only. Physical exposure timing, per-point scan motion,
 independently surveyed court scale and occluded-joint accuracy remain unverified;
 `production_admitted=false`. Visible-surface residual is not anatomical GT.
 Suggested train/val/test splits hold out whole sessions; athlete identity overlap
-is unverified. The original sibling PTv3 trainer is absent locally, so native
-point/SMPL verification cannot claim to rerun that loader.
+is unverified. The consuming trainer is maintained separately at
+`D:/PROJECT/LIDAR/rollout_lidar_mocap_badminton`.
+
+For training, qualify each existing accepted person-frame using corresponding
+native detections/tracks in **both** cameras. Missing either view excludes that
+person-frame, even when video timestamps match. Full-body keypoint confidence,
+net tape, occlusion and reprojection diagnostics are retained as metadata and do
+not add admission conditions. Individual visual review is not required.
+
+```powershell
+uv run --no-sync python tools/observe_badminton_dual_view.py --output-root outputs/my_paired_run --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam1_check.json --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam2_check.json
+uv run --no-sync python tools/export_badminton_dual_view.py finalize --output-root outputs/my_paired_run --full-observations outputs/my_paired_run/observations/manifest.json --wait
+uv run --no-sync python tools/export_badminton_dual_view.py verify --output-root outputs/my_paired_run
+```
+
+Observation reuses exact native-frame teacher detections after checking frozen
+calibration, video identity, frame index/PTS/common clock and cache provenance.
+Nearest/interpolated teacher frames are not presence evidence. Missing cache
+uses YOLO plus one-to-one fixed-mesh bbox association, without new ViTPose,
+GVHMR, body fitting or calibration. Per-camera journals resume only with the
+same sources/settings/code; an interrupted final line is recoverable. The
+second command may run alongside observation and finalizes after all source
+labels are checked. Published manifests are immutable. Tensor/metadata hashes,
+source indices, independent detection boxes, association and native time/image
+evidence are exported with unchanged source point/SMPL values. Original
+whole-session splits are preserved; physical identities across sessions remain
+unverified. Cached-evidence-only pilot exports are explicitly marked as pilots.
+
+An upstream source index can be checked separately with
+`tools/prepare_badminton_source.py --source-index <index.json> --data-root <badminton-data-root> --source-index-sha256 <digest> --report outputs/source_prepare/report.json`.
+This CPU-only adapter checks file hashes, explicit raw-XYZ/M semantics, original
+device clocks and native camera frame maps, and decodes six spread-out source
+scans. It normalizes metadata in memory and never edits original manifests.
+Candidate calibration applicability remains preparation-only and cannot admit
+body fitting; the default pipeline session list is unchanged.
 
 For offline previews and measured fit quality/efficiency:
 

@@ -17,6 +17,14 @@ The stage adapter `tools/pair_badminton.py` serves prepare/teacher/fit/export
 operations. `tools/verify_badminton_dataset.py` verifies original point members
 and native SMPL reconstruction. `tools/render_badminton_reviews.py` makes offline
 SMPL previews; `tools/report_badminton_quality.py` reports fit quality/efficiency.
+`tools/observe_badminton_dual_view.py` reuses native detections and fills missing
+camera observations with YOLO only (`rgb_observations.py`, `dual_view_observer.py`).
+`tools/export_badminton_dual_view.py` audits/exports/verifies person-frame subsets
+through `dual_view.py`: both corresponding camera detections must exist;
+whole-body/pose diagnostics do not add training admission gates.
+`tools/prepare_badminton_source.py` / `source_index.py` inspect an explicitly
+provided upstream source index on CPU. Candidate calibration applicability
+does not admit fitting; default session loading remains unchanged.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw
