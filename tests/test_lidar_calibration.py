@@ -1,5 +1,6 @@
-"""Adoption, source identity and projection contract checks (no GPU required)."""
+"""Canonical bundle, raw recording identity and projection contracts; CPU only."""
 import copy
+import hashlib
 import json
 import tempfile
 import unittest
@@ -7,163 +8,158 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+from PIL import Image
 
 from hmr4d.lidar_mocap import calibration as module
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
+from hmr4d.lidar_mocap.sessions import SessionIndex
 
 
-def write_json(path, data):
+def sha(blob):
+    return hashlib.sha256(blob).hexdigest()
+
+
+def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return module._sha(path.read_bytes())
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    return sha(path.read_bytes())
+
+
+def compact_frame_map(session):
+    rows = []
+    for pair in session.pairs():
+        rows.append({"lidar_frame": pair["lidar_index"], "device_first_us": pair["scan_start_us"],
+                     "device_last_us": pair["scan_end_us"], "scan_mid_us": pair["scan_mid_us"],
+                     "cameras": {name: {"status": match["status"], "record_index": match["record_index"],
+                                         "media_pts_us": match["media_pts_us"], "video_common_us": match["common_time_us"],
+                                         "time_error_us": match["time_error_us"]}
+                                 for name, match in pair["cameras"].items()}})
+    return b"".join(json.dumps(row, separators=(",", ":")).encode("utf-8") + b"\n" for row in rows)
 
 
 class SnapshotFixture:
-    """Small, genuinely source-bound fixture matching the adopted file schema."""
+    """Five canonical files and a complete miniature native recording."""
 
     def __init__(self, root):
         self.workspace = root / "gvhmr"
         self.workspace.mkdir()
         self.project = root / "lidar_project"
         self.sessions = root / "sessions"
-        self.output = self.workspace / "test-snapshot"
-        self.base = self.project / module._ACTIVE_RELATIVE.parent
-        self.active_path = self.base / "active-selection.json"
+        self.output = self.workspace / "snapshot"
+        self.base = self.project / "config/calibration/badminton-20261012"
         self.sid = "20261012_154726"
+        self.session = self.sessions / self.sid
+        self.lidar = self.session / "output-lidar" / f"lidar_{self.sid}"
+        self.video = self.session / "output-zcam" / f"zcam_{self.sid}"
+        self.meta = self.session / "meta" / self.sid
+        for directory in (self.lidar, self.video, self.meta):
+            directory.mkdir(parents=True)
         angle = .17
-        self.q = np.round(np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0],
-                                    [-np.sin(angle), 0, np.cos(angle)]]), 7)
+        self.q = np.round([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0],
+                           [-np.sin(angle), 0, np.cos(angle)]], 7)
+        self.manifest_path = self.lidar / "manifest.json"
+        self.clock_path = self.meta / f"{self.sid}_common_clock.json"
+        self._make_recording()
+
         theta = .3
         raw_r = np.array([[np.cos(theta), -np.sin(theta), 0],
                           [np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
-        policy = dict(variant="device_mid", lidar_reference="scan_midpoint",
-                      extra_offset_us=dict(cam1=0, cam2=0), timestamp_unit="integer_microseconds",
-                      physical_exposure_accuracy_verified=False, per_point_scan_times_available=False)
-        policy_hash = write_json(self.base / "selected-sync-v1/sync-policy.json", policy)
         camera = dict(K=[[1000., 0, 960.], [0, 1100., 540.], [0, 0, 1]],
                       distortion_opencv=[-.03, .01, .002, -.003, -.001],
                       R_raw_lidar_to_camera=raw_r.tolist(),
                       R_viewer_to_camera=(raw_r @ np.linalg.inv(self.q)).tolist(), t_m=[.4, -.2, 1.3])
-        court = dict(R_raw_lidar_to_court=np.eye(3).tolist(), t_raw_lidar_to_court_m=[0, 0, 2.8])
-        config = dict(image_size=[1920, 1080], coordinate_convention="p_camera = R @ p_raw + t; metres",
-                      cameras=dict(cam1=camera, cam2=copy.deepcopy(camera)), valid_source_ids=[self.sid],
-                      timing_policy=policy, court_registration=court, production_admitted=False,
-                      assumptions=["Not a surveyed physical calibration"])
-        calib_hash = write_json(self.base / "cam1-mask-selected-v1/calibration.json", config)
-        geometry_hash = write_json(self.base / "cam1-mask-selected-v1/verification.json",
-                                   dict(adopted_for_current_local_calibration=True, calibration_sha256=calib_hash))
-        captures = [dict(device_first_packet_us=10000, device_last_packet_us=20000),
-                    dict(device_first_packet_us=110000, device_last_packet_us=120000)]
-        manifest = dict(frame_count=2, coordinate_space="lidar_sensor_xyz",
-                        lidar_rotation=self.q.reshape(-1).tolist(), frame_capture_timestamps=captures)
-        self.manifest_path = self.sessions / self.sid / "output-lidar" / f"lidar_{self.sid}" / "manifest.json"
-        manifest_hash = write_json(self.manifest_path, manifest)
-        rows = []
-        for index, capture in enumerate(captures):
-            first, last = capture.values()
-            target = (first + last) // 2
-            match = dict(status="matched", record_index=index, media_pts_us=index * 100000,
-                         video_common_us=target + 100, time_error_us=100)
-            rows.append(dict(lidar_frame=index, device_first_us=first, device_last_us=last,
-                             scan_mid_us=target, cameras=dict(cam1=match, cam2=copy.deepcopy(match))))
-        map_path = self.base / f"selected-sync-v1/frame-map/{self.sid}.jsonl"
-        map_path.parent.mkdir(parents=True)
-        map_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
-        self.map_path = map_path
-        entry = dict(source_id=self.sid, path=f"frame-map/{self.sid}.jsonl", rows=2,
-                     sha256=module._sha(map_path.read_bytes()))
-        index_hash = write_json(self.base / "selected-sync-v1/selected-frames.json",
-                                dict(policy_sha256=policy_hash, frame_maps=[entry]))
-        provenance_hash = write_json(self.base / "selected-sync-v1/provenance.json",
-                                      dict(frame_maps=[entry], source_clock_audits=[dict(source_id=self.sid,
-                                           manifest_sha256=manifest_hash, tracks=dict(cam1=dict(rows=2), cam2=dict(rows=2)))]))
-        write_json(self.base / "selected-sync-v1/delivery-freeze.json",
-                   dict(files=[dict(path=str(self.base / "selected-sync-v1/provenance.json"), sha256=provenance_hash)]))
-        bbox = dict(version=1, boxes=[dict(role="ground", center=[0, 0, -2.8], size=[6.1, 13.4, .27], rotation_deg=[0, 0, 3])])
-        bbox_hash = write_json(self.base / "cam2-bbox-v1/bbox.json", bbox)
-        bbox_verify_hash = write_json(self.base / "cam2-bbox-v1/verification.json",
-                                      dict(adopted=True, bbox_sha256=bbox_hash, selected_calibration_sha256=calib_hash))
-        origin = -self.q @ np.array([0., 0., 2.8])
+        self.policy = dict(schema="selected-device-common-sync-v1", variant="device_mid",
+                           clock_axis="device_reported_timestamps_in_host_seeded_PHC_epoch",
+                           lidar_reference="scan_midpoint",
+                           target_formula="(device_first_packet_us + device_last_packet_us) // 2",
+                           timestamp_unit="integer_microseconds", video_selection="nearest_ZCAM_common_NTP_timestamp",
+                           tie_break="earlier_record_index", extra_offset_us=dict(cam1=0, cam2=0),
+                           media_binding="canonical_media_pts_us_for_selected_record_index",
+                           missing_time_behavior="unmatched; never reuse an endpoint frame or infer a receive-clock fallback",
+                           physical_exposure_accuracy_verified=False, per_point_scan_times_available=False)
+        offset = np.array([0., 0., 2.8])
+        origin = -self.q @ offset
         normal = np.linalg.inv(self.q).T @ np.array([0., 0., 1.])
         normal /= np.linalg.norm(normal)
-        fit = dict(camera_calibration_sha256=calib_hash, selected=bbox,
-                   source_rotation_raw_to_viewer=self.q.tolist(),
-                   reference_plane=dict(origin_viewer_m=origin.tolist(), normal_viewer=normal.tolist(),
-                                        source="Frozen court Z=0, not Ignore top"), limitations=["Development only"])
-        fit_hash = write_json(self.base / "cam2-bbox-v1/fit-results.json", fit)
-        write_json(self.base / "cam2-bbox-v1/delivery-freeze.json",
-                   dict(files=[dict(path="bbox.json", sha256=bbox_hash), dict(path="fit-results.json", sha256=fit_hash)]))
-        self.active = dict(status="adopted_for_current_local_calibration", variant="device_mid",
-                           calibration="cam1-mask-selected-v1/calibration.json", calibration_sha256=calib_hash,
-                           geometry_verification="cam1-mask-selected-v1/verification.json", geometry_verification_sha256=geometry_hash,
-                           timing_policy="selected-sync-v1/sync-policy.json", timing_policy_sha256=policy_hash,
-                           frame_index="selected-sync-v1/selected-frames.json", frame_index_sha256=index_hash,
-                           bbox="cam2-bbox-v1/bbox.json", bbox_sha256=bbox_hash,
-                           bbox_verification="cam2-bbox-v1/verification.json", bbox_verification_sha256=bbox_verify_hash,
-                           production_admitted=False)
-        write_json(self.active_path, self.active)
+        axes = self.q @ np.diag([-1., -1., 1.])
+        left, _, right = np.linalg.svd(axes)
+        rotation = left @ right
+        roll = np.arctan2(rotation[2, 1], rotation[2, 2])
+        pitch = np.arcsin(-rotation[2, 0])
+        yaw = np.arctan2(rotation[1, 0], rotation[0, 0])
+        self.plane = dict(origin_viewer_m=origin.tolist(), normal_viewer=normal.tolist(),
+                          court_to_raw_R=np.eye(3).tolist(), court_origin_raw_m=(-offset).tolist(),
+                          ground_bbox_centre_normal_offset_m=-.03, ground_bbox_upper_surface_margin_m=.105,
+                          note="Normative frozen plane; no independently surveyed floor")
+        self.bbox = dict(version=1, boxes=[dict(id="region_1", role="ground", type="Ignore", enabled=True,
+                         center=(origin-.03*normal).tolist(), size=[6.1, 13.4, .27],
+                         rotation_deg=np.rad2deg([roll, pitch, yaw]).tolist()),
+                         dict(id="region_2", role="net", type="Ignore", enabled=True,
+                              center=[10., 0., -1.9], size=[6.1, .6, 1.85], rotation_deg=[0., 0., 3.])])
+        self.config = dict(schema="badminton-calibration-result-v1", sport="badminton", image_size=[1920, 1080],
+                           coordinate_convention="p_destination = R @ p_source + t; column vectors, metres",
+                           lidar_rotation=self.q.reshape(-1).tolist(), cameras=dict(cam1=camera, cam2=copy.deepcopy(camera)),
+                           court_registration=dict(R_raw_lidar_to_court=np.eye(3).tolist(), t_raw_lidar_to_court_m=offset.tolist()),
+                           court_reference_plane=self.plane, timing_policy=self.policy,
+                           court=dict(width_m=6.1, length_m=13.4, line_width_m=.04,
+                                      dimension_basis="Regulatory prior; not independently surveyed"),
+                           source_id=self.sid, valid_source_ids=[self.sid], production_admitted=False)
+        write_json(self.base / "calibration.json", self.config)
+        bbox_hash = write_json(self.base / "bbox.json", self.bbox)
+        policy_hash = write_json(self.base / "sync-policy.json", self.policy)
+        (self.base / "roi-config.txt").write_text("# Original rounded capture matrix, metres\n"
+            + "lidar_rotation=" + ",".join(format(x, ".17g") for x in self.q.reshape(-1))
+            + "\nbbox_json=bbox.json\n", encoding="utf-8")
+        self.sources = dict(schema="badminton-calibration-sources-v1", workflow_branch="calibration/workflow",
+                            input_package="badminton/calibration/20261012", recordings_package="badminton/sessions",
+                            input_manifest_sha256="a"*64, input_case_sha256="b"*64,
+                            accepted_source_calibration_sha256="c"*64,
+                            accepted_bbox_sha256=bbox_hash, sync_policy_sha256=policy_hash,
+                            valid_source_ids=[self.sid], frame_maps=[], production_admitted=False,
+                            point_clouds=dict(coordinate_encoding="fixed24", coordinate_frame="raw LiDAR",
+                                              source_members_preserved=True),
+                            validation_inputs=dict(accepted_camera_or_timing_change=False))
+        self.refresh_source_map()
+
+    def _make_recording(self):
+        mids = (100000, 200000, 300000)
+        captures = [dict(device_first_packet_us=t-1000, device_last_packet_us=t+1000) for t in mids]
+        frames = [dict(frame_id=i+1, file=f"frame_{i:06d}.png", kept_points=1) for i in range(len(mids))]
+        manifest = dict(format="png-sequence", coordinate_encoding="fixed24", coordinate_space="lidar_sensor_xyz",
+                        lidar_rotation=self.q.reshape(-1).tolist(), frame_count=len(mids), frames=frames,
+                        frame_pattern="frame_%06d.png", frame_capture_timestamps=captures,
+                        frame_timestamps=[t/1e6 for t in mids], fps=10., point_width=2, point_height=1,
+                        scale=1000, center=256)
+        write_json(self.manifest_path, manifest)
+        encoded = np.array([[257000, 0], [258000, 0], [259000, 0]], dtype=np.uint32)
+        rgb = np.stack(((encoded >> 16) & 255, (encoded >> 8) & 255, encoded & 255), axis=-1).astype(np.uint8)
+        for frame in frames:
+            Image.fromarray(rgb).save(self.lidar / frame["file"])
+        tracks = [dict(device_id="lidar1", rows=[dict(frame_id=i+1, common_time_us=t-1000,
+                       end_common_time_us=t+1000) for i, t in enumerate(mids)])]
+        for name in ("cam1", "cam2"):
+            rows = [dict(common_time_us=t, media_pts_us=i*100000, frame_no=601+i) for i, t in enumerate(mids)]
+            tracks.append(dict(device_id=name, rows=rows))
+            sidecar = [dict(record_index=i, media_pts=row["media_pts_us"], media_time_base_num=1,
+                           media_time_base_den=1000000, ssp_frame_no=row["frame_no"], discontinuity=False,
+                           synthesized=False, connection_segment=0) for i, row in enumerate(rows)]
+            (self.video / f"{name}.frames.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in sidecar)+"\n", encoding="utf-8")
+            # freeze must index clocks/PTS without decoding media or using a GPU.
+            (self.video / f"{name}.mp4").write_bytes(b"not decoded by calibration freeze")
+        write_json(self.clock_path, dict(schema="external_gm_common_timeline_v1", session_id=self.sid,
+                   common_overlap_begin_us=mids[0], common_overlap_end_us=mids[-1],
+                   physical_accuracy_verified=False, exposure_offset_calibrated=False, tracks=tracks))
+
+    def refresh_source_map(self):
+        blob = compact_frame_map(SessionIndex.load(self.session))
+        self.expected_map = blob
+        self.sources["frame_maps"] = [dict(source_id=self.sid, path=f"frame-map/{self.sid}.jsonl",
+                                          rows=3, sha256=sha(blob))]
+        write_json(self.base / "sources.json", self.sources)
 
     def freeze(self):
         return CalibrationSnapshot.freeze(self.project, self.sessions, self.output)
-
-    def promote_to_corner(self):
-        """Adopt a newer shared plane, with raw source Q and timing unchanged."""
-        stage = self.base / "corner-fix-v1"
-        config = json.loads((self.base / self.active["calibration"]).read_text(encoding="utf-8"))
-        shared_r = module.bbox_rotation_matrix([1.4, -2., 3.])
-        shared_t = np.array([.15, -.2, 3.2])
-        transform = self.q @ shared_r.T
-        origin = -transform @ shared_t
-        normal = np.linalg.inv(transform).T @ np.array([0., 0., 1.])
-        normal /= np.linalg.norm(normal)
-        self.corner_plane = dict(origin_viewer_m=origin.tolist(), normal_viewer=normal.tolist(),
-                                 court_to_raw_R=shared_r.T.tolist(), court_origin_raw_m=(-shared_r.T @ shared_t).tolist(),
-                                 ground_bbox_centre_normal_offset_m=-.03,
-                                 ground_bbox_upper_surface_margin_m=.105,
-                                 note="New frozen shared court plane, not independently surveyed")
-        ground_rotation = module._proper_rotation(transform)
-        pitch = np.arcsin(-ground_rotation[2, 0])
-        roll = np.arctan2(ground_rotation[2, 1], ground_rotation[2, 2])
-        yaw = np.arctan2(ground_rotation[1, 0], ground_rotation[0, 0])
-        bbox = dict(version=1, boxes=[dict(role="ground", center=(origin-.03*normal).tolist(),
-                    size=[6.1, 13.4, .27], rotation_deg=np.rad2deg([roll, pitch, yaw]).tolist())])
-        bbox_hash = write_json(stage / "bbox.json", bbox)
-        config["cameras"]["cam1"]["distortion_opencv"] = [-.071, 1.89, 0., 0., 0.]
-        config["cameras"]["cam2"]["distortion_opencv"] = [-.0399, .013, 0., 0., 0.]
-        selected = dict(raw_to_court_R=shared_r.tolist(), raw_to_court_t_m=shared_t.tolist(), success=True,
-                        cameras={name: {"model": {"R": camera["R_raw_lidar_to_camera"], "t": camera["t_m"],
-                                                   "K": camera["K"], "d": camera["distortion_opencv"]}}
-                                 for name, camera in config["cameras"].items()})
-        fit_name = "plane-refine-fit-results.json"
-        fit_hash = write_json(stage / fit_name, dict(complete=True, models=dict(plane_lens_mask8=selected)))
-        config["court_registration"] = dict(R_raw_lidar_to_court=shared_r.tolist(),
-                                             t_raw_lidar_to_court_m=shared_t.tolist(), fit_results_sha256=fit_hash)
-        config["court_reference_plane"] = self.corner_plane
-        config_hash = write_json(stage / "calibration.json", config)
-        plane_hash = write_json(stage / "bbox-reference-plane.json", self.corner_plane)
-        provenance_hash = write_json(stage / "final-fit-provenance.json", dict(selected_fit_file=fit_name,
-                                      selected_fit_key="plane_lens_mask8", selected_fit_sha256=fit_hash,
-                                      limitations="Unsurveyed normative shared plane"))
-        source_export_hash = write_json(stage / "source-and-export-verification.json",
-                                        dict(passed=True, raw_rgb_frame_times_unchanged=True,
-                                             shared_court_Q_and_bbox_consistent=True, calibration_sha256=config_hash,
-                                             bbox_sha256=bbox_hash, fit_results_sha256=fit_hash))
-        verification_hash = write_json(stage / "verification.json", dict(schema=module._CORNER_VERIFICATION,
-                                          adopted=True, calibration_sha256=config_hash,
-                                          raw_points_rgb_and_frame_mapping_unchanged=True,
-                                          shared_court_Q_and_bbox_pose_updated_consistently=True,
-                                          source_and_export_verification_sha256=source_export_hash))
-        files = {"calibration.json": config_hash, "bbox.json": bbox_hash,
-                 "bbox-reference-plane.json": plane_hash, "final-fit-provenance.json": provenance_hash,
-                 fit_name: fit_hash, "source-and-export-verification.json": source_export_hash,
-                 "verification.json": verification_hash}
-        write_json(stage / "delivery-freeze.json", dict(files=[dict(path=name, sha256=sha) for name, sha in files.items()]))
-        self.active.update(geometry_variant="corner_fix_shared_plane", calibration="corner-fix-v1/calibration.json",
-                           calibration_sha256=config_hash, geometry_verification="corner-fix-v1/verification.json",
-                           geometry_verification_sha256=verification_hash, bbox="corner-fix-v1/bbox.json",
-                           bbox_sha256=bbox_hash, bbox_verification="corner-fix-v1/verification.json",
-                           bbox_verification_sha256=verification_hash)
-        write_json(self.active_path, self.active)
 
 
 class CalibrationTests(unittest.TestCase):
@@ -177,34 +173,55 @@ class CalibrationTests(unittest.TestCase):
         self.workspace_patch.stop()
         self.temp.cleanup()
 
+    def test_canonical_five_files_and_original_source_sha_are_distinct(self):
+        snapshot = self.fixture.freeze()
+        self.assertEqual(snapshot.data["schema"], module._CANONICAL_SCHEMA)
+        self.assertEqual({p.name for p in self.fixture.base.iterdir()},
+                         {"calibration.json", "bbox.json", "roi-config.txt", "sources.json", "sync-policy.json"})
+        self.assertNotEqual(self.fixture.sources["accepted_source_calibration_sha256"],
+                            sha((self.fixture.base / "calibration.json").read_bytes()))
+        self.assertEqual(snapshot.frame_map_path(self.fixture.sid).read_bytes(), self.fixture.expected_map)
+        np.testing.assert_array_equal(snapshot.Q, self.fixture.q)
+        self.assertFalse(snapshot.data["production_admitted"])
+        self.assertEqual(snapshot.data["provenance"]["accepted_source_calibration_sha256"], "c"*64)
+        self.assertEqual(snapshot.data["configuration_files_sha256"]["calibration.json"],
+                         sha((self.fixture.base / "calibration.json").read_bytes()))
+        evidence = snapshot.data["sessions"][self.fixture.sid]["source_evidence_sha256"]
+        expected_sources = [self.fixture.manifest_path, self.fixture.clock_path,
+                            self.fixture.video / "cam1.frames.jsonl", self.fixture.video / "cam2.frames.jsonl"]
+        self.assertEqual(evidence, {str(path.resolve()): sha(path.read_bytes()) for path in expected_sources})
+        for camera in ("cam1", "cam2"):
+            for key in ("K", "distortion_opencv", "R_raw_lidar_to_camera", "t_m"):
+                np.testing.assert_array_equal(snapshot.camera(camera)[key], self.fixture.config["cameras"][camera][key])
+            self.assertEqual(snapshot.camera(camera)["image_size"], [1920, 1080])
+            self.assertEqual(snapshot.camera(camera)["projection_model"], "opencv_pinhole_brown5")
+
     def test_exact_rounded_q_roundtrip_and_orientation(self):
         snapshot = self.fixture.freeze()
-        camera_points = np.array([[1, -.4, 2], [-.5, .1, 5], [3, 4, 30.]])
-        viewer = snapshot.camera_to_viewer(camera_points, "cam1")
-        np.testing.assert_allclose(snapshot.viewer_to_camera(viewer, "cam1"), camera_points, atol=1e-13)
+        points = np.array([[1, -.4, 2], [-.5, .1, 5], [3, 4, 30.]])
+        viewer = snapshot.camera_to_viewer(points, "cam1")
+        np.testing.assert_allclose(snapshot.viewer_to_camera(viewer, "cam1"), points, atol=1e-13)
         camera = snapshot.camera("cam1")
         wrong = viewer @ snapshot.Q @ np.asarray(camera["R_raw_lidar_to_camera"]).T + camera["t_m"]
-        self.assertGreater(np.max(np.abs(wrong - camera_points)), 1e-8)
-        orientation = snapshot.camera_rotation_to_viewer("cam1")
-        np.testing.assert_allclose(orientation.T @ orientation, np.eye(3), atol=1e-14)
-        self.assertAlmostEqual(np.linalg.det(orientation), 1, places=14)
-        self.assertGreater(snapshot.data["Q_rounding"]["max_orthogonality_error"], 0)
+        self.assertGreater(np.max(np.abs(wrong-points)), 1e-8)
+        rotation = snapshot.camera_rotation_to_viewer("cam1")
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-14)
+        self.assertAlmostEqual(np.linalg.det(rotation), 1, places=14)
 
     def test_brown_radial_and_tangential_distortion(self):
         snapshot = self.fixture.freeze()
         viewer = snapshot.camera_to_viewer([[1., -.4, 2.]], "cam1")
         uv, depth = snapshot.project(viewer, "cam1")
         x, y = .5, -.2
-        r2 = x*x + y*y
+        r2 = x*x+y*y
         k1, k2, p1, p2, k3 = snapshot.camera("cam1")["distortion_opencv"]
-        radial = 1 + k1*r2 + k2*r2*r2 + k3*r2*r2*r2
-        xd = x*radial + 2*p1*x*y + p2*(r2 + 2*x*x)
-        yd = y*radial + p1*(r2 + 2*y*y) + 2*p2*x*y
-        np.testing.assert_allclose(uv[0], [1000*xd + 960, 1100*yd + 540], atol=1e-10)
+        radial = 1+k1*r2+k2*r2*r2+k3*r2*r2*r2
+        xd = x*radial+2*p1*x*y+p2*(r2+2*x*x)
+        yd = y*radial+p1*(r2+2*y*y)+2*p2*x*y
+        np.testing.assert_allclose(uv[0], [1000*xd+960, 1100*yd+540], atol=1e-10)
         np.testing.assert_allclose(depth, [2.])
         plain, _ = snapshot.project(viewer, "cam1", distort=False)
         np.testing.assert_allclose(plain[0], [1460, 320], atol=1e-10)
-        self.assertGreater(np.max(np.abs(uv - plain)), 1)
 
     def test_torch_projection_gradients_and_transform(self):
         try:
@@ -212,111 +229,165 @@ class CalibrationTests(unittest.TestCase):
         except ImportError:
             self.skipTest("Torch is unavailable")
         snapshot = self.fixture.freeze()
-        camera = torch.tensor([[1., -.4, 2.], [-.2, .3, 4.]], dtype=torch.float64, requires_grad=True)
-        viewer = snapshot.camera_to_viewer(camera, "cam1")
-        torch.testing.assert_close(snapshot.viewer_to_camera(viewer, "cam1"), camera, atol=1e-13, rtol=0)
+        points = torch.tensor([[1., -.4, 2.], [-.2, .3, 4.]], dtype=torch.float64, requires_grad=True)
+        viewer = snapshot.camera_to_viewer(points, "cam1")
+        torch.testing.assert_close(snapshot.viewer_to_camera(viewer, "cam1"), points, atol=1e-13, rtol=0)
         for distort in (True, False):
             uv, depth = snapshot.project_torch(viewer, "cam1", distort=distort)
-            expected_uv, expected_depth = snapshot.project(viewer.detach().numpy(), "cam1", distort=distort)
-            np.testing.assert_allclose(uv.detach().numpy(), expected_uv, atol=1e-10)
+            expected, expected_depth = snapshot.project(viewer.detach().numpy(), "cam1", distort=distort)
+            np.testing.assert_allclose(uv.detach().numpy(), expected, atol=1e-10)
             np.testing.assert_allclose(depth.detach().numpy(), expected_depth, atol=1e-13)
         uv.sum().backward()
-        self.assertTrue(torch.isfinite(camera.grad).all().item())
-        self.assertGreater(camera.grad.abs().sum().item(), 0)
+        self.assertTrue(torch.isfinite(points.grad).all().item())
+        self.assertGreater(points.grad.abs().sum().item(), 0)
 
-    def test_snapshot_is_independent_of_later_pointer_changes(self):
+    def test_freeze_is_idempotent_and_later_config_does_not_change_snapshot(self):
         snapshot = self.fixture.freeze()
-        first_digest = snapshot.data["snapshot_digest"]
-        self.assertFalse(snapshot.data["production_admitted"])
-        self.assertEqual(snapshot.data["timing_policy"]["variant"], "device_mid")
-        self.assertTrue(snapshot.frame_map_path(self.fixture.sid).is_file())
-        self.assertEqual(self.fixture.freeze().data["snapshot_digest"], first_digest)
-        changed = copy.deepcopy(self.fixture.active)
-        changed["selected_utc"] = "later-adoption"
-        write_json(self.fixture.active_path, changed)
-        loaded = CalibrationSnapshot.load(snapshot.snapshot_json)
-        self.assertEqual(loaded.data["snapshot_digest"], first_digest)
-        with self.assertRaisesRegex(ValueError, "another adoption"):
+        digest = snapshot.data["snapshot_digest"]
+        self.assertEqual(self.fixture.freeze().data["snapshot_digest"], digest)
+        config = copy.deepcopy(self.fixture.config)
+        config["revision_note"] = "later canonical publication"
+        write_json(self.fixture.base / "calibration.json", config)
+        self.assertEqual(CalibrationSnapshot.load(snapshot.snapshot_json).data["snapshot_digest"], digest)
+        with self.assertRaises(ValueError):
             self.fixture.freeze()
 
-    def test_source_manifest_tampering_is_rejected(self):
-        self.fixture.manifest_path.write_bytes(self.fixture.manifest_path.read_bytes() + b" ")
-        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+    def test_source_manifest_change_rejected_on_existing_freeze(self):
+        self.fixture.freeze()
+        self.fixture.manifest_path.write_bytes(self.fixture.manifest_path.read_bytes()+b" ")
+        with self.assertRaises(ValueError):
             self.fixture.freeze()
-        self.assertFalse(self.fixture.output.exists())
 
-    def test_frozen_frame_map_tampering_is_rejected(self):
+    def test_source_manifest_race_is_rejected_before_publication(self):
+        original = Path.read_bytes
+        raced = []
+        target = self.fixture.manifest_path.resolve()
+        def read_and_change(path):
+            blob = original(path)
+            if path.resolve() == target and not raced:
+                raced.append(True)
+                path.write_bytes(blob+b" ")
+            return blob
+        with patch.object(Path, "read_bytes", read_and_change):
+            with self.assertRaises(ValueError):
+                self.fixture.freeze()
+        self.assertTrue(raced, "Race injection must actually read the native manifest")
+        self.assertFalse((self.fixture.output / "calibration_snapshot.json").exists())
+
+    def test_frozen_artifact_tampering_rejected(self):
         snapshot = self.fixture.freeze()
         snapshot.frame_map_path(self.fixture.sid).write_bytes(b"{}\n")
         with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
             CalibrationSnapshot.load(snapshot.snapshot_json)
 
-    def test_candidate_and_creating_pointer_rejected(self):
-        active = copy.deepcopy(self.fixture.active)
-        active["status"] = "candidate"
-        write_json(self.fixture.active_path, active)
-        with self.assertRaisesRegex(ValueError, "adopted"):
+    def test_missing_camera_and_incomplete_d5_rejected(self):
+        path = self.fixture.base / "calibration.json"
+        for change in ("camera", "d5"):
+            with self.subTest(change=change):
+                config = copy.deepcopy(self.fixture.config)
+                if change == "camera":
+                    del config["cameras"]["cam2"]
+                else:
+                    config["cameras"]["cam1"]["distortion_opencv"] = [0., 0., 0., 0.]
+                write_json(path, config)
+                with self.assertRaises((ValueError, KeyError)):
+                    self.fixture.freeze()
+        self.assertFalse((self.fixture.output / "calibration_snapshot.json").exists())
+
+    def test_source_mismatch_m_rejected(self):
+        manifest = json.loads(self.fixture.manifest_path.read_text(encoding="utf-8"))
+        manifest["lidar_rotation"] = np.eye(3).reshape(-1).tolist()
+        write_json(self.fixture.manifest_path, manifest)
+        with self.assertRaises(ValueError):
             self.fixture.freeze()
-        active["status"] = "adopted_for_current_local_calibration"
-        active["calibration"] = "calibration.json.creating"
-        write_json(self.fixture.active_path, active)
-        with self.assertRaisesRegex(ValueError, "creating"):
+
+    def test_embedded_or_nonmidpoint_timing_rejected(self):
+        config_path = self.fixture.base / "calibration.json"
+        config = copy.deepcopy(self.fixture.config)
+        config["timing_policy"] = copy.deepcopy(config["timing_policy"])
+        config["timing_policy"]["extra_offset_us"]["cam1"] = 50_000
+        write_json(config_path, config)
+        with self.assertRaises(ValueError):
             self.fixture.freeze()
+        # Even mutually consistent files cannot silently change the adopted
+        # scan-midpoint/zero-offset timing contract.
+        changed = copy.deepcopy(self.fixture.policy)
+        changed["lidar_reference"] = "scan_start"
+        config["timing_policy"] = changed
+        write_json(config_path, config)
+        self.fixture.sources["sync_policy_sha256"] = write_json(self.fixture.base / "sync-policy.json", changed)
+        write_json(self.fixture.base / "sources.json", self.fixture.sources)
+        with self.assertRaises(ValueError):
+            self.fixture.freeze()
+
+    def test_rebuilt_frame_map_sha_is_required(self):
+        self.fixture.sources["frame_maps"][0]["sha256"] = "0"*64
+        write_json(self.fixture.base / "sources.json", self.fixture.sources)
+        with self.assertRaises(ValueError):
+            self.fixture.freeze()
+
+    def test_changed_camera_clock_or_sidecar_rejected(self):
+        clock = json.loads(self.fixture.clock_path.read_text(encoding="utf-8"))
+        clock["tracks"][1]["rows"][1]["common_time_us"] += 100
+        write_json(self.fixture.clock_path, clock)
+        with self.assertRaises(ValueError):
+            self.fixture.freeze()
+
+    def test_native_sidecar_byte_change_rejected_on_existing_freeze(self):
+        self.fixture.freeze()
+        path = self.fixture.video / "cam1.frames.jsonl"
+        path.write_bytes(path.read_bytes()+b"\n")
+        with self.assertRaises(ValueError):
+            self.fixture.freeze()
+
+    def test_bbox_and_sync_file_sha_are_required(self):
+        for name in ("bbox.json", "sync-policy.json"):
+            with self.subTest(file=name):
+                path = self.fixture.base / name
+                previous = path.read_bytes()
+                path.write_bytes(previous+b" ")
+                with self.assertRaises(ValueError):
+                    self.fixture.freeze()
+                path.write_bytes(previous)
+
+    def test_reference_plane_is_bound_to_court_registration(self):
+        config = copy.deepcopy(self.fixture.config)
+        config["court_reference_plane"]["origin_viewer_m"][2] += .2
+        write_json(self.fixture.base / "calibration.json", config)
+        with self.assertRaises(ValueError):
+            self.fixture.freeze()
+        self.assertFalse((self.fixture.output / "calibration_snapshot.json").exists())
+
+    def test_legacy_v1_bundle_remains_loadable_without_live_source(self):
+        snapshot = self.fixture.freeze()
+        data = copy.deepcopy(snapshot.data)
+        data["schema"] = module._SCHEMA
+        data["active_selection"] = {"calibration_sha256": self.fixture.sources["accepted_source_calibration_sha256"]}
+        data["reference_plane"]["note"] = "Legacy corner-correction development plane description"
+        data["reference_plane"]["source"] = "Legacy one-metric-plane note; numerical geometry unchanged"
+        data["geometry_variant"] = "corner_fix_shared_plane"
+        payload = copy.deepcopy(data)
+        payload.pop("snapshot_digest", None)
+        data["snapshot_digest"] = sha(module._canonical(payload))
+        legacy_path = snapshot.snapshot_json
+        write_json(legacy_path, data)
+        frozen_bytes = legacy_path.read_bytes()
+        # A frozen bundle must not need source-root .local or current config.
+        with patch.object(CalibrationSnapshot, "freeze", side_effect=AssertionError("load invoked freeze")):
+            legacy = CalibrationSnapshot.load(legacy_path)
+        self.assertEqual(legacy.data["schema"], module._SCHEMA)
+        np.testing.assert_array_equal(legacy.Q, snapshot.Q)
+        np.testing.assert_allclose(legacy.project([[0., 0., 1.]], "cam1")[0],
+                                   snapshot.project([[0., 0., 1.]], "cam1")[0])
+        # Canonical republishing changes description/packaging, not the
+        # accepted camera/plane/source geometry or the old frozen run identity.
+        reused = self.fixture.freeze()
+        self.assertEqual(reused.data["snapshot_digest"], data["snapshot_digest"])
+        self.assertEqual(legacy_path.read_bytes(), frozen_bytes)
 
     def test_output_cannot_escape_workspace(self):
         with self.assertRaisesRegex(ValueError, "inside the GVHMR"):
             CalibrationSnapshot.freeze(self.fixture.project, self.fixture.sessions, Path(self.temp.name) / "elsewhere")
-
-    def test_reference_plane_is_bound_to_court_registration(self):
-        fit_path = self.fixture.base / "cam2-bbox-v1/fit-results.json"
-        fit = json.loads(fit_path.read_text(encoding="utf-8"))
-        fit["reference_plane"]["origin_viewer_m"][2] += .2
-        new_hash = write_json(fit_path, fit)
-        delivery_path = fit_path.parent / "delivery-freeze.json"
-        delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
-        delivery["files"][1]["sha256"] = new_hash
-        write_json(delivery_path, delivery)
-        with self.assertRaisesRegex(ValueError, "court registration"):
-            self.fixture.freeze()
-        self.assertFalse(self.fixture.output.exists())
-
-    def test_shared_corner_adoption_replaces_plane_not_raw_source_q(self):
-        old = self.fixture.freeze()
-        old_plane = old.reference_plane
-        self.fixture.promote_to_corner()
-        self.fixture.output = self.fixture.workspace / "corner-snapshot"
-        snapshot = self.fixture.freeze()
-        np.testing.assert_array_equal(snapshot.Q, old.Q)
-        self.assertEqual(snapshot.data["geometry_variant"], "corner_fix_shared_plane")
-        self.assertEqual(snapshot.data["adoption_verification_schema"], module._CORNER_VERIFICATION)
-        self.assertEqual(snapshot.data["bbox_rotation_convention"], "Rz @ Ry @ Rx")
-        np.testing.assert_allclose(snapshot.reference_plane["origin_viewer_m"], self.fixture.corner_plane["origin_viewer_m"])
-        self.assertGreater(np.linalg.norm(np.array(old_plane["origin_viewer_m"])-snapshot.reference_plane["origin_viewer_m"]), .2)
-        rotation = np.asarray(snapshot.data["bbox_geometry"]["ground_rotation_local_to_viewer"])
-        np.testing.assert_allclose(rotation[:, 2], snapshot.reference_plane["normal_viewer"], atol=1e-7)
-        self.assertNotEqual(snapshot.data["bbox"]["boxes"][0]["rotation_deg"][:2], [0, 0])
-        self.assertAlmostEqual(snapshot.data["bbox_geometry"]["ground_upper_surface_margin_m"], .105)
-        # Old snapshots remain usable independently after a new global adoption.
-        self.assertEqual(CalibrationSnapshot.load(old.snapshot_json).reference_plane, old_plane)
-        camera_points = np.array([[.2, -.1, 2.], [1, .3, 5.]])
-        np.testing.assert_allclose(snapshot.viewer_to_camera(snapshot.camera_to_viewer(camera_points, "cam1"), "cam1"),
-                                   camera_points, atol=1e-13)
-
-    def test_shared_corner_plane_tampering_rejected(self):
-        self.fixture.promote_to_corner()
-        plane_path = self.fixture.base / "corner-fix-v1/bbox-reference-plane.json"
-        plane_path.write_bytes(plane_path.read_bytes() + b" ")
-        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-            self.fixture.freeze()
-        self.assertFalse(self.fixture.output.exists())
-
-    def test_shared_corner_source_export_binding_rejected(self):
-        self.fixture.promote_to_corner()
-        source_path = self.fixture.base / "corner-fix-v1/source-and-export-verification.json"
-        source_path.write_bytes(source_path.read_bytes() + b" ")
-        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-            self.fixture.freeze()
-        self.assertFalse(self.fixture.output.exists())
 
 
 if __name__ == "__main__":

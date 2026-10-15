@@ -15,11 +15,15 @@ from pathlib import Path
 
 import numpy as np
 
+from hmr4d import PROJ_ROOT
+from .sessions import SessionIndex
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-_ACTIVE_RELATIVE = Path(".local/evidence/BADMINTON-CALIB-1012/multiframe/active-selection.json")
+
+_WORKSPACE_ROOT = PROJ_ROOT
+_CONFIG_RELATIVE = Path("config/calibration/badminton-20261012")
+_CONFIG_FILES = ("calibration.json", "sources.json", "sync-policy.json", "bbox.json", "roi-config.txt")
+_CANONICAL_SCHEMA = "gvhmr-canonical-lidar-calibration-v2"
 _SCHEMA = "gvhmr-adopted-lidar-calibration-v1"
-_CORNER_VERIFICATION = "global-corner-correction-verification-v1"
 
 
 def _sha(blob):
@@ -81,13 +85,57 @@ def bbox_rotation_matrix(rotation_deg):
     return rz @ ry @ rx
 
 
+
+def _same_inputs(old, current):
+    """Reusing an immutable legacy bundle requires the same physical inputs."""
+    if old.get("sessions_root") != current["sessions_root"]:
+        return False
+    if old.get("schema") == _CANONICAL_SCHEMA:
+        if old.get("configuration_sha256") != current["configuration_sha256"]:
+            return False
+    elif old.get("active_selection", {}).get("calibration_sha256") != current["provenance"]["accepted_source_calibration_sha256"]:
+        return False
+    for key in ("Q_raw_to_viewer", "bbox", "timing_policy", "production_admitted"):
+        if old.get(key) != current[key]:
+            return False
+    for key in ("R_raw_lidar_to_court", "t_raw_lidar_to_court_m"):
+        if old["court_registration"].get(key) != current["court_registration"][key]:
+            return False
+    for key in ("origin_viewer_m", "normal_viewer", "court_to_raw_R", "court_origin_raw_m",
+                "ground_bbox_centre_normal_offset_m", "ground_bbox_upper_surface_margin_m"):
+        value = current["reference_plane"].get(key)
+        previous = old["reference_plane"].get(key)
+        if value is not None and (previous is None or not np.allclose(previous, value, atol=1e-8, rtol=0)):
+            return False
+    for name in ("cam1", "cam2"):
+        for key in ("K", "distortion_opencv", "R_raw_lidar_to_camera", "R_viewer_to_camera", "t_m", "image_size", "projection_model"):
+            if old["cameras"][name].get(key) != current["cameras"][name].get(key):
+                return False
+    if set(old["sessions"]) != set(current["sessions"]):
+        return False
+    for sid, session in current["sessions"].items():
+        previous = old["sessions"][sid]
+        for key in ("manifest_sha256", "frame_count", "frame_map_sha256"):
+            if previous.get(key) != session[key]:
+                return False
+        before, after = previous["source_clock_audit"], session["source_clock_audit"]
+        if before.get("common_index_sha256") != after["common_index_sha256"]:
+            return False
+        for name in ("cam1", "cam2"):
+            for key in ("rows", "canonical_sha256"):
+                if before["tracks"][name].get(key) != after["tracks"][name][key]:
+                    return False
+    return True
+
+
 class CalibrationSnapshot:
     """Immutable-by-convention, self-contained calibration and frame-map bundle.
 
     ``freeze`` checks current source hashes before publishing. ``load`` checks
     only the frozen local bundle, so a later adoption does not alter an old run.
-    Existing snapshots may be reused by ``freeze`` only when their adopted
-    pointer and source manifest hashes still agree with current sources.
+    ``freeze`` reads the declared canonical result plus original recordings,
+    never another project's experimental worktree. Historical bundles remain
+    loadable and are reused only after numerical and source equivalence checks.
     """
 
     def __init__(self, data, snapshot_json):
@@ -104,264 +152,153 @@ class CalibrationSnapshot:
             raise ValueError("Calibration output_dir must remain inside the GVHMR workspace")
         if output_dir.is_relative_to(source_root) or output_dir.is_relative_to(sessions_root):
             raise ValueError("Calibration snapshots cannot be written into either source root")
-        snapshot_path = output_dir / "calibration_snapshot.json"
-        active_path = _bounded(source_root, _ACTIVE_RELATIVE)
-        active_blob = _checked_blob(active_path)
-        active = _json(active_blob)
-        if active.get("status") != "adopted_for_current_local_calibration":
-            raise ValueError("The active pointer does not identify an adopted calibration")
-        if active.get("variant") != "device_mid":
-            raise ValueError("Only the explicitly adopted device midpoint timing policy is supported")
-        base = active_path.parent
-        artifacts = {}
-        blobs = {}
-
-        def retain(path, expected=None):
-            path = Path(path).resolve()
-            if not path.is_relative_to(base):
-                raise ValueError(f"Calibration evidence escapes active-selection root: {path}")
-            blob = _checked_blob(path, expected)
-            relative = Path("evidence") / path.relative_to(base)
-            key = relative.as_posix()
-            artifacts[key] = {"path": key, "source_path": str(path), "sha256": _sha(blob)}
-            blobs[key] = blob
-            return _json(blob)
-
-        retain(active_path, _sha(active_blob))
-        linked = {}
-        for key in ("calibration", "timing_policy", "frame_index", "bbox", "geometry_verification", "bbox_verification"):
-            if key not in active or key + "_sha256" not in active:
-                raise ValueError(f"The adopted pointer lacks a hashed dependency: {key}")
-            linked[key] = retain(_bounded(base, active[key]), active[key + "_sha256"])
-        calibration = linked["calibration"]
-        policy = linked["timing_policy"]
-        index = linked["frame_index"]
-        if calibration.get("production_admitted", False) != active.get("production_admitted", False):
-            raise ValueError("Active pointer and calibration disagree on production admission")
-        geometry_verification = linked["geometry_verification"]
-        corner_correction = geometry_verification.get("schema") == _CORNER_VERIFICATION
-        if not geometry_verification.get("adopted" if corner_correction else "adopted_for_current_local_calibration"):
-            raise ValueError("Geometry verification does not attest adoption")
-        if not linked["bbox_verification"].get("adopted"):
-            raise ValueError("BBox verification does not attest adoption")
-        if geometry_verification.get("calibration_sha256") != active["calibration_sha256"]:
-            raise ValueError("Geometry verification does not match the selected calibration")
-        bbox_verification = linked["bbox_verification"]
-        if corner_correction:
-            if (bbox_verification != geometry_verification
-                    or active["bbox_verification_sha256"] != active["geometry_verification_sha256"]):
-                raise ValueError("Shared-court geometry and bbox require the same adopted verification")
-            if (geometry_verification.get("raw_points_rgb_and_frame_mapping_unchanged") is not True
-                    or geometry_verification.get("shared_court_Q_and_bbox_pose_updated_consistently") is not True):
-                raise ValueError("Shared-court adoption must attest unchanged raw sources and consistent bbox pose")
-        else:
-            if bbox_verification.get("bbox_sha256") != active["bbox_sha256"]:
-                raise ValueError("BBox verification does not match the selected bbox")
-            if bbox_verification.get("selected_calibration_sha256") != active["calibration_sha256"]:
-                raise ValueError("BBox verification is bound to another camera calibration")
-        if index.get("policy_sha256") != active["timing_policy_sha256"]:
-            raise ValueError("Frame index is bound to another timing policy")
-        if calibration.get("timing_policy") != policy:
-            raise ValueError("Camera calibration and adopted timing policy disagree")
-        if (policy.get("variant") != "device_mid" or policy.get("lidar_reference") != "scan_midpoint"
-                or policy.get("extra_offset_us") != {"cam1": 0, "cam2": 0}
-                or policy.get("timestamp_unit") != "integer_microseconds"):
-            raise ValueError("Timing policy differs from the adopted common device midpoint contract")
-
-        # The reference plane is frozen by the adopted bbox stage's delivery
-        # manifest; no newly modified or mtime-selected fit result is accepted.
-        bbox_dir = _bounded(base, active["bbox"]).parent
-        delivery = retain(bbox_dir / "delivery-freeze.json")
-        delivery_files = {entry["path"]: entry["sha256"] for entry in delivery["files"]}
-        if delivery_files.get("bbox.json") != active["bbox_sha256"]:
-            raise ValueError("BBox delivery freeze does not match the active selection")
-        if corner_correction:
-            if (delivery_files.get("calibration.json") != active["calibration_sha256"]
-                    or delivery_files.get("verification.json") != active["geometry_verification_sha256"]):
-                raise ValueError("Shared-court delivery freeze does not match the adopted calibration and verification")
-            export_verification = retain(bbox_dir / "source-and-export-verification.json",
-                                          geometry_verification["source_and_export_verification_sha256"])
-            if (delivery_files.get("source-and-export-verification.json")
-                    != geometry_verification["source_and_export_verification_sha256"]):
-                raise ValueError("Shared-court delivery and source verification SHA256 disagree")
-            if (export_verification.get("passed") is not True
-                    or export_verification.get("raw_rgb_frame_times_unchanged") is not True
-                    or export_verification.get("shared_court_Q_and_bbox_consistent") is not True
-                    or export_verification.get("calibration_sha256") != active["calibration_sha256"]
-                    or export_verification.get("bbox_sha256") != active["bbox_sha256"]):
-                raise ValueError("Shared-court source/export verification does not bind the adopted geometry")
-            for name in ("bbox-reference-plane.json", "final-fit-provenance.json"):
-                if name not in delivery_files:
-                    raise ValueError(f"Shared-court delivery lacks {name}")
-            adopted_plane = retain(bbox_dir / "bbox-reference-plane.json", delivery_files["bbox-reference-plane.json"])
-            if adopted_plane != calibration.get("court_reference_plane"):
-                raise ValueError("Adopted SharedCourtPlane differs between calibration and frozen bbox result")
-            fit_provenance = retain(bbox_dir / "final-fit-provenance.json", delivery_files["final-fit-provenance.json"])
-            fit_name = fit_provenance["selected_fit_file"]
-            fit_sha = fit_provenance["selected_fit_sha256"]
-            if (delivery_files.get(fit_name) != fit_sha
-                    or export_verification.get("fit_results_sha256") != fit_sha
-                    or calibration["court_registration"].get("fit_results_sha256") != fit_sha):
-                raise ValueError("Shared-court selected fit SHA256 is not bound consistently")
-            fit_results = retain(_bounded(bbox_dir, fit_name), fit_sha)
-            selected_fit = fit_results["models"][fit_provenance["selected_fit_key"]]
-            if fit_results.get("complete") is not True or selected_fit.get("success") is not True:
-                raise ValueError("Shared-court selected fit is incomplete or unsuccessful")
-            court = calibration["court_registration"]
-            for fit_key, calibration_key in (("raw_to_court_R", "R_raw_lidar_to_court"),
-                                             ("raw_to_court_t_m", "t_raw_lidar_to_court_m")):
-                if not np.array_equal(selected_fit[fit_key], court[calibration_key]):
-                    raise ValueError("Selected fit differs from the adopted shared court registration")
-            for name, camera in calibration["cameras"].items():
-                fitted_camera = selected_fit["cameras"][name]["model"]
-                for fit_key, camera_key in (("R", "R_raw_lidar_to_camera"), ("t", "t_m"),
-                                            ("K", "K"), ("d", "distortion_opencv")):
-                    if not np.array_equal(fitted_camera[fit_key], camera[camera_key]):
-                        raise ValueError("Selected fit differs from an adopted global camera model")
-            fit = {"reference_plane": adopted_plane, "limitations": [fit_provenance.get("limitations", "")]}
-        else:
-            if "fit-results.json" not in delivery_files:
-                raise ValueError("BBox delivery freeze lacks a reference-plane result")
-            fit = retain(bbox_dir / "fit-results.json", delivery_files["fit-results.json"])
-            if fit.get("camera_calibration_sha256") != active["calibration_sha256"]:
-                raise ValueError("Reference-plane result is bound to another camera calibration")
-            if fit.get("selected") != linked["bbox"]:
-                raise ValueError("Reference-plane result and adopted bbox disagree")
-
-        sync_dir = _bounded(base, active["timing_policy"]).parent
-        provenance = retain(sync_dir / "provenance.json")
-        sync_freeze = retain(sync_dir / "delivery-freeze.json")
-        provenance_path = sync_dir / "provenance.json"
-        frozen_provenance = next((r["sha256"] for r in sync_freeze["files"]
-                                  if Path(r["path"]).name == "provenance.json"), None)
-        if frozen_provenance is None or _sha(provenance_path.read_bytes()) != frozen_provenance:
-            raise ValueError("Timing provenance differs from its delivered freeze")
-        if provenance.get("frame_maps") != index.get("frame_maps"):
-            raise ValueError("Timing provenance and selected frame-map index disagree")
-        source_audits = {row["source_id"]: row for row in provenance["source_clock_audits"]}
-        valid_ids = set(calibration["valid_source_ids"])
-        map_entries = index["frame_maps"]
-        if {entry["source_id"] for entry in map_entries} != valid_ids or set(source_audits) != valid_ids:
-            raise ValueError("Camera, timing and frame-map source identities disagree")
+        config_dir = _bounded(source_root, _CONFIG_RELATIVE)
+        inputs = {_bounded(config_dir, name): _checked_blob(_bounded(config_dir, name)) for name in _CONFIG_FILES}
+        blobs = {f"evidence/{name}": inputs[_bounded(config_dir, name)] for name in _CONFIG_FILES}
+        hashes = {name: _sha(blobs[f"evidence/{name}"]) for name in _CONFIG_FILES}
+        artifacts = {f"evidence/{name}": dict(path=f"evidence/{name}", source_path=str(config_dir / name),
+                                             sha256=hashes[name]) for name in _CONFIG_FILES}
+        calibration = _json(blobs["evidence/calibration.json"])
+        sources = _json(blobs["evidence/sources.json"])
+        policy = _json(blobs["evidence/sync-policy.json"])
+        bbox = _json(blobs["evidence/bbox.json"])
+        if (calibration.get("schema") != "badminton-calibration-result-v1"
+                or sources.get("schema") != "badminton-calibration-sources-v1"):
+            raise ValueError("Unsupported canonical calibration/sources schema")
+        if set(calibration.get("cameras", {})) != {"cam1", "cam2"}:
+            raise ValueError("Canonical calibration requires both complete cameras: cam1 and cam2")
+        for key, actual in (("accepted_bbox_sha256", hashes["bbox.json"]),
+                            ("sync_policy_sha256", hashes["sync-policy.json"])):
+            if sources.get(key) != actual:
+                raise ValueError(f"Canonical source SHA256 mismatch: {key}")
+        # This is original calibration provenance, not the portable JSON's SHA.
+        provenance_sha = sources.get("accepted_source_calibration_sha256", "")
+        if (not isinstance(provenance_sha, str) or len(provenance_sha) != 64
+                or any(c not in "0123456789abcdef" for c in provenance_sha)):
+            raise ValueError("Canonical sources lacks the original accepted calibration SHA256")
+        if calibration.get("production_admitted") is not sources.get("production_admitted"):
+            raise ValueError("Canonical sources and calibration disagree on production admission")
+        if not isinstance(calibration.get("production_admitted"), bool):
+            raise ValueError("Canonical calibration requires explicit production_admitted")
+        expected_policy = dict(schema="selected-device-common-sync-v1", variant="device_mid",
+                               lidar_reference="scan_midpoint", timestamp_unit="integer_microseconds",
+                               clock_axis="device_reported_timestamps_in_host_seeded_PHC_epoch",
+                               target_formula="(device_first_packet_us + device_last_packet_us) // 2",
+                               video_selection="nearest_ZCAM_common_NTP_timestamp", tie_break="earlier_record_index",
+                               extra_offset_us={"cam1": 0, "cam2": 0},
+                               media_binding="canonical_media_pts_us_for_selected_record_index",
+                               missing_time_behavior="unmatched; never reuse an endpoint frame or infer a receive-clock fallback")
+        if calibration.get("timing_policy") != policy or any(policy.get(k) != v for k, v in expected_policy.items()):
+            raise ValueError("Timing policy differs from the canonical common device midpoint contract")
+        q = _rotation(np.asarray(calibration["lidar_rotation"]).reshape(3, 3), "canonical source raw-to-viewer M")
+        roi = dict(line.split("=", 1) for line in blobs["evidence/roi-config.txt"].decode("utf-8-sig").splitlines()
+                   if line.strip() and not line.lstrip().startswith("#"))
+        roi_q = _matrix([float(x) for x in roi.get("lidar_rotation", "").split(",")], "ROI source M", (9,)).reshape(3, 3)
+        if not np.array_equal(roi_q, q) or roi.get("bbox_json") != "bbox.json":
+            raise ValueError("Canonical ROI, bbox path and source M disagree")
+        ids = calibration.get("valid_source_ids", [])
+        entries = sources.get("frame_maps", [])
+        if (not ids or len(set(ids)) != len(ids) or set(ids) != set(sources.get("valid_source_ids", []))
+                or len(entries) != len(ids) or {e["source_id"] for e in entries} != set(ids)):
+            raise ValueError("Canonical calibration and frame-map source identities disagree")
         sessions = {}
-        common_q = None
-        for entry in map_entries:
+        for entry in entries:
             sid = entry["source_id"]
-            if Path(sid).name != sid or sid in sessions:
-                raise ValueError("Invalid or repeated calibration source identity")
-            manifest_path = _bounded(sessions_root, Path(sid) / "output-lidar" / f"lidar_{sid}" / "manifest.json")
-            audit = source_audits[sid]
-            manifest_blob = _checked_blob(manifest_path, audit["manifest_sha256"])
-            manifest = _json(manifest_blob)
-            if manifest.get("coordinate_space") != "lidar_sensor_xyz":
-                raise ValueError("Source manifest does not declare raw LiDAR storage")
-            q = _rotation(np.asarray(manifest["lidar_rotation"]).reshape(3, 3), "source raw-to-viewer Q")
-            if common_q is None:
-                common_q = q
-            elif not np.array_equal(common_q, q):
-                raise ValueError("Adopted sources have different raw-to-viewer matrices")
-            if int(entry["rows"]) != int(manifest["frame_count"]):
-                raise ValueError("Frozen frame map and source frame count disagree")
-            map_path = _bounded(sync_dir, entry["path"])
-            map_blob = _checked_blob(map_path, entry["sha256"])
-            rows = [json.loads(line) for line in map_blob.splitlines() if line.strip()]
-            if len(rows) != entry["rows"] or [r["lidar_frame"] for r in rows] != list(range(entry["rows"])):
-                raise ValueError("Frozen frame map must cover every LiDAR frame exactly once")
-            for row in rows:
-                frame = row["lidar_frame"]
-                capture = manifest["frame_capture_timestamps"][frame]
-                first, last = capture["device_first_packet_us"], capture["device_last_packet_us"]
-                if row["device_first_us"] != first or row["device_last_us"] != last or row["scan_mid_us"] != (first + last) // 2:
-                    raise ValueError("Frozen frame map differs from source device scan evidence")
-                for name in ("cam1", "cam2"):
-                    match = row["cameras"][name]
-                    fields = ("record_index", "media_pts_us", "video_common_us", "time_error_us")
-                    if match["status"] == "matched":
-                        if any(not isinstance(match.get(k), int) for k in fields):
-                            raise ValueError("Matched frame requires integer media and clock identity")
-                        if match["video_common_us"] - row["scan_mid_us"] != match["time_error_us"]:
-                            raise ValueError("Frozen camera time error is inconsistent")
-                        if not 0 <= match["record_index"] < audit["tracks"][name]["rows"] or match["media_pts_us"] < 0:
-                            raise ValueError("Frozen camera record lies outside its source")
-                    elif any(match.get(k) is not None for k in fields):
-                        raise ValueError("Unmatched frames must not reuse media endpoints")
-            map_relative = f"frame_maps/{sid}.jsonl"
-            artifacts[map_relative] = {"path": map_relative, "source_path": str(map_path), "sha256": _sha(map_blob)}
-            blobs[map_relative] = map_blob
-            sessions[sid] = dict(manifest_path=str(manifest_path), manifest_sha256=_sha(manifest_blob),
-                                 frame_count=int(manifest["frame_count"]), frame_map=map_relative,
-                                 frame_map_sha256=_sha(map_blob), source_clock_audit=copy.deepcopy(audit))
-        if not corner_correction:
-            fit_q = _matrix(fit["source_rotation_raw_to_viewer"], "bbox source Q", (3, 3))
-            if not np.array_equal(fit_q, common_q):
-                raise ValueError("Reference plane and actual source Q disagree")
-        plane = copy.deepcopy(fit["reference_plane"])
-        # Independently recompute the plane instead of trusting an unbound box
-        # top surface. Rounded Q requires the exact inverse for plane normals.
-        court = calibration["court_registration"]
+            if not isinstance(sid, str) or Path(sid).name != sid or sid in (".", ".."):
+                raise ValueError("Invalid canonical source identity")
+            session_dir = _bounded(sessions_root, sid)
+            manifest_path = _bounded(session_dir, Path("output-lidar") / f"lidar_{sid}" / "manifest.json")
+            clock_path = _bounded(session_dir, Path("meta") / sid / f"{sid}_common_clock.json")
+            sidecars = {name: _bounded(session_dir, Path("output-zcam") / f"zcam_{sid}" / f"{name}.frames.jsonl")
+                        for name in ("cam1", "cam2")}
+            raw_paths = [manifest_path, clock_path, *sidecars.values()]
+            for path in raw_paths:
+                inputs[path] = _checked_blob(path)
+            session = SessionIndex.load(session_dir)
+            if not np.array_equal(session.Q, q):
+                raise ValueError("Canonical calibration and actual source M disagree")
+            rows = []
+            for pair in session.pairs():
+                if pair["scan_mid_us"] is None:
+                    raise ValueError("Source scan lacks recorded device-clock timing")
+                cameras = {}
+                for name, camera in pair["cameras"].items():
+                    cameras[name] = dict(status=camera["status"], record_index=camera["record_index"],
+                                         media_pts_us=camera["media_pts_us"], video_common_us=camera["common_time_us"],
+                                         time_error_us=camera["time_error_us"])
+                rows.append(dict(lidar_frame=pair["lidar_index"], device_first_us=pair["scan_start_us"],
+                                 device_last_us=pair["scan_end_us"], scan_mid_us=pair["scan_mid_us"], cameras=cameras))
+            map_blob = b"".join(json.dumps(row, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n" for row in rows)
+            if len(rows) != entry.get("rows") or _sha(map_blob) != entry.get("sha256"):
+                raise ValueError(f"Rebuilt frame-map source rows/SHA256 mismatch: {sid}")
+            relative = f"frame_maps/{sid}.jsonl"
+            blobs[relative] = map_blob
+            artifacts[relative] = dict(path=relative, sha256=_sha(map_blob),
+                                       source="Rebuilt from declared original session clock and native video sidecars")
+            manifest_sha = _sha(inputs[manifest_path])
+            audit = dict(source_id=sid, manifest_sha256=manifest_sha, common_index_sha256=_sha(inputs[clock_path]),
+                         tracks={name: dict(rows=len(session.camera_rows(name)), canonical_sha256=_sha(inputs[path]))
+                                 for name, path in sidecars.items()})
+            sessions[sid] = dict(manifest_path=str(manifest_path), manifest_sha256=manifest_sha,
+                                 frame_count=len(rows), frame_map=relative, frame_map_sha256=_sha(map_blob),
+                                 source_clock_audit=audit,
+                                 source_evidence_sha256={str(path): _sha(inputs[path]) for path in raw_paths})
+        plane = copy.deepcopy(calibration["court_reference_plane"])
+        court = copy.deepcopy(calibration["court_registration"])
         court_r = _rotation(court["R_raw_lidar_to_court"], "raw-to-court rotation")
         court_t = _matrix(court["t_raw_lidar_to_court_m"], "raw-to-court translation", (3,))
-        court_to_viewer = common_q @ court_r.T
+        court_to_viewer = q @ court_r.T
         origin = -court_to_viewer @ court_t
         normal = np.linalg.inv(court_to_viewer).T @ np.array([0., 0., 1.])
         normal /= np.linalg.norm(normal)
         if (not np.allclose(origin, plane["origin_viewer_m"], atol=1e-8, rtol=0)
                 or not np.allclose(normal, plane["normal_viewer"], atol=1e-8, rtol=0)):
             raise ValueError("Reference plane is inconsistent with the frozen court registration")
-        ground = next((b for b in linked["bbox"].get("boxes", []) if b.get("role") == "ground"), None)
-        bbox_geometry = {"rotation_convention": "Rz @ Ry @ Rx"}
-        if ground is not None:
-            ground_rotation = bbox_rotation_matrix(ground["rotation_deg"])
-            centre_offset = float((np.asarray(ground["center"]) - origin) @ normal)
-            upper_margin = centre_offset + float(ground["size"][2]) / 2
-            bbox_geometry.update(ground_rotation_local_to_viewer=ground_rotation.tolist(),
-                                 ground_centre_normal_offset_m=centre_offset,
-                                 ground_upper_surface_margin_m=upper_margin)
-            if corner_correction:
-                if (not np.allclose(ground_rotation[:, 2], normal, atol=1e-7, rtol=0)
-                        or not np.isclose(centre_offset, plane["ground_bbox_centre_normal_offset_m"], atol=1e-8, rtol=0)
-                        or not np.isclose(upper_margin, plane["ground_bbox_upper_surface_margin_m"], atol=1e-8, rtol=0)):
-                    raise ValueError("SharedCourtPlane and full ground bbox pose/margins disagree")
-        elif corner_correction:
-            raise ValueError("Shared-court adopted bbox lacks an explicit ground role")
+        ground = next((box for box in bbox.get("boxes", []) if box.get("role") == "ground"), None)
+        if ground is None:
+            raise ValueError("Canonical shared-court bbox lacks an explicit ground role")
+        ground_rotation = bbox_rotation_matrix(ground["rotation_deg"])
+        centre_offset = float((_matrix(ground["center"], "ground bbox centre", (3,)) - origin) @ normal)
+        size = _matrix(ground["size"], "ground bbox size", (3,))
+        upper_margin = centre_offset + float(size[2]) / 2
+        if (np.any(size <= 0) or not np.allclose(ground_rotation[:, 2], normal, atol=1e-7, rtol=0)
+                or not np.isclose(centre_offset, plane["ground_bbox_centre_normal_offset_m"], atol=1e-8, rtol=0)
+                or not np.isclose(upper_margin, plane["ground_bbox_upper_surface_margin_m"], atol=1e-8, rtol=0)):
+            raise ValueError("SharedCourtPlane and full ground bbox pose/margins disagree")
+        bbox_geometry = dict(rotation_convention="Rz @ Ry @ Rx", ground_rotation_local_to_viewer=ground_rotation.tolist(),
+                             ground_centre_normal_offset_m=centre_offset, ground_upper_surface_margin_m=upper_margin)
         plane.setdefault("source", plane.get("note", "Frozen raw-to-court registration, court Z=0"))
         cameras = copy.deepcopy(calibration["cameras"])
         for camera in cameras.values():
             camera["image_size"] = calibration["image_size"]
             camera["projection_model"] = "opencv_pinhole_brown5"
-        data = dict(schema=_SCHEMA, frozen_utc=datetime.now(timezone.utc).isoformat(),
-                    active_selection_sha256=_sha(active_blob), active_selection=active,
-                    lidar_project_root=str(source_root), sessions_root=str(sessions_root),
-                    cameras=cameras, Q_raw_to_viewer=common_q.tolist(), reference_plane=plane,
-                    bbox=linked["bbox"], court_registration=court, timing_policy=policy,
-                    geometry_variant=active.get("geometry_variant"),
-                    adoption_verification_schema=geometry_verification.get("schema"),
-                    bbox_rotation_convention="Rz @ Ry @ Rx", bbox_geometry=bbox_geometry,
-                    sessions=sessions, artifacts=artifacts,
+        data = dict(schema=_CANONICAL_SCHEMA, frozen_utc=datetime.now(timezone.utc).isoformat(),
+                    configuration_sha256=_sha(_canonical(hashes)), configuration_files_sha256=hashes,
+                    provenance=sources, lidar_project_root=str(source_root), sessions_root=str(sessions_root),
+                    cameras=cameras, Q_raw_to_viewer=q.tolist(), reference_plane=plane, bbox=bbox,
+                    court_registration=court, court=calibration.get("court", {}), timing_policy=policy,
+                    geometry_variant="canonical_shared_court_plane", bbox_rotation_convention="Rz @ Ry @ Rx",
+                    bbox_geometry=bbox_geometry, sessions=sessions, artifacts=artifacts,
                     coordinate_convention=calibration["coordinate_convention"],
-                    production_admitted=bool(calibration.get("production_admitted", False)),
+                    production_admitted=calibration["production_admitted"],
                     physical_limits=dict(physical_exposure_accuracy_verified=policy.get("physical_exposure_accuracy_verified", False),
                                          per_point_scan_times_available=policy.get("per_point_scan_times_available", False),
                                          calibration_assumptions=calibration.get("assumptions", []),
-                                         reference_plane_limit=plane.get("source"),
-                                         bbox_limits=fit.get("limitations", [])),
-                    Q_rounding=dict(max_orthogonality_error=float(np.max(np.abs(common_q.T @ common_q - np.eye(3)))),
-                                    determinant=float(np.linalg.det(common_q)),
-                                    point_inverse="exact matrix inverse",
+                                         reference_plane_limit=plane["source"],
+                                         bbox_limits=[calibration.get("court", {}).get("dimension_basis", "Not independently surveyed")]),
+                    Q_rounding=dict(max_orthogonality_error=float(np.max(np.abs(q.T @ q - np.eye(3)))),
+                                    determinant=float(np.linalg.det(q)), point_inverse="exact matrix inverse",
                                     orientation_inverse="nearest proper SO(3) of Q @ R_raw.T"))
-        # Fail source races before writing any output. Source files are never
-        # changed, even when a frozen destination already exists.
-        for key, artifact in artifacts.items():
-            _checked_blob(artifact["source_path"], artifact["sha256"])
-        for session in sessions.values():
-            _checked_blob(session["manifest_path"], session["manifest_sha256"])
+        snapshot_path = output_dir / "calibration_snapshot.json"
+        cls(data, snapshot_path)  # Geometry validation precedes output creation.
+        for path, blob in inputs.items():
+            _checked_blob(path, _sha(blob))  # Reject source races, including sidecars.
         if snapshot_path.exists():
             old = cls.load(snapshot_path)
-            if old.data["active_selection_sha256"] != data["active_selection_sha256"] or old.data["sessions"] != sessions:
+            if not _same_inputs(old.data, data):
                 raise ValueError("Existing snapshot belongs to another adoption; load it explicitly or use a new output_dir")
-            return old
+            return old  # Preserve historical bytes and digest, including v1 bundles.
         data["snapshot_digest"] = _sha(_canonical(data))
-        cls(data, snapshot_path)  # Geometry validation precedes output creation.
         for key, blob in blobs.items():
             destination = _bounded(output_dir, key)
             if destination.exists() and _sha(destination.read_bytes()) != _sha(blob):
@@ -380,7 +317,7 @@ class CalibrationSnapshot:
     def load(cls, snapshot_json):
         snapshot_json = Path(snapshot_json).resolve()
         data = _json(snapshot_json.read_bytes())
-        if data.get("schema") != _SCHEMA:
+        if data.get("schema") not in (_SCHEMA, _CANONICAL_SCHEMA):
             raise ValueError("Unsupported calibration snapshot schema")
         payload = copy.deepcopy(data)
         expected = payload.pop("snapshot_digest", None)
@@ -397,6 +334,8 @@ class CalibrationSnapshot:
         normal = _matrix(plane["normal_viewer"], "reference plane normal", (3,))
         if abs(np.linalg.norm(normal) - 1) > 1e-6 or normal[2] <= 0:
             raise ValueError("Reference plane requires an upward unit normal")
+        if set(self.data["cameras"]) != {"cam1", "cam2"}:
+            raise ValueError("Calibration requires both complete cameras: cam1 and cam2")
         for name, camera in self.data["cameras"].items():
             raw_r = _rotation(camera["R_raw_lidar_to_camera"], f"{name} raw rotation")
             _matrix(camera["t_m"], f"{name} translation", (3,))

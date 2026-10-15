@@ -1,61 +1,34 @@
-"""Run, export and verify all badminton sessions with a durable local status file.
+"""Badminton production pipeline: original LiDAR/video -> neutral SMPL pairs.
 
-Optional --adopt-pid waits for a verified already running Windows pairing CLI.
-It never attaches to arbitrary processes or interprets existence as success.
+Inputs: --sessions-root recordings and --lidar-project-root's canonical
+config/calibration/badminton-20261012 five-file result. Outputs: a new run folder
+with an immutable calibration bundle, fits, datasets and verification status.
+Run through project-local uv; fitting needs installed CUDA/body-model assets.
+--prepare-only checks calibration, source clocks and pairing without inference.
+On failure read job_status.json, resolve its error and rerun this command;
+validated caches resume. Changed physical inputs require a new output root.
 """
 from __future__ import annotations
 import argparse
-import ctypes
-from ctypes import wintypes
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 from datetime import datetime,timezone
+from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.pipeline import BadmintonPipeline,write_json
 
 
-def wait_for_existing(pid,root,output):
-    if os.name!='nt':
-        raise ValueError('--adopt-pid requires Windows process identity verification')
-    command = f"Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}' | Select-Object CommandLine | ConvertTo-Json -Compress"
-    found = subprocess.run(['powershell','-NoProfile','-Command',command],capture_output=True,text=True,check=True)
-    identity = json.loads(found.stdout or 'null')
-    line = identity.get('CommandLine','') if identity else ''
-    expected_output = str(output.relative_to(root)).replace('\\','/')
-    output_matches = ('--output-root' not in line and expected_output=='outputs/badminton') or expected_output in line.replace('\\','/')
-    if ('tools/pair_badminton.py run' not in line or '--preproc-precision float16' not in line
-            or '--roi-margin-px 20' not in line or not output_matches
-            or '--session' in line or '--duration-seconds' in line):
-        raise ValueError('PID does not identify the expected full calibrated pairing job')
-    kernel = ctypes.WinDLL('kernel32',use_last_error=True)
-    kernel.OpenProcess.argtypes=(wintypes.DWORD,wintypes.BOOL,wintypes.DWORD)
-    kernel.OpenProcess.restype=wintypes.HANDLE
-    kernel.WaitForSingleObject.argtypes=(wintypes.HANDLE,wintypes.DWORD)
-    kernel.GetExitCodeProcess.argtypes=(wintypes.HANDLE,ctypes.POINTER(wintypes.DWORD))
-    kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
-    handle = kernel.OpenProcess(0x100000|0x1000,False,pid)
-    if not handle:
-        raise OSError(ctypes.get_last_error(),'Cannot verify/wait for pairing process')
-    try:
-        while kernel.WaitForSingleObject(handle,5000)==0x102:
-            pass
-        code = wintypes.DWORD()
-        if not kernel.GetExitCodeProcess(handle,ctypes.byref(code)):
-            raise OSError(ctypes.get_last_error(),'Cannot read pairing exit status')
-        return code.value
-    finally:
-        kernel.CloseHandle(handle)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--adopt-pid',type=int)
+    parser.add_argument('--sessions-root',type=Path,default=Path('D:/PROJECT/LIDAR/datas/badminton/sessions'))
+    parser.add_argument('--lidar-project-root',type=Path,default=Path('D:/PROJECT/LIDAR/lidar_project'))
+    parser.add_argument('--prepare-only',action='store_true')
     parser.add_argument('--output-root',type=Path,default=Path('outputs/badminton'))
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = PROJ_ROOT
     os.chdir(root)
     output = args.output_root.resolve()
     if not output.is_relative_to(root):
@@ -64,35 +37,36 @@ def main():
     status_path = output/'job_status.json'
     status = {'schema':'badminton-full-job-v1','state':'running','supervisor_pid':os.getpid(),
               'started_utc':datetime.now(timezone.utc).isoformat(),'output_root':str(output),
-              'current_phase':'fitting','adopted_pairing_pid':args.adopt_pid}
+              'current_phase':'preparing'}
     write_json(status_path,status)
-    python = str(root/'.venv/Scripts/python.exe') if os.name=='nt' else sys.executable
+    python = sys.executable
+    inputs = ['--sessions-root',str(args.sessions_root.resolve()),'--lidar-project-root',str(args.lidar_project_root.resolve())]
     try:
-        pipeline = BadmintonPipeline('D:/PROJECT/LIDAR/datas/badminton/sessions',
-                                     'D:/PROJECT/LIDAR/lidar_project',output,
+        pipeline = BadmintonPipeline(args.sessions_root,args.lidar_project_root,output,
                                      preproc_precision='float16',roi_margin_px=20)
-        pipeline.prepare()  # Also rejects resuming a superseded adopted snapshot.
+        pipeline.prepare()  # Reject changed inputs; never rewrite a frozen snapshot.
         status.update(calibration_digest=pipeline.calibration.data['snapshot_digest'],
-                      active_selection_sha256=pipeline.calibration.data['active_selection_sha256'],
+                      configuration_sha256=pipeline.calibration.data.get('configuration_sha256'),
                       geometry_variant=pipeline.calibration.data.get('geometry_variant'))
         write_json(status_path,status)
+        if args.prepare_only:
+            status.update(state='prepared',current_phase='prepared',finished_utc=datetime.now(timezone.utc).isoformat())
+            write_json(status_path,status)
+            return
         code = None
-        if args.adopt_pid:
-            code = wait_for_existing(args.adopt_pid,root,output)
         for attempt in range(3):
             if code==0:
                 break
             status.update(current_phase='fitting',attempt=attempt+1)
             write_json(status_path,status)
-            suffix = '' if attempt==0 and not args.adopt_pid else f'_resume_{attempt+1}'
+            suffix = '' if attempt==0 else f'_resume_{attempt+1}'
             with (output/f'full_run{suffix}.log').open('w',encoding='utf-8') as log, (output/f'full_run{suffix}.err.log').open('w',encoding='utf-8') as errors:
                 result = subprocess.run([python,'-u','tools/pair_badminton.py','run','--preproc-precision','float16',
-                                         '--roi-margin-px','20','--output-root',str(output)],stdout=log,stderr=errors)
+                                         '--roi-margin-px','20','--output-root',str(output),*inputs],stdout=log,stderr=errors)
                 code = result.returncode
         if code:
             raise RuntimeError(f'Pairing process exited with {code}; matching caches remain resumable')
-        pipeline = BadmintonPipeline('D:/PROJECT/LIDAR/datas/badminton/sessions',
-                                     'D:/PROJECT/LIDAR/lidar_project',output,
+        pipeline = BadmintonPipeline(args.sessions_root,args.lidar_project_root,output,
                                      preproc_precision='float16',roi_margin_px=20)
         calibration = pipeline._load()
         expected = []
@@ -107,7 +81,7 @@ def main():
         status.update(current_phase='exporting',completed_windows=len(actual))
         write_json(status_path,status)
         with (output/'dataset_export.log').open('w',encoding='utf-8') as log:
-            subprocess.run([python,'tools/pair_badminton.py','export','--output-root',str(output)],stdout=log,stderr=subprocess.STDOUT,check=True)
+            subprocess.run([python,'tools/pair_badminton.py','export','--output-root',str(output),*inputs],stdout=log,stderr=subprocess.STDOUT,check=True)
         exported = json.loads((output/'datasets/dataset_manifest.json').read_text(encoding='utf-8'))
         status.update(current_phase='verifying',accepted=exported['accepted'])
         write_json(status_path,status)

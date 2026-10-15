@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
 
+from hmr4d import PROJ_ROOT
+
 from .calibration import CalibrationSnapshot
 from .sessions import SessionIndex
 from .segmentation import court_polygon, farthest_sample, segment_people
@@ -58,8 +60,7 @@ class BadmintonPipeline:
         self.sessions_root = Path(sessions_root).resolve()
         self.lidar_project_root = Path(lidar_project_root).resolve()
         self.output_root = Path(output_root).resolve()
-        workspace = Path(__file__).resolve().parents[2]
-        if not self.output_root.is_relative_to(workspace):
+        if not self.output_root.is_relative_to(PROJ_ROOT):
             raise ValueError('Outputs must remain in the GVHMR workspace')
         self.settings = dict(camera=camera,teacher_stride=teacher_stride,batch_size=batch_size,
                              fit_batch_size=fit_batch_size,iterations=iterations,
@@ -78,7 +79,7 @@ class BadmintonPipeline:
     def _fit_digest(self):
         paths = [Path(__file__).with_name(name+'.py') for name in
                  ('pipeline','fitting','segmentation','export','calibration','sessions')]
-        paths.append(Path(__file__).parents[1]/'utils/body_model/contracts.py')
+        paths.append(PROJ_ROOT/'hmr4d/utils/body_model/contracts.py')
         digest = hashlib.sha256()
         for path in paths:
             digest.update(path.read_bytes().replace(b'\r\n',b'\n'))

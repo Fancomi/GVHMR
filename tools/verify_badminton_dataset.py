@@ -6,6 +6,7 @@ import joblib
 import numpy as np
 import smplx
 import torch
+from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.sessions import SessionIndex
 from hmr4d.utils.body_model.contracts import forward_smpl_at_pelvis
@@ -15,14 +16,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root',type=Path,default=Path('outputs/badminton'))
     parser.add_argument('--samples-per-session',type=int,default=16)
+    parser.add_argument('--report',type=Path,help='Write verification here when inspecting an immutable historical run')
     args = parser.parse_args()
     if args.samples_per_session<1:
         parser.error('samples-per-session must be positive')
     torch.set_num_threads(4)
-    root = Path(__file__).resolve().parents[1]
     calibration = CalibrationSnapshot.load(args.output_root/'calibration/calibration_snapshot.json')
     manifest = json.loads((args.output_root/'datasets/dataset_manifest.json').read_text(encoding='utf-8'))
-    model = smplx.create(root/'inputs/checkpoints/body_models',model_type='smpl',gender='neutral').eval()
+    model = smplx.create(PROJ_ROOT/'inputs/checkpoints/body_models',model_type='smpl',gender='neutral').eval()
     report = {'scope':'Actual exported fixed24 clouds and neutral SMPL parameters; downstream trainer path currently missing',
               'sessions':{},'calibration_digest':calibration.data['snapshot_digest']}
     for sid,entry in manifest['exports'].items():
@@ -52,7 +53,8 @@ def main():
             raise ValueError(f'Actual source/body contract mismatch {sid}: {cloud_error}, {mesh_error}, {pelvis_error}')
         report['sessions'][sid] = {'exported':len(rows),'checked':len(selected),'max_source_cloud_error_m':cloud_error,
                                    'max_rebuilt_mesh_error_m':mesh_error,'max_pelvis_translation_error_m':pelvis_error}
-    path = args.output_root/'datasets/verification.json'
+    path = args.report or args.output_root/'datasets/verification.json'
+    path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report,indent=2))
 
