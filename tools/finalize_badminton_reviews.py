@@ -119,7 +119,9 @@ def main():
         deadline=time.monotonic()+args.max_wait_hours*3600
         while True:
             job=read_json(output/'job_status.json')
-            if job['state']=='complete':break
+            if job['state']=='complete':
+                status['full_job_state']='complete'
+                break
             if job['state']!='running':raise RuntimeError(f"Full job cannot be finalized: {job['state']} {job.get('error','')}")
             if not args.wait_for_job:raise RuntimeError('Full job is still running; use --wait-for-job')
             if time.monotonic()>deadline:raise TimeoutError('Waiting for full fitting exceeded the configured timeout')

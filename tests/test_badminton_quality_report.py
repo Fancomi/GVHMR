@@ -56,6 +56,36 @@ class CompletedWindowScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "UTC offset"):
             module.parse_utc("2026-10-14T16:00:00")
 
+    def test_completed_export_includes_selected_prejob_cache_and_excludes_smoke(self):
+        from datetime import datetime, timezone
+
+        start = datetime(2026, 10, 14, 15, 0, tzinfo=timezone.utc)
+        settings = {"window_seconds": 60, "fit_batch_size": 128}
+        pairing = {"settings": settings, "calibration_digest": "adopted"}
+        progress = {"updated_utc": "2026-10-14T16:00:00+00:00"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            exported = set()
+            for left, right, offset, included in [(0, 6000000, -60, False),
+                                                  (0, 60000000, -30, True),
+                                                  (60000000, 65000000, 600, True)]:
+                name = f"{left:012d}_{right:012d}"
+                directory = root / "sessions/first/windows" / name
+                directory.mkdir(parents=True)
+                config = {"session_id": "first", "window_id": name, "left_us": left,
+                          "right_us": right, "calibration_digest": "adopted", "settings": settings}
+                (directory / "window.json").write_text(json.dumps(config), encoding="utf-8")
+                report = directory / "fit_report.json"
+                report.write_text("{}", encoding="utf-8")
+                os.utime(report, (start.timestamp() + offset, start.timestamp() + offset))
+                if included:
+                    exported.add(("first", name))
+            selected, rejected = module.completed_windows(root, pairing, progress, start.isoformat(), exported)
+            self.assertEqual({("first", entry[2].name) for entry in selected}, exported)
+            self.assertEqual(rejected["not_selected_for_export"], 1)
+            with self.assertRaisesRegex(ValueError, "Exported windows"):
+                module.completed_windows(root, pairing, progress, start.isoformat(), exported | {("first", "missing")})
+
 
 if __name__ == "__main__":
     unittest.main()

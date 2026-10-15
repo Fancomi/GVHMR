@@ -90,9 +90,9 @@ function showFrame(i){if(!clip)return;index=Math.max(0,Math.min(clip.frames.leng
  $('metrics').innerHTML='<table><tr><th>窗口内轨迹</th><th>质量门禁</th><th>点到表面 mean</th><th>本帧点到表面 P90</th><th>Cam2 拟合残差</th></tr>'+html+'</table>';
  $('provenance').textContent=JSON.stringify({scan_mid_us:f.scan_mid_us,cameras:f.cameras,geometry_interpolated:false,athletes:f.athletes.map(a=>({motion_id:a.motion_id,accepted:a.accepted,rejection_reasons:a.rejection_reasons,qa:a.qa}))},null,2);draw();
 }
-function seek(i){playing=false;$('play').textContent='播放';mediaTime=clip.frames[Math.max(0,Math.min(i,clip.frames.length-1))].offset_s;showFrame(i);}
+function seek(i){if(!clip)return;playing=false;$('play').textContent='播放';mediaTime=clip.frames[Math.max(0,Math.min(i,clip.frames.length-1))].offset_s;showFrame(i);}
 window.REVIEW_CLIP_READY=data=>{if(data.id!==manifest.clips[clipNumber].id)return;clip=data;index=0;mediaTime=0;playing=false;orient();$('timeline').max=clip.frames.length-1;$('play').textContent='播放';showFrame(0);};
-function loadClip(i){playing=false;clipNumber=i;const generation=++loadGeneration;clip=null;gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);$('status').textContent='加载真实网格与连续帧…';
+function loadClip(i){playing=false;clipNumber=i;const generation=++loadGeneration;clip=null;window.REVIEW_STATE=null;gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);$('status').textContent='加载真实网格与连续帧…';
  [...$('clips').children].forEach((b,n)=>b.classList.toggle('active',n===i));const script=document.createElement('script');script.src=manifest.clips[i].id+'/data.js';
  script.onerror=()=>{if(generation===loadGeneration)$('status').textContent='片段数据未能加载，请保留完整输出文件夹。';};
  script.onload=()=>script.remove();document.body.appendChild(script);

@@ -30,7 +30,7 @@ def parse_utc(value):
     return moment.astimezone(timezone.utc)
 
 
-def completed_windows(root, pairing, progress, started_utc=None):
+def completed_windows(root, pairing, progress, started_utc=None, validated_windows=None):
     """Prefer regular job windows, including a short terminal window, over smoke.
 
     Configured window length defines a regular full-run window; actual duration
@@ -46,6 +46,10 @@ def completed_windows(root, pairing, progress, started_utc=None):
     for report_path in sorted((root / "sessions").glob("*/windows/*/fit_report.json")):
         config = read_json(report_path.parent / "window.json")
         report = read_json(report_path)
+        key = (config['session_id'], report_path.parent.name)
+        if validated_windows is not None and key not in validated_windows:
+            excluded['not_selected_for_export'] += 1
+            continue
         if config["calibration_digest"] != pairing["calibration_digest"]:
             excluded["different_calibration"] += 1
             continue
@@ -56,7 +60,7 @@ def completed_windows(root, pairing, progress, started_utc=None):
             excluded["different_job_settings"] += 1
             continue
         modified = report_path.stat().st_mtime
-        if started is not None and modified < started:
+        if started is not None and modified < started and validated_windows is None:
             excluded["completed_before_current_job"] += 1
             continue
         if modified > watermark:
@@ -80,6 +84,10 @@ def completed_windows(root, pairing, progress, started_utc=None):
             chosen.append(config)
             selected.append((config, report, directory))
     selected.sort(key=lambda entry: (entry[0]["session_id"], entry[0]["left_us"]))
+    if validated_windows is not None:
+        selected_keys = {(config['session_id'], directory.name) for config, _, directory in selected}
+        if selected_keys != set(validated_windows):
+            raise ValueError('Exported windows are missing, mismatched or beyond the completion watermark')
     return selected, dict(excluded)
 
 
@@ -198,7 +206,16 @@ def build_report(output_root, benchmark_root, cam1_report=None):
     pairing = read_json(root / "pairing_report.json")
     status = read_json(root / "job_status.json")
     progress = read_json(root / "progress.json")
-    windows, exclusions = completed_windows(root, pairing, progress, status["started_utc"])
+    dataset_path = root / "datasets/dataset_manifest.json"
+    dataset = read_json(dataset_path) if dataset_path.exists() else None
+    validated_windows = None
+    if status['state'] == 'complete':
+        if not dataset or dataset.get('calibration_digest') != pairing['calibration_digest']:
+            raise ValueError('A completed job requires an export with the same frozen calibration')
+        validated_windows = {(sid, window) for sid, windows in dataset['selected_windows'].items() for window in windows}
+        if len(validated_windows) != status['completed_windows']:
+            raise ValueError('Completed job and exported window counts disagree')
+    windows, exclusions = completed_windows(root, pairing, progress, status["started_utc"], validated_windows)
     if not windows:
         raise ValueError("No completed full-run windows at the captured progress watermark")
     rows, passed, window_reports = [], [], []
@@ -206,6 +223,7 @@ def build_report(output_root, benchmark_root, cam1_report=None):
     segmentation = Counter()
     rejection = Counter()
     consistency = []
+    cached_fitted = cached_passed = cached_seconds = cached_windows = 0
     sessions = defaultdict(lambda: {"completed_windows": 0, "source_seconds": 0., "scans": 0,
                                    "fitted": 0, "accepted": 0})
     for config, report, directory in windows:
@@ -237,6 +255,12 @@ def build_report(output_root, benchmark_root, cam1_report=None):
                    "fitted": len(quality), "accepted": len(accepted),
                    "fit_algorithm_digest": report.get("fit_algorithm_digest"),
                    "settings": report.get("settings"), "fitting_config": report.get("fitting_config")}
+        summary['reused_validated_cache'] = (directory/'fit_report.json').stat().st_mtime < parse_utc(status['started_utc']).timestamp()
+        if summary['reused_validated_cache']:
+            cached_windows += 1
+            cached_fitted += len(quality)
+            cached_passed += len(accepted)
+            cached_seconds += duration
         window_reports.append(summary)
         session = sessions[config["session_id"]]
         session["completed_windows"] += 1
@@ -249,15 +273,17 @@ def build_report(output_root, benchmark_root, cam1_report=None):
     if elapsed <= 0:
         raise ValueError("Completion watermark precedes job start")
     seconds = sum(window["source_seconds"] for window in window_reports)
-    dataset_path = root / "datasets/dataset_manifest.json"
-    dataset = read_json(dataset_path) if dataset_path.exists() else None
+    if validated_windows is not None and (consistency or len(passed) != dataset['accepted']):
+        raise ValueError('Complete quality totals do not match the validated exported dataset')
     cam1_check = read_cam1_check(root, cam1_report, pairing["calibration_digest"])
     return {
         "schema": "badminton-quality-efficiency-report-v1",
         "generated_utc": datetime.now(timezone.utc).isoformat(), "output_root": str(root),
         "calibration_digest": pairing["calibration_digest"],
         "job_state_at_capture": status["state"], "progress_watermark": progress,
-        "scope": "Only completed regular full-run windows at the captured progress timestamp; smoke runs and active/incomplete windows excluded",
+        "scope": ("All windows selected by the completed validated export, including reused caches; smoke runs excluded"
+                  if validated_windows is not None else
+                  "Only completed regular full-run windows at the captured progress timestamp; smoke runs and active/incomplete windows excluded"),
         "completed_windows": window_reports, "excluded_window_counts": exclusions,
         "sessions": dict(sessions),
         "sample_counts": {"all_fitted": len(rows), "passed": len(passed), "rejected": len(rows) - len(passed),
@@ -267,12 +293,15 @@ def build_report(output_root, benchmark_root, cam1_report=None):
         "quality": {"all_fitted": quality_group(rows), "passed": quality_group(passed)},
         "shape_audit": shape_audit(rows),
         "efficiency": {"started_utc": status["started_utc"], "completed_watermark_utc": progress["updated_utc"],
-                       "wall_seconds": elapsed, "completed_source_seconds": seconds,
-                       "source_seconds_per_wall_second": seconds / elapsed,
-                       "wall_seconds_per_source_second": elapsed / seconds,
-                       "fitted_person_scans_per_wall_second": len(rows) / elapsed,
-                       "passed_person_scans_per_wall_second": len(passed) / elapsed,
-                       "scope": "Observed wall time includes preparation, teacher, fitting, source I/O and review for this job; excludes the currently active window beyond the completion watermark"},
+                       "wall_seconds": elapsed, "completed_source_seconds": seconds-cached_seconds,
+                       "source_seconds_per_wall_second": (seconds-cached_seconds) / elapsed,
+                       "wall_seconds_per_source_second": elapsed / (seconds-cached_seconds) if seconds>cached_seconds else None,
+                       "fitted_person_scans_per_wall_second": (len(rows)-cached_fitted) / elapsed,
+                       "passed_person_scans_per_wall_second": (len(passed)-cached_passed) / elapsed,
+                       "validated_cache_windows": cached_windows, "validated_cache_fitted": cached_fitted,
+                       "validated_cache_passed": cached_passed, "validated_cache_source_seconds": cached_seconds,
+                       "total_export_source_seconds": seconds,
+                       "scope": "Pairing-run wall time through the progress watermark includes teacher, fitting and source I/O; reused pre-job fit caches are included in quality but excluded from throughput numerators. Teacher feature caches may also be reused. Later dataset export, verification and final continuous reviews are excluded; this is not uncached model inference throughput"},
         "old_calibration_fitting_only_benchmarks": read_benchmarks(benchmark_root),
         "cam1_rgb_check": cam1_check,
         "current_aggregate_manifest": {"path": str(dataset_path), "accepted": dataset.get("accepted"),
@@ -297,13 +326,15 @@ def markdown_report(report):
     speed = report["efficiency"]
     lines = [
         f"截至 {speed['completed_watermark_utc']}，已完成 {len(report['completed_windows'])} 个正式窗口、"
-        f"{speed['completed_source_seconds']:.1f} 秒源数据：拟合 {counts['all_fitted']} 条，"
+        f"{speed.get('total_export_source_seconds',speed['completed_source_seconds']):.1f} 秒源数据：拟合 {counts['all_fitted']} 条，"
         f"通过 {counts['passed']} 条，拒绝 {counts['rejected']} 条（通过率 {counts['acceptance_fraction']:.1%}）。",
         "", "当前正在计算的窗口及旧 smoke 片段未计入。", "",
         f"从 job_status.started_utc 到 progress.updated_utc 的实际壁钟为 {speed['wall_seconds']/60:.2f} 分钟。"
         f"每秒壁钟完成 {speed['source_seconds_per_wall_second']:.3f} 秒源数据，"
         f"吞吐 {speed['fitted_person_scans_per_wall_second']:.2f} 条拟合/秒、"
-        f"{speed['passed_person_scans_per_wall_second']:.2f} 条通过/秒；含 teacher、拟合、I/O 与 review。", "",
+        f"{speed['passed_person_scans_per_wall_second']:.2f} 条通过/秒；含 teacher、拟合与 I/O，后续导出和连续预览不在此壁钟内。",
+        f"质量统计含 {speed.get('validated_cache_windows',0)} 个已验证的历史缓存窗口"
+        f"（{speed.get('validated_cache_passed',0)} 条通过样本）；吞吐分子排除这些窗口。视频特征也可能复用缓存，因此不是无缓存推理速度。", "",
         "| 点到全三角面距离 | 全部拟合 mean / 平均每帧P90（mm） | 通过样本 mean / 平均每帧P90（mm） |",
         "|---|---:|---:|",
     ]
