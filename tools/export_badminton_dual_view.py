@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('stage', choices=('audit', 'export','verify','finalize'))
     parser.add_argument('--source-root', type=Path, default=Path('outputs/badminton_corner_fix_v1_continuity'))
-    parser.add_argument('--output-root', type=Path, default=Path('outputs/badminton_dualcam_strict_v1'))
+    parser.add_argument('--output-root', type=Path, default=Path('outputs/badminton_dualcam_paired_pilot_v1'))
     parser.add_argument('--evidence', type=Path, action='append')
     parser.add_argument('--review', type=Path)
     parser.add_argument('--policy', choices=('bilateral_detection','full_body'), default='bilateral_detection')
