@@ -81,6 +81,133 @@ def verify_atomic_loading(page):
     )
 
 
+def verify_controls(page, output):
+    """Use real controls and iframe keyboard focus, with viewport/FOV checks."""
+    page.set_viewport_size(dict(width=1366, height=768))
+    page.locator("#play").click()
+    page.wait_for_function("playing && !preparing", timeout=45000)
+    first = page.evaluate("committedPairedFrame.scan")
+    page.wait_for_timeout(1500)
+    after_click = page.evaluate("committedPairedFrame.scan")
+    assert after_click > first + 3, (first, after_click)
+    page.locator("#play").click()
+    page.wait_for_function("!playing && !preparing && !frameBusy")
+    page.frame_locator("#scene").locator("#scene").click()
+    first = page.evaluate("committedPairedFrame.scan")
+    page.keyboard.press("Space")
+    page.wait_for_function("playing", timeout=45000)
+    page.wait_for_timeout(1300)
+    after_space = page.evaluate("committedPairedFrame.scan")
+    assert after_space > first + 3, (first, after_space)
+    page.keyboard.press("Space")
+    page.wait_for_function("!playing && !preparing && !frameBusy")
+    page.wait_for_timeout(300)
+    step_before = page.evaluate("committedPairedFrame.scan")
+    page.keyboard.press("ArrowRight")
+    page.wait_for_function("(n)=>!frameBusy && committedPairedFrame.scan===n+1", arg=step_before, timeout=45000)
+    page.keyboard.press("ArrowLeft")
+    page.wait_for_function("(n)=>!frameBusy && committedPairedFrame.scan===n", arg=step_before, timeout=45000)
+    page.locator("h1").click()
+    page.keyboard.press("Space")
+    page.wait_for_function("playing", timeout=45000)
+    page.keyboard.press("Space")
+    page.wait_for_function("!playing && !frameBusy")
+    seek = page.locator("#seek")
+    bounds = seek.bounding_box()
+    seek.click(position=dict(x=bounds["width"] / 2, y=bounds["height"] / 2))
+    page.wait_for_function("!frameBusy && !scrubbing")
+    sought = page.evaluate("({actual:lastPairedFrame.frame.offset_s,expected:(Math.max(0,clip.begin)+clip.end)/2})")
+    assert abs(sought["actual"] - sought["expected"]) < 0.2, sought
+    page.keyboard.press("Space")
+    page.wait_for_function("playing", timeout=45000)
+    page.keyboard.press("Space")
+    page.wait_for_function("!playing && !frameBusy")
+    rgb = visible_rgb_checks(page)
+    assert all(c["visible"] and c["different_rgba_components"] == 0 for c in rgb)
+    # Hold preparation requests: a second real click must cancel the pending
+    # start, and late responses must not restart playback behind the user.
+    page.evaluate("viewer.selectSource('20261012_163452')")
+    held = []
+    page.route("**/api/bundles?*", lambda route: held.append(route))
+    try:
+        page.locator("#play").click()
+        page.wait_for_function("preparing")
+        page.wait_for_timeout(150)
+        page.locator("#play").click()
+        page.wait_for_function("!preparing && !playing && !frameBusy")
+        for route in held:
+            route.continue_()
+        held.clear()
+    finally:
+        for route in held:
+            route.continue_()
+        page.unroute("**/api/bundles?*")
+    page.wait_for_timeout(300)
+    assert page.evaluate("!playing && !preparing && document.getElementById('play').textContent==='播放'")
+    # A short rally must actually wrap and continue; switching sources must
+    # not leave the play button in its preparation state.
+    page.evaluate("viewer.selectSource('20261012_160054')")
+    page.locator("#loop").check()
+    page.evaluate(
+        "window.controlScans=[];window.controlSampler=setInterval(()=>controlScans.push(committedPairedFrame.scan),60)"
+    )
+    page.locator("#play").click()
+    page.wait_for_function("playing", timeout=45000)
+    page.wait_for_function("controlScans.some((v,i)=>i>0&&v<controlScans[i-1]-5)", timeout=20000)
+    page.wait_for_function("playing && !preparing", timeout=45000)
+    page.locator("#play").click()
+    page.wait_for_function("!playing && !frameBusy")
+    page.evaluate("clearInterval(controlSampler)")
+    loop_scans = page.evaluate("controlScans")
+    viewports = []
+    for width, height in ((1366, 768), (1920, 1080), (1024, 768), (390, 844)):
+        page.set_viewport_size(dict(width=width, height=height))
+        page.locator("#fitView").click()
+        page.wait_for_timeout(300)
+        layout = page.evaluate(
+            """()=>({scrollY,viewport:innerHeight,
+        scrollHeight:document.documentElement.scrollHeight,
+        boxes:Object.fromEntries(['.inspection','#scene','.view:first-child','.view:last-child','#seek','#play','#fitInfo'].map(s=>[s,document.querySelector(s).getBoundingClientRect().toJSON()]))})"""
+        )
+        assert all(
+            b["left"] >= -1 and b["top"] >= -1 and b["right"] <= width + 1 and b["bottom"] <= height + 1
+            for b in layout["boxes"].values()
+        ), (width, height, layout)
+        assert layout["boxes"]["#seek"]["bottom"] < layout["boxes"][".inspection"]["top"]
+        assert layout["scrollHeight"] <= height + 1 and layout["scrollY"] == 0, layout
+        fov = (
+            page.frame_locator("#scene")
+            .locator("body")
+            .evaluate(
+                """()=>{
+        const m=matrix(),f=clip.frames[index];let outside=0,count=0,maxNdc=0;
+        for(const a of f.athletes)for(let i=0;i<a._vertices.length;i+=3){
+         const [x,y,z]=a._vertices.slice(i,i+3),w=m[3]*x+m[7]*y+m[11]*z+m[15];
+         const nx=(m[0]*x+m[4]*y+m[8]*z+m[12])/w,ny=(m[1]*x+m[5]*y+m[9]*z+m[13])/w;
+         count++;maxNdc=Math.max(maxNdc,Math.abs(nx),Math.abs(ny));if(w<=0||Math.abs(nx)>1.001||Math.abs(ny)>1.001)outside++;}
+        const c=canvas.getBoundingClientRect(),controls=document.querySelector('.controls').getBoundingClientRect();
+        return {count,outside,maxNdc,canvas:c.toJSON(),controls:controls.toJSON(),height:innerHeight,scrollHeight:document.documentElement.scrollHeight};}"""
+            )
+        )
+        assert fov["count"] > 0 and fov["outside"] == 0 and fov["controls"]["bottom"] <= fov["height"] + 1, fov
+        page.screenshot(path=str(output.with_name(f"controls_{width}x{height}.png")), full_page=False)
+        viewports.append(dict(width=width, height=height, layout=layout, full_mesh_fov=fov, passed=True))
+    return dict(
+        passed=True,
+        button_play_advanced_to=after_click,
+        iframe_space_advanced_to=after_space,
+        parent_space_toggle=True,
+        timeline_space_toggle=True,
+        native_scan_arrow_steps=True,
+        preparation_cancelled_without_late_restart=True,
+        source_switch_and_rally_loop=True,
+        loop_scan_range=[min(loop_scans), max(loop_scans)],
+        seek=sought,
+        visible_native_rgb=rgb,
+        viewports=viewports,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8767/")
@@ -88,6 +215,9 @@ def main():
         "--output", type=Path, default=Path("outputs/badminton_rallies_v1/viewer/browser_verification.json")
     )
     parser.add_argument("--atomic-only", action="store_true", help="Only loading/pause/pixel transaction regression")
+    parser.add_argument(
+        "--controls-only", action="store_true", help="Real play/keyboard/seek and viewport/FOV regression"
+    )
     args = parser.parse_args()
     errors = []
     checks = []
@@ -111,6 +241,16 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(args.url, wait_until="domcontentloaded")
         page.wait_for_function("window.viewerReady === true", timeout=180000)
+        if args.controls_only:
+            result = verify_controls(page, args.output)
+            result.update(page_errors=errors, browser_version=browser.version, url=args.url)
+            assert not errors, errors
+            args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            browser.close()
+            print(
+                json.dumps(dict(passed=True, viewports=len(result["viewports"]), report=str(args.output))), flush=True
+            )
+            return
         if args.atomic_only:
             result = verify_atomic_loading(page)
             result.update(page_errors=errors, browser_version=browser.version, url=args.url)

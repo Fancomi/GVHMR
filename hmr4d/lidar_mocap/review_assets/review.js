@@ -3,6 +3,7 @@
 const manifest=window.REVIEW_MANIFEST,$=id=>document.getElementById(id);
 let clip=null,clipNumber=-1,index=0,playing=false,mediaTime=0,lastTick=0,loadGeneration=0;
 let visibleMotion=null;
+let streamAutoView=true;
 const embedded=new URLSearchParams(location.search).has('embedded');
 if(embedded)document.body.classList.add('embedded');
 const canvas=$('scene'),gl=canvas.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});
@@ -41,8 +42,10 @@ function normals(positions){const n=new Float32Array(positions.length);
  const ab=[positions[b]-positions[a],positions[b+1]-positions[a+1],positions[b+2]-positions[a+2]],ac=[positions[c]-positions[a],positions[c+1]-positions[a+1],positions[c+2]-positions[a+2]],v=cross(ab,ac);
  for(const o of [a,b,c]){n[o]+=v[0];n[o+1]+=v[1];n[o+2]+=v[2];}}
  for(let i=0;i<n.length;i+=3){const len=Math.hypot(n[i],n[i+1],n[i+2])||1;n[i]/=len;n[i+1]/=len;n[i+2]/=len;}return n;}
-function unpackFrame(frame){if(frame._decoded)return;frame._cloud=floats(frame.cloud);
- for(const a of frame.athletes){a._vertices=floats(a.vertices);a._joints=floats(a.joints);a._cloud=floats(a.cloud);a._normals=normals(a._vertices);}frame._decoded=true;}
+function unpackFrame(frame){if(frame._decoded)return;frame._cloud=floats(frame.cloud);const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+ for(const a of frame.athletes){a._vertices=floats(a.vertices);a._joints=floats(a.joints);a._cloud=floats(a.cloud);a._normals=normals(a._vertices);
+  for(let i=0;i<a._vertices.length;i+=3)for(let k=0;k<3;k++){min[k]=Math.min(min[k],a._vertices[i+k]);max[k]=Math.max(max[k],a._vertices[i+k]);}}
+ frame._bounds={min,max};frame._decoded=true;}
 function drawArray(points,color,mode,indices=null,normal=null,pointSize=2){
  gl.bindBuffer(gl.ARRAY_BUFFER,positionBuffer);gl.bufferData(gl.ARRAY_BUFFER,points,gl.STREAM_DRAW);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
  if(normal){gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffer);gl.bufferData(gl.ARRAY_BUFFER,normal,gl.STREAM_DRAW);gl.enableVertexAttribArray(1);gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);}else{gl.disableVertexAttribArray(1);gl.vertexAttrib3f(1,0,0,1);}
@@ -68,6 +71,7 @@ function draw(){if(!clip)return;const frame=clip.frames[index];unpackFrame(frame
   drawArray(a._joints.slice(0,3),[1,1,1,1],gl.POINTS,null,null,4);
  }gl.enable(gl.DEPTH_TEST);}
  window.REVIEW_STATE={clip:clip.id,frame:index,scan:frame.lidar_index,frameCount:clip.frames.length,duration:clip.duration_s,meshCount:frame.athletes.length,visibleMeshCount:athletes.length,visibleMotion,rejectedActors:frame.athletes.filter(a=>!a.accepted).map(a=>a.motion_id),vertexCount:frame.athletes.reduce((n,a)=>n+a._vertices.length/3,0),pointCount:frame.point_count,playing,mediaTime,webglError:gl.getError()};
+ if(manifest.stream_mode)Object.assign(window.REVIEW_STATE,{streaming:true,displayedBackgroundPoints:frame.displayed_background_points,rawPointCount:frame.raw_point_count,pointScope:frame.point_scope});
  if(embedded)reportEmbedded();
 }
 function orient(){const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
@@ -104,12 +108,17 @@ window.REVIEW_SET_VIEW=view=>{center=view.center.slice();distance=view.distance;
 window.REVIEW_SET_MOTION=motion=>{visibleMotion=motion||null;draw();};
 window.REVIEW_SET_CONTROL=(id,value)=>{if($(id)){if($(id).type==='checkbox')$(id).checked=value;else $(id).value=value;draw();}};
 window.REVIEW_PREPARE_FRAME=unpackFrame;
+window.REVIEW_FIT_VIEW=()=>{if(clip){streamAutoView=true;orient();draw();}};
+function keepStreamInView(frame){if(!streamAutoView||!Number.isFinite(frame._bounds?.min[0]))return;
+ const {min,max}=frame._bounds,e=[Math.cos(pitch)*Math.cos(yaw),Math.cos(pitch)*Math.sin(yaw),Math.sin(pitch)],s=norm(cross(e.map(v=>-v),[0,0,1])),u=cross(s,e.map(v=>-v));
+ const tanY=Math.tan(Math.PI/8)*.91,tanX=tanY*canvas.clientWidth/canvas.clientHeight;
+ for(let mask=0;mask<8;mask++){const d=center.map((v,k)=>(mask&(1<<k)?max[k]:min[k])-v);distance=Math.max(distance,dot(e,d)+Math.max(Math.abs(dot(s,d))/tanX,Math.abs(dot(u,d))/tanY));}}
 // The seven-source online adapter sends the same packed native-frame contract
 // as offline data.js. Reuse full mesh normals/topology, point cloud, controls
 // and camera math without creating a second 3D renderer.
 window.REVIEW_STREAM_FRAME=frame=>{const changed=!clip||clip.id!==frame.session_id;
  clipNumber=0;clip={id:frame.session_id,frames:[frame],duration_s:frame.offset_s||0};index=0;mediaTime=frame.offset_s||0;
- if(changed)orient();showFrame(0);window.REVIEW_STATE.streaming=true;
+ unpackFrame(frame);if(changed){streamAutoView=true;orient();}keepStreamInView(frame);showFrame(0);window.REVIEW_STATE.streaming=true;
  window.REVIEW_STATE.displayedBackgroundPoints=frame.displayed_background_points;
  window.REVIEW_STATE.rawPointCount=frame.raw_point_count;window.REVIEW_STATE.pointScope=frame.point_scope;
  if(frame.raw_point_count!=null)$('status').textContent=`扫描 ${frame.lidar_index} · ${frame.point_scope==='roi'?'正式 ROI':'全部源点'} ${frame.point_count} / 原始 ${frame.raw_point_count} 点 · ${frame.athletes.length} 份拟合`;};
@@ -126,9 +135,10 @@ $('timeline').oninput=()=>seek(Number($('timeline').value));$('prev').onclick=()
 for(const id of ['mesh','wire','points','background','opacity','skeleton'])if($(id))$(id).oninput=draw;
 $('reset').onclick=()=>{if(defaultView){({center,distance,yaw,pitch}=defaultView);center=center.slice();draw();notifyView();}};
 let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=()=>drag=null;
-canvas.onpointermove=e=>{if(drag){yaw-=(e.clientX-drag[0])*.008;pitch=Math.max(-.1,Math.min(1.45,pitch+(e.clientY-drag[1])*.007));drag=[e.clientX,e.clientY];draw();notifyView();}};
-canvas.onwheel=e=>{e.preventDefault();distance=Math.max(2,Math.min(100,distance*Math.exp(e.deltaY*.001)));draw();notifyView();};window.onresize=draw;
-document.onkeydown=e=>{if(embedded&&['Space','ArrowRight','ArrowLeft'].includes(e.code)){e.preventDefault();parent.postMessage({type:'review-transport',command:e.code},'*');return;}
+canvas.onpointermove=e=>{if(drag){streamAutoView=false;yaw-=(e.clientX-drag[0])*.008;pitch=Math.max(-.1,Math.min(1.45,pitch+(e.clientY-drag[1])*.007));drag=[e.clientX,e.clientY];draw();notifyView();}};
+canvas.onwheel=e=>{e.preventDefault();streamAutoView=false;distance=Math.max(2,Math.min(100,distance*Math.exp(e.deltaY*.001)));draw();notifyView();};window.onresize=()=>{if(manifest.stream_mode&&streamAutoView&&clip)orient();draw();};
+document.onkeydown=e=>{if(e.repeat||e.ctrlKey||e.metaKey||e.altKey||['INPUT','SELECT','TEXTAREA'].includes(document.activeElement.tagName)||document.activeElement.isContentEditable)return;
+ if(embedded&&['Space','ArrowRight','ArrowLeft'].includes(e.code)){e.preventDefault();parent.postMessage({type:'review-transport',command:e.code},location.origin==='null'?'*':location.origin);return;}
  if(e.code==='Space'&&!['INPUT','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('play').click();}else if(e.code==='ArrowRight'&&clip)seek(index+1);else if(e.code==='ArrowLeft'&&clip)seek(index-1);};
 function animate(now){if(playing&&clip){mediaTime+=(now-lastTick)/1000*Number($('speed').value);if(mediaTime>=clip.duration_s){if($('loop').checked)mediaTime%=clip.duration_s;else{mediaTime=clip.duration_s;playing=false;$('play').textContent='播放';}}
  let i=0;while(i+1<clip.frames.length&&clip.frames[i+1].offset_s<=mediaTime)i++;if(i!==index)showFrame(i);else{$('clock').textContent=`${mediaTime.toFixed(2)} / ${clip.duration_s.toFixed(2)} 秒 · 帧 ${index+1}/${clip.frames.length}`;if(window.REVIEW_STATE){window.REVIEW_STATE.mediaTime=mediaTime;window.REVIEW_STATE.playing=playing;}}}lastTick=now;requestAnimationFrame(animate);}requestAnimationFrame(animate);

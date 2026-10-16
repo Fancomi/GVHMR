@@ -40,6 +40,9 @@ exercises real Chrome; `tools/benchmark_badminton_playback.py` measures actual
 complete commits, buffer waits, decoder seeks and visible RGB identity.
 `tools/report_badminton_rally_delivery.py` adds a hash-bound quality receipt to
 an already verified publication without rewriting its manifest or tensors.
+`tools/build_badminton_reference_union.py` verifies the old full data plus four
+new sources, proves old rally overlap by person/scan and exact tensor values,
+and publishes a session-disjoint reference-only union without copying data.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

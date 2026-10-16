@@ -4,3 +4,12 @@ a{color:#90c8ff}
 .embedded header,.embedded .report,.embedded nav,.embedded .transport,.embedded #timeline,.embedded footer,.embedded #provenance,.embedded #metrics{display:none}
 .embedded main{display:block;padding:8px;max-width:none}.embedded .views{display:block}.embedded canvas{height:340px}.embedded .cameras{display:block}.embedded .controls{display:none}.embedded figure{margin-top:12px}.embedded .workspace>details{display:none}.embedded #status{font-size:11px;margin-bottom:5px}.embedded .three>h2,.embedded .three>p{display:none}
 .stream .cameras{display:none}.stream .controls{display:flex}.stream canvas{height:calc(100vh - 100px);min-height:300px;max-height:600px}
+.embedded.stream{height:100vh;overflow:hidden}
+.embedded.stream main{height:100%;padding:7px}
+.embedded.stream .workspace{height:100%;display:flex;flex-direction:column;min-height:0}
+.embedded.stream #status{flex-shrink:0;min-height:17px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.embedded.stream .views{flex:1;min-height:0;display:flex}
+.embedded.stream .three{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
+.embedded.stream canvas{height:0;flex:1;min-height:0;max-height:none}
+.embedded.stream .controls{flex:0 0 auto;gap:6px;margin-top:6px;font-size:11px}
+.embedded.stream .controls input[type=range]{width:65px}

@@ -50,14 +50,22 @@ const projectionRenderers=canvases.map(projectedRenderer);
 const colors=['#ffaa40','#62adff','#94e69d','#df9bff'];
 let manifest,faces,sourceId,source,clip,loading=false,playing=false,lastSync=0;
 let reviewTime=0,lastTick=0,lastFrameRequest=0,frameBusy=false,generation=0,lastData=null;
+let preparing=false,scrubbing=false,pendingViewFit=true;
 let resolveReady;const ready=new Promise(resolve=>{resolveReady=resolve;});
 const readyFrames=new Map(),prefetchTasks=new Map();let nextPrefetchIndex=null;
 const scope=()=>$('allPoints').checked?'all':'roi';
 let commitTimes=[],playToken=0,bufferWaitStart=null,bufferWaits=[];
 function clearReadyFrames(){for(const task of prefetchTasks.values())task.controller.abort();prefetchTasks.clear();nextPrefetchIndex=null;
  for(const b of readyFrames.values())b.decoded.forEach(x=>x.close());readyFrames.clear();}
+function feedback(text){$('playbackState').textContent=text;}
+function action(task){Promise.resolve().then(task).catch(e=>{$('error').textContent=e.message;feedback('操作失败，请重试');});}
+function timeline(t){if(!source)return;const inside=clip&&t>=Math.max(0,clip.begin)-.06&&t<=clip.end+.06;
+ const begin=inside?Math.max(0,clip.begin):0,end=inside?Math.min(source.duration-.03,clip.end):source.duration-.03;
+ $('seek').min=begin;$('seek').max=end;if(!scrubbing)$('seek').value=t;
+ $('seekScope').textContent=inside?'本回合':'整场';$('time').textContent=Math.max(0,t-begin).toFixed(2)+' / '+(end-begin).toFixed(2)+' s';
+ $('time').title='原片时间 '+t.toFixed(3)+' 秒';}
 function bufferState(){const frames=[...readyFrames.values()].sort((a,b)=>a.data.frame.offset_s-b.data.frame.offset_s);
- return {ready:frames.length,ahead_seconds:frames.length?Math.max(0,frames.at(-1).data.frame.offset_s-reviewTime):0,pending:prefetchTasks.size,scope:scope(),commits:commitTimes,
+ return {playing,preparing,ready:frames.length,ahead_seconds:frames.length?Math.max(0,frames.at(-1).data.frame.offset_s-reviewTime):0,pending:prefetchTasks.size,scope:scope(),commits:commitTimes,
   starvation_gaps:commitTimes.slice(1).map((c,i)=>c.time-commitTimes[i].time).filter(g=>g>250),
   buffer_underruns:bufferWaits.length+(bufferWaitStart==null?0:1),buffer_wait_ms:bufferWaits.reduce((n,v)=>n+v,0)+(bufferWaitStart==null?0:performance.now()-bufferWaitStart)};}
 async function decodeBundle(data){
@@ -99,11 +107,13 @@ function fillBuffer(){
   const index=nextPrefetchIndex;nextPrefetchIndex+=4;reserved+=4;startPrefetch(index);
  }
 }
-async function prefetchFrames(){
+async function prefetchFrames(version,token){
  if(nextPrefetchIndex==null)nextPrefetchIndex=(lastData?.lidar_index??0)+1;
  fillBuffer();
  for(let i=0;i<500;i++){
+  if(version!==generation||token!==playToken)return;
   const ahead=[...readyFrames.keys()].filter(k=>k>(lastData?.lidar_index??-1)).length;
+  feedback('准备播放 · 已缓冲 '+ahead+' / 12 帧');
   if(ahead>=12||(!prefetchTasks.size&&nextPrefetchIndex>=source.scan_times.length))return;
   if(!prefetchTasks.size)fillBuffer();await new Promise(resolve=>setTimeout(resolve,20));
  }
@@ -113,14 +123,15 @@ function commitBundle(bundle){
  const {data,decoded}=bundle;
  nativeFrames.forEach((c,i)=>{c.getContext('2d',{alpha:false}).drawImage(decoded[i],0,0,c.width,c.height);c.style.visibility='visible';});
  $('scene').contentWindow.REVIEW_STREAM_FRAME(data.frame);drawProjection(data);
+ if(pendingViewFit){$('scene').contentWindow.REVIEW_FIT_VIEW?.();pendingViewFit=false;}
  lastData=data;window.lastPairedFrame=data;
  window.committedPairedFrame={sourceId,scan:data.lidar_index,lidar_index:data.lidar_index,scan_mid_us:data.scan_mid_us,native:data.native,point_scope:data.frame.point_scope,
   images:Object.fromEntries(Object.entries(data.native_images).map(([cam,{jpeg_base64,...meta}])=>[cam,meta]))};
  if(playing){commitTimes.push({scan:data.lidar_index,time:performance.now()});if(commitTimes.length>150)commitTimes.shift();}
- const fitted=data.athletes.map((a,i)=>'人体'+(i+1)+'：'+a.mean_mm.toFixed(1)+' mm，'+(a.accepted?'拟合 QA 通过':'已排除')).join('；');
- $('fitInfo').textContent='扫描 '+data.lidar_index+' · 原生帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index+
-  ' · '+(data.frame.point_scope==='roi'?'正式 ROI ':'全部源点 ')+data.frame.point_count.toLocaleString()+' / 原始 '+data.frame.raw_point_count.toLocaleString()+' 点 · '+
-  (fitted||'该帧 SMPL 待生成或位于拟合回合之外');
+ const scan=document.createElement('span');scan.className='scan';scan.textContent='扫描 '+data.lidar_index+' · '+(data.frame.point_scope==='roi'?'ROI ':'全部 ')+data.frame.point_count.toLocaleString()+' 点';
+ scan.title='原始 '+data.frame.raw_point_count+' 点；原生相机帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index;
+ const actors=data.athletes.map((a,i)=>{const node=document.createElement('span');node.className='actor';node.style.color=colors[i%colors.length];node.textContent='人体 '+(i+1)+' · '+a.mean_mm.toFixed(1)+' mm'+(a.accepted?'':' · 已排除');node.title=a.motion_id+'；'+(a.accepted?'拟合 QA 通过':a.rejection_reasons.join(', '));return node;});
+ $('fitInfo').replaceChildren(scan,...actors);if(!actors.length)$('fitInfo').append('该扫描无已存储拟合');
 }
 const paired=()=>$('mode').value==='paired';
 function clock(value,cam,inverse=false){
@@ -130,14 +141,19 @@ function clock(value,cam,inverse=false){
 }
 function commonTime(camera=1){return paired()&&lastData?.native?clock(lastData.native['cam'+camera].pts,'cam'+camera,true):clock(videos[camera-1].currentTime,'cam'+camera,true);}
 function clearOverlay(){projectionRenderers.forEach(r=>r.clear());}
-function stopPlayback(){playToken++;playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
+function stopPlayback(){playToken++;playing=false;preparing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';
+ if(bufferWaitStart!=null){bufferWaits.push(performance.now()-bufferWaitStart);bufferWaitStart=null;}}
 async function pause(){const desired=reviewTime;stopPlayback();
  while(frameBusy)await new Promise(resolve=>setTimeout(resolve,10));
  if(paired()&&lastData?.frame&&Math.abs(lastData.frame.offset_s-desired)>.15)await frameAt(desired);
  if(paired()&&lastData?.frame)reviewTime=lastData.frame.offset_s;
+ timeline(reviewTime);feedback('已暂停 · 空格继续播放');
 }
 function mediaReady(v){return v.readyState>=1?Promise.resolve():new Promise((resolve,reject)=>{
- v.addEventListener('loadedmetadata',resolve,{once:true});v.addEventListener('error',()=>reject(Error('视频载入失败')),{once:true});});}
+ const cleanup=()=>{clearTimeout(timer);v.removeEventListener('loadedmetadata',done);v.removeEventListener('error',failed);};
+ const done=()=>{cleanup();resolve();},failed=()=>{cleanup();reject(Error('原片载入失败，可切换三维 / 投影同步模式'));};
+ const timer=setTimeout(()=>{cleanup();reject(Error('原片载入超时，请重试或切换同步模式'));},15000);
+ v.addEventListener('loadedmetadata',done);v.addEventListener('error',failed);});}
 async function moveVideo(v,t){
  await mediaReady(v);t=Math.max(0,Math.min(v.duration-.02,t));if(Math.abs(v.currentTime-t)<.000001)return;
  await new Promise((resolve,reject)=>{const done=()=>{clearTimeout(timer);resolve();};
@@ -157,39 +173,47 @@ async function frameAt(t){
   if(!data.frame){clearOverlay();$('fitInfo').textContent='该扫描缺少双相机原生时间配对。';return;}
   const bundle=await decodeBundle(data);await new Promise(resolve=>requestAnimationFrame(resolve));
   if(version===generation)commitBundle(bundle);bundle.decoded.forEach(b=>b.close());
- }catch(e){$('error').textContent=e.message;}finally{frameBusy=false;}
+ }catch(e){$('error').textContent=e.message;throw e;}finally{frameBusy=false;}
 }
 async function seek(t){
- stopPlayback();generation++;clearReadyFrames();reviewTime=Math.max(0,Math.min(source.duration-.03,t));$('seek').value=reviewTime;
+ stopPlayback();generation++;clearReadyFrames();$('error').textContent='';reviewTime=Math.max(0,Math.min(source.duration-.03,t));timeline(reviewTime);feedback('正在定位原生扫描…');
  if(paired()){
   while(frameBusy)await new Promise(resolve=>setTimeout(resolve,20));await frameAt(reviewTime);
  }else {await Promise.all(videos.map((v,i)=>moveVideo(v,clock(reviewTime,'cam'+(i+1)))));nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();}
+ feedback('已暂停 · 空格播放');
 }
 async function selectSource(sid,rallyIndex){
  ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=true);
  loading=true;stopPlayback();generation++;sourceId=sid;source=manifest.sources[sid];$('source').value=sid;$('seek').max=source.duration;
  $('rally').replaceChildren(...source.rallies.map(c=>new Option('回合 '+c.index+' · '+(c.end-c.begin).toFixed(1)+'s',c.index)));
- videos.forEach((v,i)=>{v.src=source.cameras['cam'+(i+1)].url;v.load();});await Promise.all(videos.map(mediaReady));
- await selectRally(rallyIndex||source.rallies[0].index);loading=false;
- ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=false);
+ try{videos.forEach((v,i)=>{v.src=source.cameras['cam'+(i+1)].url;v.load();});if(!paired())await Promise.all(videos.map(mediaReady));
+ await selectRally(rallyIndex||source.rallies[0].index);
+ }finally{loading=false;['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=false);}
 }
 async function selectRally(index){
- clip=source.rallies.find(c=>c.index==index);$('rally').value=index;await seek(Math.max(0,clip.begin));
+ clip=source.rallies.find(c=>c.index==index);if(!clip)throw Error('该来源没有此回合');pendingViewFit=true;$('rally').value=index;await seek(Math.max(0,clip.begin));
  history.replaceState(null,'','?source='+sourceId+'&rally='+index);
 }
 async function play(){
- if(paired()){videos.forEach(v=>v.pause());$('play').textContent='准备播放';
-  const version=generation,token=++playToken;if(bufferState().ahead_seconds<.6)await prefetchFrames();if(version!==generation||token!==playToken)return;
-  commitTimes=[];bufferWaitStart=null;bufferWaits=[];playing=true;lastTick=performance.now();$('play').textContent='暂停';return;}
+ if(playing||preparing||loading)return;
+ if(paired()){videos.forEach(v=>v.pause());preparing=true;$('error').textContent='';$('play').textContent='取消准备';
+  const version=generation,token=++playToken;
+  try{if(bufferState().ahead_seconds<.6)await prefetchFrames(version,token);if(version!==generation||token!==playToken)return;
+   commitTimes=[];bufferWaitStart=null;bufferWaits=[];preparing=false;playing=true;lastTick=performance.now();$('play').textContent='暂停';feedback('播放中');return;
+  }catch(e){if(version===generation&&token===playToken){stopPlayback();feedback('准备失败，可重试');}throw e;}}
  playing=true;lastTick=performance.now();$('play').textContent='暂停';
  nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();videos.forEach(v=>v.playbackRate=+$('speed').value);
- try{await Promise.all(videos.map(v=>v.play()));}catch(e){pause();$('error').textContent=e.message;}
+ try{await Promise.all(videos.map(v=>v.play()));feedback('原片播放中');}catch(e){await pause();throw e;}
 }
+function togglePlayback(){return playing||preparing?pause():play();}
+async function stepScan(direction){await pause();const times=source.scan_times,current=lastData?.lidar_index??0;
+ await seek(times[Math.max(0,Math.min(times.length-1,current+direction))]);}
 async function pairedFrame(){const t=commonTime();stopPlayback();$('mode').value='paired';await seek(t);}
 function update(now){
+ try{
  if(source&&!loading){
   if(playing&&paired())reviewTime+=Math.max(0,now-lastTick)/1000*+$('speed').value;
-  const t=paired()?reviewTime:commonTime();if(!paired())reviewTime=t;$('seek').value=t;$('time').textContent=t.toFixed(2)+' / '+source.duration.toFixed(2)+' s';
+  const t=paired()?reviewTime:commonTime();if(!paired())reviewTime=t;timeline(paired()&&lastData?.frame?lastData.frame.offset_s:t);
   if(playing){
    if(paired()){
     const frames=[...readyFrames.values()].sort((a,b)=>a.data.frame.offset_s-b.data.frame.offset_s);
@@ -201,15 +225,17 @@ function update(now){
      if(bufferWaitStart!=null){bufferWaits.push(now-bufferWaitStart);bufferWaitStart=null;}
      for(const [key,b] of readyFrames)if(key<candidate.data.lidar_index-1){b.decoded.forEach(x=>x.close());readyFrames.delete(key);}}
     fillBuffer();
+    feedback(bufferWaitStart==null?'播放中 · 缓冲 '+readyFrames.size+' 帧':'正在缓冲 · 图像与几何保持同帧');
    }
    else if(now-lastSync>200){const t2=commonTime(2),rate=+$('speed').value;
     if(Math.abs(t2-t)>.045)videos[1].currentTime=clock(t,'cam2');
     else videos[1].playbackRate=rate*Math.max(.98,Math.min(1.02,1+(t-t2)*.4));lastSync=now;}
    const end=$('loop').checked&&clip?Math.min(source.duration-.03,clip.end):source.duration-.03;
-   if(t>=end){if($('loop').checked)seek(Math.max(0,clip.begin)).then(play);else pause();}
+   if(t>=end){if($('loop').checked)action(()=>seek(Math.max(0,clip.begin)).then(play));else action(pause);}
   }
  }
- lastTick=now;requestAnimationFrame(update);
+ }catch(e){stopPlayback();$('error').textContent=e.message;feedback('播放已暂停，可重试');}
+ finally{lastTick=now;requestAnimationFrame(update);}
 }
 async function status(){try{
  const s=await(await fetch('/api/status')).json();$('accepted').textContent=s.paired_accepted==null?'构建中':s.paired_accepted.toLocaleString();
@@ -220,15 +246,23 @@ async function status(){try{
   tr.onclick=()=>selectSource(sid);tr.style.cursor='pointer';tr.title=(a.failures||[]).join('\n');return tr;}
  ));
  }catch(e){$('error').textContent=e.message;}}
-$('source').onchange=()=>selectSource($('source').value);$('rally').onchange=()=>selectRally(+$('rally').value);
-$('play').onclick=()=>playing||$('play').textContent==='准备播放'?pause():play();$('seek').onchange=()=>seek(+$('seek').value);
-$('back').onclick=()=>seek(Math.max(0,(paired()?reviewTime:commonTime())-1));
-$('forward').onclick=()=>seek(Math.min(source.duration-.03,(paired()?reviewTime:commonTime())+1));$('exact').onclick=pairedFrame;
-$('previous').onclick=()=>selectRally(source.rallies[Math.max(0,source.rallies.indexOf(clip)-1)].index);
-$('next').onclick=()=>selectRally(source.rallies[Math.min(source.rallies.length-1,source.rallies.indexOf(clip)+1)].index);
+$('source').onchange=()=>action(()=>selectSource($('source').value));$('rally').onchange=()=>action(()=>selectRally(+$('rally').value));
+$('play').onclick=()=>action(togglePlayback);
+$('seek').oninput=()=>{scrubbing=true;stopPlayback();feedback('松开进度条以定位扫描');};
+$('seek').onchange=()=>{scrubbing=false;action(()=>seek(+$('seek').value));};
+$('back').onclick=()=>action(()=>seek(Math.max(0,(paired()?reviewTime:commonTime())-1)));
+$('forward').onclick=()=>action(()=>seek(Math.min(source.duration-.03,(paired()?reviewTime:commonTime())+1)));$('exact').onclick=()=>action(pairedFrame);
+$('previous').onclick=()=>action(()=>selectRally(source.rallies[Math.max(0,source.rallies.indexOf(clip)-1)].index));
+$('next').onclick=()=>action(()=>selectRally(source.rallies[Math.min(source.rallies.length-1,source.rallies.indexOf(clip)+1)].index));
 $('speed').onchange=()=>{videos.forEach(v=>v.playbackRate=+$('speed').value);};
-$('mode').onchange=()=>seek(reviewTime);$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
-$('allPoints').onchange=()=>seek(commonTime());
+$('mode').onchange=()=>action(()=>seek(reviewTime));$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
+$('allPoints').onchange=()=>action(()=>seek(commonTime()));
+$('fitView').onclick=()=>action(async()=>{await sceneReady();$('scene').contentWindow.REVIEW_FIT_VIEW?.();});
+function transportKey(code){if(code==='Space')action(togglePlayback);else if(code==='ArrowLeft')action(()=>stepScan(-1));else if(code==='ArrowRight')action(()=>stepScan(1));}
+document.addEventListener('keydown',e=>{const timelineSpace=e.target===$('seek')&&e.code==='Space';
+ if(e.repeat||e.ctrlKey||e.metaKey||e.altKey||(!timelineSpace&&['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))||e.target.isContentEditable)return;
+ if(['Space','ArrowLeft','ArrowRight'].includes(e.code)){e.preventDefault();transportKey(e.code);}});
+window.addEventListener('message',e=>{if(e.origin===location.origin&&e.source===$('scene').contentWindow&&e.data?.type==='review-transport')transportKey(e.data.command);});
 window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSource(...args);},selectRally,seek,play,pause,pairedFrame,commonTime,bufferState,get sourceId(){return sourceId;},get loading(){return loading;}};
 (async()=>{try{
  manifest=await(await fetch('/api/manifest')).json();faces=new Uint16Array(Uint8Array.from(atob(manifest.faces),c=>c.charCodeAt(0)).buffer);

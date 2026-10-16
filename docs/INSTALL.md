@@ -307,6 +307,22 @@ commit-gap median/P95/max, buffer waits, decoder seeks and visible RGB identity
 on the reported browser/GPU. Wall-clock advancement alone is not a frame count.
 The server snapshots its HTML/JS/CSS together at startup; restart after backend
 or client edits to deploy a consistent version.
+Playback controls and the rally-relative progress bar sit above a viewport-sized
+3D/dual-camera workspace. Both native camera frames keep their full aspect ratio;
+dataset tables sit in a disclosure rather than displacing the inspection views.
+Space toggles playback with focus in either the page or embedded 3D canvas;
+Left/Right step one actual scan. Preparing/cancelled/buffering/paused states are
+visible, and paired playback does not wait for browser MP4 metadata. Each new
+rally fits the full body view; automatic framing widens only as necessary until
+the user orbits/zooms, and "适配视野" restores automatic framing.
+
+```powershell
+uv run --no-sync python tools/verify_badminton_viewer.py --controls-only --output outputs/badminton_rallies_v1/viewer/controls_verification.json
+```
+
+This uses actual button/keyboard/slider events, preparation cancellation and
+rally looping, checks all three views and controls fit in four viewport sizes,
+and projects every current SMPL vertex into the 3D view to detect clipping.
 Final delivery `quality_summary.json` distinguishes original input/rally scans,
 fit QA rejections, bilateral exclusions and final person frames by source.
 For a published run created by an already-loaded older exporter, add the same
@@ -321,6 +337,24 @@ uv run --no-sync python tools/report_badminton_rally_delivery.py
 report, explicitly records the sealed rally scope, and discloses resumed-call
 timing limits. A generic scope string in an older published manifest does not
 expand the source manifest's sealed rally selection.
+
+The user-requested full-data union references original published tensors without
+copying or re-encoding them:
+
+```powershell
+uv run --no-sync python tools/build_badminton_reference_union.py
+```
+
+`outputs/badminton_full_plus_new_v1/dataset_manifest.json` contains 79,776 unique
+person frames: all 59,408 old full-v2 frames plus 20,368 from the four new sources.
+The 32,786 old rally-subset frames are checked against their full-v2 person/scan
+keys and all five tensor fields, then omitted as duplicates. Each split contains
+ordered `parts` with original paths, metadata and hashes; no merged tensor file
+is created. Train has 62,414 frames, validation retains full 161544 (10,787), and
+test uses new 190709 (6,575), disjoint from train/validation. The manifest records
+the requested 100 training epochs; actual training belongs to the consumer queue.
+`overlap_verification.json` and `receipt.json` bind the duplicate checks and final
+manifest. This is session isolation, not verified unseen-person generalization.
 
 Segmentation evaluates bone scores only on points inside each person's box;
 outside scores were always infinite. Three 615k-point native scans matched the

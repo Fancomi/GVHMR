@@ -2,4 +2,4 @@
 
 | Task | Owner | Scope |
 | --- | --- | --- |
-| Seven sealed sources / 204 rallies → paired SMPL datasets and synchronized native-video HTML | /root | `rally_pipeline.py`, source adapters, official build/viewer CLIs; frozen camera/source inputs unchanged |
+| Native rally viewer controls/layout and full-data reference union | /root | 53,154 rally pairs delivered; 79,776 full-plus-new reference union published; final viewer regression and consumer receipt pending |
