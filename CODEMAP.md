@@ -49,6 +49,13 @@ candidates. It writes separate reports and never rewrites labels or cameras.
 `track_colors.py` assigns stable display colors to local detector tracks;
 `tools/verify_badminton_track_colors.py` checks the reported opening-seconds
 regression, exact-scan links and native RGB/mesh synchronization in Chrome.
+`tools/replay_badminton_tracking.py` compares old/new associations on every
+frozen native detection. `body_repair.py` shares the exact published-window
+selection with `tools/repair_badminton_body_labels.py`, which rebuilds teacher
+contexts and bodies into a separate version, retaining unchanged pixel caches.
+`tools/serve_badminton_body_repair.py` reuses the native viewer for explicit
+repair candidates; `tools/report_badminton_body_repair.py` makes fixed-native
+before/after images and compares point, foot and held-out camera evidence.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

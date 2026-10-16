@@ -395,6 +395,51 @@ SMPL-X/SMPL parameter differences use different rest bases and cannot establish
 geometric rotation. This investigation changes display colors and reports only;
 tracking, fitted bodies, calibration and published training values stay frozen.
 
+The follow-up repair uses a new output version. Tracking v2 preserves complete
+legacy tracklets and recovers short boundaries using observed box sizes,
+centre motion and a unique one-to-one assignment. It does not extrapolate
+missing people or force ambiguous boundaries into the same identity. Teacher
+algorithm version 2 invalidates old inference caches; explicit frozen pixel
+reuse requires identical video/native rows, camera, weights and image settings.
+An unchanged temporal input sequence may reuse its prediction; a joined
+sequence always reruns GVHMR. Bodies can share established shape across
+segments belonging to the same recovered detector track.
+
+```powershell
+uv run --no-sync python tools/replay_badminton_tracking.py --output-root outputs/badminton_body_repair_v1/tracking_final
+uv run --no-sync python tools/repair_badminton_body_labels.py --stage prepare
+uv run --no-sync python tools/repair_badminton_body_labels.py --stage teacher
+uv run --no-sync python tools/verify_badminton_body_repair.py
+uv run --no-sync python tools/repair_badminton_body_labels.py --source 20261009_202713 --window 000120000000_000180000000 --output-root outputs/badminton_body_repair_v1/case_labels
+uv run --no-sync python tools/serve_badminton_body_repair.py --display-crop D:/PROJECT/LIDAR/lidar_project/config/calibration/badminton-20261012/display-crop.json
+uv run --no-sync python tools/report_badminton_body_repair.py
+```
+
+Omit source/window filters to rebuild the complete frozen union selection.
+The repair CLI resumes only matching teacher/configuration/code/artifact and
+source-cloud hashes, and never writes original source windows. Its body-QA
+exports are candidates: use the existing dual-camera observation/admission and
+export verifier before publishing a training version. They are not added to
+the original 79,776-frame training queue. New-date 1015 sources are not included.
+
+The completed 1009 case has 560 rebuilt fits and 422 body-QA candidates.
+All 75 original-union teacher windows have also been rebuilt and independently
+verified: 619 unchanged temporal contexts reused exactly, 9 changed contexts
+inferred again, and all 328,067 previously retained native keypoint observations
+preserved bit for bit (16 newly retained actual observations, no filled frames).
+This is approximately 30 Hz video-person accounting, not a new training count.
+`outputs/badminton_body_repair_v1/report/index.html` records the actual evidence:
+all 328,896 frozen detections replayed, 50/90 screened fragments linked without
+splitting any original continuous tracklet, and the remaining 40 explicitly
+unresolved. Of those, 33 have overlapping native tracks; 7 fail geometry/margin
+conditions. This is not verified whole-dataset identity ground truth.
+`distal_pose_prior_weight=.03` is enabled in the repair CLI only; ordinary
+fitting retains its zero default until cross-source validation. The case's
+foot geometry improves with a small surface-distance tradeoff; cam1 is measured
+as a held-out detector check, not used as a fitting constraint or anatomical
+truth. `tools/verify_badminton_dataset.py` now resolves both original sessions
+and explicit source-index sessions for native point/member and mesh checks.
+
 Segmentation evaluates bone scores only on points inside each person's box;
 outside scores were always infinite. Three 615k-point native scans matched the
 previous implementation's selected points/indices exactly and ran 6.33–7.05x

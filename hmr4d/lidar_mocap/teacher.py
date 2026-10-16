@@ -23,7 +23,7 @@ from scipy.spatial.transform import Rotation
 
 
 SCHEMA = "badminton_gvhmr_teacher_v1"
-ALGORITHM_VERSION = 1
+ALGORITHM_VERSION = 2
 COORDINATE_SPACE = "opencv_camera_undistorted"
 
 
@@ -200,7 +200,20 @@ def _association_cost(predicted, detected):
     return (1.0 - iou) + 0.35 * relative_distance
 
 
-def associate_detections(detections_by_frame, *, max_track_gap_frames=1):
+def _predict_track_box(state, gap, prediction_mode):
+    if prediction_mode == "corners_v1":
+        return state["box"] + state["velocity"] * gap
+    # Detector edge motion includes changes in pose/occlusion. Extrapolating
+    # those edges can collapse or invert a box after a single narrow detection.
+    # Translate a recent observed size with centre velocity instead.
+    box = state["box"]
+    velocity = (state["velocity"][:2] + state["velocity"][2:]) / 2
+    center = (box[:2] + box[2:]) / 2 + velocity * gap
+    size = np.median(state["sizes"], axis=0)
+    return np.concatenate([center - size / 2, center + size / 2])
+
+
+def associate_detections(detections_by_frame, *, max_track_gap_frames=6, prediction_mode="observed_v2"):
     """One-to-one multi-athlete tracking; never select only the longest person.
 
     Observed rows are the only rows returned. A later segment split keeps
@@ -208,11 +221,22 @@ def associate_detections(detections_by_frame, *, max_track_gap_frames=1):
     """
     if max_track_gap_frames < 0:
         raise ValueError("max_track_gap_frames cannot be negative")
+    if prediction_mode not in {"observed_v2", "center_v2", "corners_v1"}:
+        raise ValueError("Unknown tracking prediction mode")
+    if prediction_mode == "observed_v2":
+        # Preserve complete established tracklets, then recover their broken
+        # boundaries. An extra stale online hypothesis can otherwise steal a
+        # current person's detection and introduce an identity switch.
+        tracks = associate_detections(
+            detections_by_frame, max_track_gap_frames=min(max_track_gap_frames, 1), prediction_mode="corners_v1"
+        )
+        return _link_observed_tracklets(tracks, max_track_gap_frames + 1)
     tracks, active = {}, {}
     next_id = 1
     for position, frame in enumerate(detections_by_frame):
-        active = {key: value for key, value in active.items()
-                  if position - value["last_position"] <= max_track_gap_frames + 1}
+        active = {
+            key: value for key, value in active.items() if position - value["last_position"] <= max_track_gap_frames + 1
+        }
         detections = []
         for det in frame:
             box = np.asarray(det["bbx_xyxy"], dtype=np.float32)
@@ -224,7 +248,7 @@ def associate_detections(detections_by_frame, *, max_track_gap_frames=1):
         for i, key in enumerate(keys):
             state = active[key]
             gap = position - state["last_position"]
-            predicted = state["box"] + state["velocity"] * gap
+            predicted = _predict_track_box(state, gap, prediction_mode)
             for j, det in enumerate(detections):
                 costs[i, j] = _association_cost(predicted, det["bbx_xyxy"])
         matched = {}
@@ -234,8 +258,10 @@ def associate_detections(detections_by_frame, *, max_track_gap_frames=1):
                 if costs[i, j] < 1.25:
                     alternatives = np.delete(costs[i], j)
                     rival_tracks = np.delete(costs[:, j], i)
-                    ambiguous = bool((alternatives.size and alternatives.min() - costs[i, j] < 0.12)
-                                     or (rival_tracks.size and rival_tracks.min() - costs[i, j] < 0.12))
+                    ambiguous = bool(
+                        (alternatives.size and alternatives.min() - costs[i, j] < 0.12)
+                        or (rival_tracks.size and rival_tracks.min() - costs[i, j] < 0.12)
+                    )
                     matched[int(j)] = (keys[i], float(costs[i, j]), ambiguous)
         for j, det in enumerate(detections):
             if j in matched:
@@ -243,15 +269,63 @@ def associate_detections(detections_by_frame, *, max_track_gap_frames=1):
                 previous = active[key]
                 gap = position - previous["last_position"]
                 velocity = (det["bbx_xyxy"] - previous["box"]) / gap
+                sizes = previous["sizes"][-2:] + [det["bbx_xyxy"][2:] - det["bbx_xyxy"][:2]]
             else:
                 key, cost, ambiguous = next_id, 0.0, False
                 next_id += 1
                 velocity = np.zeros(4, dtype=np.float32)
                 tracks[key] = []
-            active[key] = {"last_position": position, "box": det["bbx_xyxy"], "velocity": velocity}
-            tracks[key].append({**det, "position": position, "association_cost": cost,
-                                "identity_ambiguous": ambiguous})
+                sizes = [det["bbx_xyxy"][2:] - det["bbx_xyxy"][:2]]
+            active[key] = {"last_position": position, "box": det["bbx_xyxy"], "velocity": velocity, "sizes": sizes}
+            tracks[key].append({**det, "position": position, "association_cost": cost, "identity_ambiguous": ambiguous})
     return tracks
+
+
+def _link_observed_tracklets(tracks, maximum_gap):
+    keys = sorted(tracks)
+    costs = np.full((len(keys), len(keys)), 1000.0)
+    for i, left in enumerate(keys):
+        tail = tracks[left][-3:]
+        end = tail[-1]
+        if end["identity_ambiguous"]:
+            continue
+        box = end["bbx_xyxy"]
+        velocities = [(b["bbx_xyxy"] - a["bbx_xyxy"]) / (b["position"] - a["position"]) for a, b in zip(tail, tail[1:])]
+        state = dict(
+            box=box,
+            velocity=np.median(velocities, axis=0) if velocities else np.zeros(4),
+            sizes=[o["bbx_xyxy"][2:] - o["bbx_xyxy"][:2] for o in tail],
+        )
+        for j, right in enumerate(keys):
+            begin = tracks[right][0]
+            gap = begin["position"] - end["position"]
+            if not 0 < gap <= maximum_gap or begin["identity_ambiguous"]:
+                continue
+            predicted = _predict_track_box(state, gap, "center_v2")
+            # Both tests use actual observed sizes. The second admits a brief
+            # stop without trusting extrapolated detector-edge shrinkage.
+            score = min(
+                _association_cost(predicted, begin["bbx_xyxy"]), _association_cost(box, begin["bbx_xyxy"]) + 0.1
+            )
+            if score < 0.95:
+                costs[i, j] = score + 0.02 * max(gap - 1, 0)
+    parent = {key: key for key in keys}
+    if costs.size:
+        rr, cc = linear_sum_assignment(costs)
+        for i, j in zip(rr, cc):
+            alternatives = np.concatenate([np.delete(costs[i], j), np.delete(costs[:, j], i)])
+            if costs[i, j] < 1.25 and (not alternatives.size or alternatives.min() - costs[i, j] >= 0.12):
+                parent[keys[j]] = keys[i]
+                tracks[keys[j]][0].update(association_cost=float(costs[i, j]), association_recovered=True)
+    joined = {}
+    for key in keys:
+        root = key
+        while parent[root] != root:
+            root = parent[root]
+        joined.setdefault(root, []).extend(dict(o, original_track_id=key) for o in tracks[key])
+    for values in joined.values():
+        values.sort(key=lambda o: o["position"])
+    return joined
 
 
 def _split_tracks(tracks, rows, min_track_frames):
@@ -266,7 +340,10 @@ def _split_tracks(tracks, rows, min_track_frames):
                 after = observation["position"]
                 # Break at every missed sampled frame: no unobserved bbox or
                 # person is inserted as a training teacher.
-                if after != before + 1 or rows[after]["common_time_us"] - rows[before]["common_time_us"] > median_delta * 1.8:
+                if (
+                    after != before + 1
+                    or rows[after]["common_time_us"] - rows[before]["common_time_us"] > median_delta * 1.8
+                ):
                     pieces.append(current)
                     current = []
             current.append(observation)
@@ -274,8 +351,14 @@ def _split_tracks(tracks, rows, min_track_frames):
             pieces.append(current)
         for segment_id, piece in enumerate(pieces):
             if len(piece) < min_track_frames:
-                rejected.append({"track_id": track_id, "segment_id": segment_id,
-                                 "frame_count": len(piece), "reason": "insufficient_observed_temporal_context"})
+                rejected.append(
+                    {
+                        "track_id": track_id,
+                        "segment_id": segment_id,
+                        "frame_count": len(piece),
+                        "reason": "insufficient_observed_temporal_context",
+                    }
+                )
                 continue
             segments.append({"track_id": track_id, "segment_id": segment_id, "observations": piece})
     return segments, rejected
@@ -430,9 +513,96 @@ def _window_ranges(length, core_frames, context_frames=60):
         yield start, end, max(0, start - context_frames), min(length, end + context_frames)
 
 
-def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume=True, *,
-                min_track_frames=8, max_track_gap_frames=1, inference_window_frames=600,
-                roi_polygon=None, roi_margin_px=40.0, detector_imgsz=1280, preproc_precision="float32"):
+def _observation_signature(observation):
+    return observation["position"], np.asarray(observation["bbx_xyxy"], dtype=np.float32).tobytes()
+
+
+def _preprocess_reuse(source, provenance):
+    """Validate a frozen source before reusing pixel observations across tracking versions."""
+    import torch
+
+    source = Path(source).resolve()
+    manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    old = manifest["provenance"]
+    encoded = json.dumps(old, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if hashlib.sha256(encoded).hexdigest() != manifest["provenance_hash"]:
+        raise ValueError("Frozen preprocessing provenance content changed")
+    def pixel_identity(value):
+        value = _jsonable(value)
+        value.pop("algorithm_version", None)
+        value["options"].pop("max_track_gap_frames", None)
+        return value
+    if old["algorithm_version"] not in (1, ALGORITHM_VERSION) or pixel_identity(old) != pixel_identity(provenance):
+        raise ValueError(
+            "Preprocessing reuse requires identical native frames, video, camera, weights and image settings"
+        )
+    detections = _read_stage(source / "detections.pt", manifest["provenance_hash"], True)
+    mode = "corners_v1" if old["algorithm_version"] == 1 else "observed_v2"
+    tracks = associate_detections(
+        detections["detections"], prediction_mode=mode, max_track_gap_frames=old["options"]["max_track_gap_frames"]
+    )
+    segments, _ = _split_tracks(tracks, old["frame_rows"], old["options"]["min_track_frames"])
+    if [(s["track_id"], s["segment_id"], len(s["observations"])) for s in segments] != [
+        (s["track_id"], s["segment_id"], s["frame_count"]) for s in manifest["tracks"]
+    ]:
+        raise ValueError("Frozen preprocessing segment order cannot be reproduced")
+    values = {}
+    for stage in ("vitpose", "features"):
+        cached = _read_stage(source / f"{stage}.pt", manifest["provenance_hash"], True)
+        if len(cached["values"]) != len(segments):
+            raise ValueError("Frozen stage segment count differs")
+        indexed = {}
+        for segment, tensor in zip(segments, cached["values"]):
+            if len(tensor) != len(segment["observations"]) or not torch.isfinite(tensor).all():
+                raise ValueError("Invalid frozen observation features")
+            for obs, value in zip(segment["observations"], tensor):
+                indexed[_observation_signature(obs)] = value
+        values[stage] = indexed
+    temporal = {
+        tuple(_observation_signature(o) for o in s["observations"]): source / info["path"]
+        for s, info in zip(segments, manifest["tracks"])
+    }
+    return dict(
+        detections=detections["detections"],
+        values=values,
+        temporal=temporal,
+        evidence=dict(
+            source_dir=str(source),
+            source_provenance_hash=manifest["provenance_hash"],
+            method="identical_native_pixel_crops_and_exact_observed_temporal_context",
+        ),
+    )
+
+
+def _track_manifest_entry(segment, name, cached):
+    return dict(
+        track_id=segment["track_id"],
+        segment_id=segment["segment_id"],
+        path=name,
+        frame_count=len(segment["observations"]),
+        source_tracklets=sorted({o.get("original_track_id", segment["track_id"]) for o in segment["observations"]}),
+        start_common_time_us=int(cached["common_time_us"][0]),
+        end_common_time_us=int(cached["common_time_us"][-1]),
+    )
+
+
+def run_teacher(
+    video_path,
+    frame_rows,
+    camera,
+    output_dir,
+    batch_size=4,
+    resume=True,
+    *,
+    min_track_frames=8,
+    max_track_gap_frames=6,
+    inference_window_frames=600,
+    roi_polygon=None,
+    roi_margin_px=40.0,
+    detector_imgsz=1280,
+    preproc_precision="float32",
+    reuse_preprocess_dir=None,
+):
     """Run four GPU stages independently and save every observed athlete track.
 
     ``frame_rows`` must be a continuous approximately 30 Hz subset of native
@@ -450,10 +620,16 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
     video_path, output_dir = Path(video_path).resolve(), Path(output_dir).resolve()
     rows = _normalize_rows(frame_rows)
     _undistorter(camera)  # Validate camera before creating a cache.
-    options = dict(batch_size=batch_size, min_track_frames=min_track_frames,
-                   max_track_gap_frames=max_track_gap_frames, inference_window_frames=inference_window_frames,
-                   roi_polygon=roi_polygon, roi_margin_px=roi_margin_px, detector_imgsz=detector_imgsz,
-                   preproc_precision=preproc_precision)
+    options = dict(
+        batch_size=batch_size,
+        min_track_frames=min_track_frames,
+        max_track_gap_frames=max_track_gap_frames,
+        inference_window_frames=inference_window_frames,
+        roi_polygon=roi_polygon,
+        roi_margin_px=roi_margin_px,
+        detector_imgsz=detector_imgsz,
+        preproc_precision=preproc_precision,
+    )
     provenance, provenance_hash = _provenance(video_path, rows, camera, options)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
@@ -467,24 +643,43 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
                 raise ValueError(f"Teacher manifest references missing track: {track_path}")
             validate_provenance(load_teacher_track(track_path), provenance_hash)
         return manifest
-    if not torch.cuda.is_available():
-        raise RuntimeError("Calibrated GVHMR teacher inference requires the configured CUDA environment")
+    reused = _preprocess_reuse(reuse_preprocess_dir, provenance) if reuse_preprocess_dir is not None else None
     detection_path = output_dir / "detections.pt"
     detection_cache = _read_stage(detection_path, provenance_hash, resume)
     if detection_cache is None:
-        detections = _detect(video_path, rows, camera, roi_polygon, roi_margin_px, detector_imgsz)
+        if reused is None and not torch.cuda.is_available():
+            raise RuntimeError("Uncached detector inference requires CUDA")
+        detections = (
+            reused["detections"]
+            if reused is not None
+            else _detect(video_path, rows, camera, roi_polygon, roi_margin_px, detector_imgsz)
+        )
         detection_cache = {"schema": SCHEMA, "provenance_hash": provenance_hash, "detections": detections}
+        if reused:
+            detection_cache["reuse"] = reused["evidence"]
         _save_tensor(detection_path, detection_cache)
     if len(detection_cache["detections"]) != len(rows):
         raise ValueError("Detection cache frame count does not match source provenance")
     tracks = associate_detections(detection_cache["detections"], max_track_gap_frames=max_track_gap_frames)
     segments, rejected = _split_tracks(tracks, rows, min_track_frames)
-    manifest = {"schema": SCHEMA, "provenance_hash": provenance_hash, "provenance": provenance,
-                "frame_count": len(rows), "coordinate_space": COORDINATE_SPACE, "tracks": [],
-                "rejected_segments": rejected, "status": "complete", "static_camera": True,
-                "preproc_precision": preproc_precision,
-                "source_fps_median": 1_000_000 / float(np.median(np.diff([r["common_time_us"] for r in rows])))
-                if len(rows) > 1 else None}
+    manifest = {
+        "schema": SCHEMA,
+        "provenance_hash": provenance_hash,
+        "provenance": provenance,
+        "frame_count": len(rows),
+        "coordinate_space": COORDINATE_SPACE,
+        "tracks": [],
+        "rejected_segments": rejected,
+        "status": "complete",
+        "static_camera": True,
+        "preproc_precision": preproc_precision,
+        "source_fps_median": (
+            1_000_000 / float(np.median(np.diff([r["common_time_us"] for r in rows]))) if len(rows) > 1 else None
+        ),
+    }
+    manifest["tracking_algorithm"] = "observed_tracklet_boundary_recovery_v2"
+    if reused:
+        manifest["preprocessing_reuse"] = reused["evidence"]
     if not segments:
         manifest["status"] = "no_observed_tracks_with_sufficient_context"
         _save_json(manifest_path, manifest)
@@ -494,17 +689,93 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
         stage_path = output_dir / f"{stage}.pt"
         cache = _read_stage(stage_path, provenance_hash, resume)
         if cache is None:
-            values = _extract_stage(video_path, rows, camera, segments, batch_size, stage, preproc_precision)
-            cache = {"schema": SCHEMA, "provenance_hash": provenance_hash, "values": values,
-                     "preproc_precision": preproc_precision}
+            if reused:
+                trailing = (17, 3) if stage == "vitpose" else (1024,)
+                values = [torch.full((len(s["observations"]), *trailing), float("nan")) for s in segments]
+                missing = []
+                for i, segment in enumerate(segments):
+                    local = []
+                    for j, obs in enumerate(segment["observations"]):
+                        value = reused["values"][stage].get(_observation_signature(obs))
+                        if value is None:
+                            local.append((j, obs))
+                        else:
+                            values[i][j] = value
+                    if local:
+                        missing.append((i, local))
+                if missing:
+                    if not torch.cuda.is_available():
+                        raise RuntimeError("New observed crops require CUDA; frozen stages are retained for resume")
+                    extracted = _extract_stage(
+                        video_path,
+                        rows,
+                        camera,
+                        [dict(observations=[o for _, o in local]) for _, local in missing],
+                        batch_size,
+                        stage,
+                        preproc_precision,
+                    )
+                    for (i, local), tensor in zip(missing, extracted):
+                        for (j, _), value in zip(local, tensor):
+                            values[i][j] = value
+            else:
+                if not torch.cuda.is_available():
+                    raise RuntimeError("Uncached image feature inference requires CUDA")
+                values = _extract_stage(video_path, rows, camera, segments, batch_size, stage, preproc_precision)
+            cache = {
+                "schema": SCHEMA,
+                "provenance_hash": provenance_hash,
+                "values": values,
+                "preproc_precision": preproc_precision,
+            }
             _save_tensor(stage_path, cache)
         if len(cache["values"]) != len(segments):
             raise ValueError(f"Teacher {stage} cache segment count mismatch")
         preprocessed[stage] = cache["values"]
+    # Reuse temporal outputs only when the full observed input sequence is
+    # identical. Joining fragments changes context and always reruns GVHMR.
+    if reused:
+        for segment in segments:
+            path = output_dir / f"track_{segment['track_id']:04d}_segment_{segment['segment_id']:04d}.pt"
+            original = reused["temporal"].get(tuple(_observation_signature(o) for o in segment["observations"]))
+            if not path.exists() and original is not None:
+                value = torch.load(original, map_location="cpu")
+                validate_provenance(value, reused["evidence"]["source_provenance_hash"])
+                value.update(
+                    provenance=provenance,
+                    provenance_hash=provenance_hash,
+                    track_id=segment["track_id"],
+                    segment_id=segment["segment_id"],
+                    identity_ambiguous=torch.tensor([o["identity_ambiguous"] for o in segment["observations"]]),
+                    association_cost=torch.tensor([o["association_cost"] for o in segment["observations"]]),
+                    temporal_reuse_from=str(original),
+                )
+                value["original_track_id"] = torch.tensor(
+                    [o.get("original_track_id", segment["track_id"]) for o in segment["observations"]]
+                )
+                value["association_recovered"] = torch.tensor(
+                    [o.get("association_recovered", False) for o in segment["observations"]]
+                )
+                _save_tensor(path, value)
+    complete = []
+    for segment in segments:
+        name = f"track_{segment['track_id']:04d}_segment_{segment['segment_id']:04d}.pt"
+        cached = _read_stage(output_dir / name, provenance_hash, True)
+        if cached is None:
+            break
+        complete.append(_track_manifest_entry(segment, name, cached))
+    if len(complete) == len(segments):
+        manifest["tracks"] = complete
+        _save_json(manifest_path, manifest)
+        print(f"Teacher: all {len(segments)} observed temporal contexts reused exactly", flush=True)
+        return manifest
+    if not torch.cuda.is_available():
+        raise RuntimeError("Changed temporal contexts require CUDA GVHMR inference")
     # Imported after the larger image models have been destroyed.
     import hydra
     from hydra import compose, initialize_config_module
     from hmr4d.configs import register_store_gvhmr
+
     # The demo config node registers at import time; store_gvhmr registers
     # training nodes but does not import gvhmr_pl_demo itself.
     from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL  # noqa: F401
@@ -534,10 +805,14 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
                     for start, end, context_start, context_end in _window_ranges(length, inference_window_frames):
                         window_length = context_end - context_start
                         sl = slice(context_start, context_end)
-                        data = {"length": torch.tensor(window_length), "bbx_xys": bbx_xys[sl],
-                                "kp2d": kp2d[sl], "K_fullimg": K.repeat(window_length, 1, 1),
-                                "cam_angvel": torch.tensor([1., 0., 0., 0., 1., 0.]).repeat(window_length, 1),
-                                "f_imgseq": features[sl]}
+                        data = {
+                            "length": torch.tensor(window_length),
+                            "bbx_xys": bbx_xys[sl],
+                            "kp2d": kp2d[sl],
+                            "K_fullimg": K.repeat(window_length, 1, 1),
+                            "cam_angvel": torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]).repeat(window_length, 1),
+                            "f_imgseq": features[sl],
+                        }
                         prediction = model.predict(data, static_cam=True)
                         kept = slice(start - context_start, end - context_start)
                         for key in params_parts:
@@ -548,27 +823,40 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
                 if not all(torch.isfinite(value).all().item() for value in params.values()):
                     raise ValueError("GVHMR produced non-finite camera parameters")
                 cached_track = {
-                    "schema": SCHEMA, "provenance_hash": provenance_hash, "provenance": provenance,
+                    "schema": SCHEMA,
+                    "provenance_hash": provenance_hash,
+                    "provenance": provenance,
                     "preproc_precision": preproc_precision,
-                    "track_id": track_id, "segment_id": segment_id, "coordinate_space": COORDINATE_SPACE,
-                    "smpl_model_type": "smplx_neutral_body21_betas10", "smpl_params_incam": params,
-                    "kp2d": kp2d, "bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys,
+                    "track_id": track_id,
+                    "segment_id": segment_id,
+                    "coordinate_space": COORDINATE_SPACE,
+                    "smpl_model_type": "smplx_neutral_body21_betas10",
+                    "smpl_params_incam": params,
+                    "kp2d": kp2d,
+                    "bbx_xyxy": bbx_xyxy,
+                    "bbx_xys": bbx_xys,
                     "K_fullimg": K.repeat(length, 1, 1),
-                    "distortion_original": _jsonable(camera.get("distortion_opencv", [0.] * 5)),
-                    "teacher_image_distortion": [0.] * 5,
+                    "distortion_original": _jsonable(camera.get("distortion_opencv", [0.0] * 5)),
+                    "teacher_image_distortion": [0.0] * 5,
                     "detection_confidence": torch.tensor([o["detection_confidence"] for o in observations]),
                     "association_cost": torch.tensor([o["association_cost"] for o in observations]),
                     "identity_ambiguous": torch.tensor([o["identity_ambiguous"] for o in observations]),
+                    "original_track_id": torch.tensor([o.get("original_track_id", track_id) for o in observations]),
+                    "association_recovered": torch.tensor(
+                        [o.get("association_recovered", False) for o in observations]
+                    ),
                     "tracking_identity_verified": False,
-                    "static_camera": True, "native_video_frame_rows": selected_rows,
-                    **{key: torch.tensor([r[key] if r[key] is not None else -1 for r in selected_rows], dtype=torch.int64)
-                       for key in ("record_index", "common_time_us", "media_pts_us", "source_frame_no")},
+                    "static_camera": True,
+                    "native_video_frame_rows": selected_rows,
+                    **{
+                        key: torch.tensor(
+                            [r[key] if r[key] is not None else -1 for r in selected_rows], dtype=torch.int64
+                        )
+                        for key in ("record_index", "common_time_us", "media_pts_us", "source_frame_no")
+                    },
                 }
                 _save_tensor(track_path, cached_track)
-            manifest["tracks"].append({"track_id": track_id, "segment_id": segment_id, "path": name,
-                                       "frame_count": length,
-                                       "start_common_time_us": int(cached_track["common_time_us"][0]),
-                                       "end_common_time_us": int(cached_track["common_time_us"][-1])})
+            manifest["tracks"].append(_track_manifest_entry(segment, name, cached_track))
             print(f"Teacher GVHMR: track {track_id}, segment {segment_id}, {length} observed frames", flush=True)
     finally:
         del model
@@ -587,10 +875,13 @@ def load_teacher_track(path):
     length = len(track["common_time_us"])
     if length < 2 or np.any(np.diff(_numpy(track["common_time_us"])) <= 0):
         raise ValueError("Teacher track must retain strictly increasing observed frame timestamps")
-    shapes = {"kp2d": (length, 17, 3), "bbx_xyxy": (length, 4),
-              "bbx_xys": (length, 3), "K_fullimg": (length, 3, 3)}
-    param_shapes = {"body_pose": (length, 63), "global_orient": (length, 3),
-                    "transl": (length, 3), "betas": (length, 10)}
+    shapes = {"kp2d": (length, 17, 3), "bbx_xyxy": (length, 4), "bbx_xys": (length, 3), "K_fullimg": (length, 3, 3)}
+    param_shapes = {
+        "body_pose": (length, 63),
+        "global_orient": (length, 3),
+        "transl": (length, 3),
+        "betas": (length, 10),
+    }
     for key, shape in shapes.items():
         value = _numpy(track[key])
         if value.shape != shape or not np.isfinite(value).all():

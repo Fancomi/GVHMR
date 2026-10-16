@@ -238,7 +238,7 @@ function update(now){
  finally{lastTick=now;requestAnimationFrame(update);}
 }
 async function status(){try{
- const s=await(await fetch('/api/status')).json();$('accepted').textContent=s.paired_accepted==null?'构建中':s.paired_accepted.toLocaleString();
+ const s=await(await fetch('/api/status')).json(),accepted=manifest.review_only?s.body_qa_accepted:s.paired_accepted;$('accepted').textContent=accepted==null?'构建中':accepted.toLocaleString();
  const labels={pending:'待处理',running:'正在处理',reuse_pending:'已有拟合，待复用核验',reused:'已复用',fitted:'拟合完成',failed:'失败',teacher_complete:'关键点完成',complete:'数据完成'};
  $('status').replaceChildren(...Object.entries(s.sources).map(([sid,a])=>{const tr=document.createElement('tr');
   const n=a.fitted??a.completed_fit_person_frames,ok=a.accepted??a.completed_fit_qa_pass;

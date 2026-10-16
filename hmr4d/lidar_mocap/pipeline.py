@@ -257,10 +257,13 @@ class BadmintonPipeline:
                     exclusions.append({'lidar_index':pair['lidar_index'],'track':index,'reason':segment['status']})
         accepted_samples = []
         reviews = []
+        track_states = {}
         for k,frames in by_track.items():
             entry,track,sampled = tracks[k]
             track_name = f"{session.session_id}:{output.name}:{entry['track_id']}:{entry['segment_id']}"
             previous = None
+            if self.settings.get('share_track_shape',False):
+                previous = track_states.get(entry['track_id'])
             start = 0
             while start<len(frames):
                 connected = (previous is not None and previous.get('scan_time_us') is not None
@@ -343,6 +346,8 @@ class BadmintonPipeline:
                                         teacher_body_pose=continuity['teacher_body_pose'][j])
                 print(f'[fit] {track_name} {start+len(batch)}/{len(frames)}; accepted={len(accepted_samples)}',flush=True)
                 start += len(batch)
+            if self.settings.get('share_track_shape',False) and previous is not None:
+                track_states[entry['track_id']] = dict(previous)
         export = export_joblib(accepted_samples,output/'ptv3.pth')
         (output/'quality.jsonl').write_text(''.join(json.dumps(r,ensure_ascii=False,allow_nan=False)+'\n' for r in reviews),encoding='utf-8')
         report = {'session_id':session.session_id,'window':output.name,'scan_count':len(pairs),

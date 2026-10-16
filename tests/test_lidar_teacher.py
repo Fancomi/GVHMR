@@ -14,6 +14,7 @@ from hmr4d.lidar_mocap.teacher import (
     _iter_video_frames,
     _normalize_rows,
     _provenance,
+    _preprocess_reuse,
     _split_tracks,
     _validate_preproc_precision,
     associate_detections,
@@ -80,6 +81,36 @@ class TrackingTests(unittest.TestCase):
 
     def test_crop_has_room_for_arms_after_192_column_feature_crop(self):
         np.testing.assert_allclose(_bbox_xys([0, 0, 120, 60]), [60, 30, 192])
+
+    def test_real_1009_narrow_detection_does_not_create_a_new_identity(self):
+        boxes = [[1246.6621, 657.41785, 1328.89685, 801.42896],
+                 [1280.0231, 658.14246, 1328.38391, 800.67432],
+                 [1248.5032, 658.46503, 1328.68726, 801.40906]]
+        frames = [[dict(bbx_xyxy=box)] for box in boxes]
+        self.assertEqual(len(associate_detections(frames, prediction_mode="corners_v1")), 2)
+        fixed = associate_detections(frames)
+        self.assertEqual(len(fixed), 1)
+        np.testing.assert_array_equal([o["bbx_xyxy"] for o in fixed[1]], np.asarray(boxes, dtype=np.float32))
+
+    def test_real_missing_interval_does_not_force_a_track_link(self):
+        det = dict(bbx_xyxy=[0, 0, 40, 100])
+        tracks = associate_detections([[det]] + [[] for _ in range(8)] + [[det]])
+        self.assertEqual(len(tracks), 2)
+
+    def test_ambiguous_recovery_does_not_force_one_of_two_people(self):
+        first = [dict(bbx_xyxy=[0, 0, 40, 100]), dict(bbx_xyxy=[5, 0, 45, 100])]
+        later = [dict(bbx_xyxy=[2.5, 0, 42.5, 100])]
+        self.assertEqual(len(associate_detections([first, [], [], later])), 3)
+
+    def test_recovery_preserves_every_original_continuous_tracklet(self):
+        boxes = [[0, 0, 82, 145], [33, 0, 82, 145], [1, 0, 82, 145], [2, 0, 82, 145]]
+        frames = [[dict(bbx_xyxy=box, observation_id=i)] for i, box in enumerate(boxes)]
+        before = associate_detections(frames, prediction_mode="corners_v1", max_track_gap_frames=1)
+        after = associate_detections(frames)
+        mapping = {o['observation_id']: k for k, group in after.items() for o in group}
+        self.assertEqual(len(mapping), len(frames))
+        for group in before.values():
+            self.assertEqual(len({mapping[o['observation_id']] for o in group}), 1)
 
 
 class SamplingTests(unittest.TestCase):

@@ -36,6 +36,9 @@ class FittingConfig:
     cloud_huber_m: float = 0.08
     teacher_geometry_weight: float = 0.08
     pose_prior_weight: float = 0.002
+    # Explicitly enabled for repair experiments; compare rotations only after
+    # conversion into the same SMPL basis, never against raw SMPL-X axes.
+    distal_pose_prior_weight: float = 0.0
     shape_prior_weight: float = 0.00002
     root_prior_weight: float = 0.002
     reprojection_weight: float = 1.0
@@ -69,6 +72,8 @@ class FittingConfig:
             raise ValueError("Continuity time intervals must be positive")
         if min(self.continuity_weight, self.root_motion_weight) < 0:
             raise ValueError("Continuity weights must be nonnegative")
+        if self.distal_pose_prior_weight < 0:
+            raise ValueError("Distal pose weight must be nonnegative")
         if self.continuity_reference not in {"cloud_torso", "cloud_mesh_median"}:
             raise ValueError("Unknown physical motion reference")
 
@@ -606,6 +611,11 @@ class SMPLFitter:
             body_matrix = axis_angle_to_matrix(body.reshape(count, 23, 3))
             root_matrix = axis_angle_to_matrix(root)
             loss = loss + cfg.pose_prior_weight * (body_matrix - prior_body_matrix).square().mean()
+            if cfg.distal_pose_prior_weight:
+                distal = [6, 7, 9, 10]  # SMPL joints 7/8 (ankles), 10/11 (feet).
+                loss = loss + cfg.distal_pose_prior_weight * (
+                    body_matrix[:, distal] - prior_body_matrix[:, distal]
+                ).square().mean()
             loss = loss + cfg.root_prior_weight * (root_matrix - prior_root_matrix).square().mean()
             loss = loss + cfg.shape_prior_weight * (shape - prior_shape).square().mean()
             heights = (vertices - plane_origin) @ plane_normal
@@ -707,6 +717,13 @@ class SMPLFitter:
                     "shape_at_bound": bool((shape.abs() >= cfg.max_beta - 1e-3).any().cpu()),
                     "pelvis_shift_from_teacher_m": float((pelvis[index] - teacher_pelvis[index]).norm().cpu()),
                     "pose_change_from_teacher_matrix_rms": float((axis_angle_to_matrix(body[index].reshape(23, 3)) - prior_body_matrix[index]).square().mean().sqrt().cpu()),
+                    "distal_pose_prior_weight": cfg.distal_pose_prior_weight,
+                    "distal_rotation_from_conversion_deg": (
+                        matrix_to_axis_angle(
+                            axis_angle_to_matrix(body[index].reshape(23, 3))[[6, 7, 9, 10]]
+                            @ prior_body_matrix[index, [6, 7, 9, 10]].transpose(-1, -2)
+                        ).norm(dim=-1) * (180.0 / torch.pi)
+                    ).cpu().tolist(),
                     "keypoints_space": keypoints_space if keypoints is not None else None,
                     "reprojection_mean_px": (
                         float(torch.stack(valid_reprojections).mean().cpu())

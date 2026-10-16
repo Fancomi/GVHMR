@@ -8,7 +8,7 @@ import smplx
 import torch
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
-from hmr4d.lidar_mocap.sessions import SessionIndex
+from hmr4d.lidar_mocap.rally_pipeline import load_run_session
 from hmr4d.utils.body_model.contracts import forward_smpl_at_pelvis
 
 
@@ -24,7 +24,7 @@ def main():
     calibration = CalibrationSnapshot.load(args.output_root/'calibration/calibration_snapshot.json')
     manifest = json.loads((args.output_root/'datasets/dataset_manifest.json').read_text(encoding='utf-8'))
     model = smplx.create(PROJ_ROOT/'inputs/checkpoints/body_models',model_type='smpl',gender='neutral').eval()
-    report = {'scope':'Actual exported fixed24 clouds and neutral SMPL parameters; downstream trainer path currently missing',
+    report = {'scope':'Original recorded fixed24 returns and native neutral SMPL reconstruction',
               'sessions':{},'calibration_digest':calibration.data['snapshot_digest']}
     for sid,entry in manifest['exports'].items():
         if not entry['accepted']:
@@ -33,7 +33,7 @@ def main():
         rows = [json.loads(line) for line in Path(entry['metadata']).read_text(encoding='utf-8').splitlines()]
         if len(rows)!=len(data['pc']):
             raise ValueError('Metadata and tensor sample counts differ')
-        session = SessionIndex.load(Path(calibration.data['sessions_root'])/sid,calibration.frame_map_path(sid))
+        session = load_run_session(args.output_root,calibration,sid)
         pairs = session.pairs()
         selected = np.unique(np.linspace(0,len(rows)-1,min(args.samples_per_session,len(rows))).astype(int))
         cloud_error = mesh_error = pelvis_error = 0
