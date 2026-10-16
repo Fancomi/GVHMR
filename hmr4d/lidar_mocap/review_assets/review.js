@@ -121,7 +121,7 @@ window.REVIEW_STREAM_FRAME=frame=>{const changed=!clip||clip.id!==frame.session_
  unpackFrame(frame);if(changed){streamAutoView=true;orient();}keepStreamInView(frame);showFrame(0);window.REVIEW_STATE.streaming=true;
  window.REVIEW_STATE.displayedBackgroundPoints=frame.displayed_background_points;
  window.REVIEW_STATE.rawPointCount=frame.raw_point_count;window.REVIEW_STATE.pointScope=frame.point_scope;
- if(frame.raw_point_count!=null)$('status').textContent=`扫描 ${frame.lidar_index} · ${frame.point_scope==='roi'?'正式 ROI':'全部源点'} ${frame.point_count} / 原始 ${frame.raw_point_count} 点 · ${frame.athletes.length} 份拟合`;};
+ if(frame.raw_point_count!=null)$('status').textContent=`扫描 ${frame.lidar_index} · ${frame.point_scope==='roi'?(manifest.point_filter?.display_crop?'显示 ROI':'正式 ROI'):'全部源点'} ${frame.point_count} / 原始 ${frame.raw_point_count} 点 · ${frame.athletes.length} 份拟合`;};
 function reportEmbedded(){if(!clip||!window.REVIEW_STATE)return;parent.postMessage({type:'review-state',state:window.REVIEW_STATE,view:window.REVIEW_GET_VIEW(),
  times:clip.frames.map(f=>({lidar_index:f.lidar_index,scan_mid_us:f.scan_mid_us,offset_s:f.offset_s})),
  images:['cam1','cam2'].map(id=>({src:$(id).getAttribute('src'),ready:$(id).complete&&$(id).naturalWidth>0}))},'*');}

@@ -224,7 +224,7 @@ test. Cross-session physical identities remain unverified.
 The native source viewer starts independently while production runs:
 
 ```powershell
-uv run --no-sync python tools/serve_badminton_rallies.py
+uv run --no-sync python tools/serve_badminton_rallies.py --display-crop D:/PROJECT/LIDAR/lidar_project/config/calibration/badminton-20261012/display-crop.json
 # Optional browser driver, using installed Chrome (no browser download):
 uv pip install --python .venv/Scripts/python.exe playwright orjson
 uv run --no-sync python tools/verify_badminton_viewer.py
@@ -264,6 +264,15 @@ rotation and closed box boundaries match the native filter. An obsolete third
 Region is ignored. The **全部源点** switch restores all source returns. This
 filter affects displayed background and human returns in both 3D and camera
 projections; it does not alter original inputs, calibration, fits or QA.
+
+The explicit `--display-crop` sidecar additionally extends only the accepted
+net Ignore's positive local-X face by 0.19 m. Its schema, sport, display-only
+scope and base bbox SHA must match this frozen run. Arithmetic starts with the
+original Float64 center, adds the native Float32 rotation's first column times
+half the Float64 extension, extends size X, then compiles the Float32 crop.
+The viewer manifest records the exact sidecar path/SHA and resulting boxes.
+Omit the option to inspect the original accepted bbox without the display fix.
+Neither mode rewrites the source bbox or any published training tensor.
 
 The 3D view reuses `review_assets/review.js`, the existing offline WebGL2 player:
 all 6,890 SMPL vertices, triangle topology, computed normals, opacity/wireframe,

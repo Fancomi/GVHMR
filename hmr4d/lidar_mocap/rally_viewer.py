@@ -10,6 +10,7 @@ from bisect import bisect_left
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 import base64
+import copy
 import hashlib
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -126,10 +127,75 @@ def crop_viewer_points(points, bbox):
     return included
 
 
-def prepare_viewer(run_root, baseline_root):
+def apply_display_net_extension(bbox, settings, base_sha256):
+    """One display-only positive local-X face extension, with native rounding."""
+    expected = {"schema", "sport", "scope", "base_bbox_sha256", "net_ignore_id", "net_positive_local_x_extension_m"}
+    if (
+        set(settings) != expected
+        or settings["schema"] != "badminton-display-crop-v1"
+        or settings["sport"] != "badminton"
+        or settings["scope"] != "display_only"
+        or settings["base_bbox_sha256"] != base_sha256
+    ):
+        raise ValueError("Display crop schema/scope/base bbox SHA mismatch")
+    extension = settings["net_positive_local_x_extension_m"]
+    if (
+        isinstance(extension, bool)
+        or not isinstance(extension, (int, float))
+        or not np.isfinite(extension)
+        or extension < 0
+    ):
+        raise ValueError("Display net extension must be a finite nonnegative number")
+    result = copy.deepcopy(bbox)
+    candidates = [
+        b for b in result["boxes"][:2] if b.get("id") == settings["net_ignore_id"] and b["type"].lower() == "ignore"
+    ]
+    if len(candidates) != 1:
+        raise ValueError("Display crop must identify one accepted net Ignore")
+    net = candidates[0]
+    center = np.asarray(net["center"], np.float64)
+    direction = bbox_rotation_float32(net.get("rotation_deg", [0, 0, 0]))[:, 0].astype(np.float64)
+    net["center"] = (center + direction * (float(extension) * 0.5)).tolist()
+    net["size"][0] = float(net["size"][0]) + float(extension)
+    if not np.isfinite(np.asarray(net["center"] + net["size"], np.float32)).all():
+        raise ValueError("Display crop geometry exceeds finite Float32")
+    return result
+
+
+def load_display_bbox(calibration, path=None):
+    bbox = calibration.data["bbox"]
+    if path is None:
+        return badminton_detection_bbox(bbox), None
+    path = Path(path).resolve()
+    blob = path.read_bytes()
+    settings = json.loads(blob)
+    base_sha = settings.get("base_bbox_sha256")
+    artifacts = [
+        a
+        for a in calibration.data["artifacts"].values()
+        if a["sha256"] == base_sha and Path(a["path"]).name == "bbox.json"
+    ]
+    if len(artifacts) != 1:
+        raise ValueError("Display crop does not match this frozen bbox artifact")
+    base_blob = (calibration.snapshot_json.parent / artifacts[0]["path"]).read_bytes()
+    if hashlib.sha256(base_blob).hexdigest() != base_sha or json.loads(base_blob) != bbox:
+        raise ValueError("Display crop base bbox bytes/geometry mismatch")
+    adjusted = apply_display_net_extension(bbox, settings, base_sha)
+    evidence = dict(
+        path=str(path),
+        sha256=hashlib.sha256(blob).hexdigest(),
+        settings=settings,
+        original_inputs_unchanged=True,
+        arithmetic="Float64 original center + Float32 native rotation column * Float64 half-extension, then Float32 crop",
+    )
+    return badminton_detection_bbox(adjusted), evidence
+
+
+def prepare_viewer(run_root, baseline_root, display_crop=None):
     root = Path(run_root).resolve()
     baseline = Path(baseline_root).resolve()
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
+    viewer_bbox, display_evidence = load_display_bbox(calibration, display_crop)
     registry = read_json(root / "source_registry.json")
     intake = read_json(registry["intake"]["path"])
     rallies = read_rows(intake["prepared_ranges"]["path"])
@@ -201,7 +267,8 @@ def prepare_viewer(run_root, baseline_root):
         rule="native badmintonDetectionBboxSet: ground-top-derived 5m Region AND NOT ground/net Ignore",
         default="roi",
         available=["roi", "all"],
-        boxes=badminton_detection_bbox(calibration.data["bbox"])["boxes"],
+        boxes=viewer_bbox["boxes"],
+        display_crop=display_evidence,
     )
     output = root / "viewer"
     output.mkdir(parents=True, exist_ok=True)
@@ -211,11 +278,11 @@ def prepare_viewer(run_root, baseline_root):
     (output / "viewer.js").write_bytes(Path(__file__).with_name("rally_viewer_client.js").read_bytes())
     for name in ("review.js", "review.css"):
         (output / name).write_bytes((Path(__file__).with_name("review_assets") / name).read_bytes())
-    return ViewerData(root, baseline, calibration, manifest, sessions, media)
+    return ViewerData(root, baseline, calibration, manifest, sessions, media, viewer_bbox=viewer_bbox)
 
 
 class ViewerData:
-    def __init__(self, root, baseline, calibration, manifest, sessions, media):
+    def __init__(self, root, baseline, calibration, manifest, sessions, media, viewer_bbox=None):
         self.root = root
         self.baseline = baseline
         self.calibration = calibration
@@ -225,7 +292,9 @@ class ViewerData:
         self._quality = {}
         self._lock = threading.Lock()
         self.viewer_bbox = (
-            badminton_detection_bbox(calibration.data["bbox"]) if calibration is not None else dict(boxes=[])
+            viewer_bbox
+            if viewer_bbox is not None
+            else (badminton_detection_bbox(calibration.data["bbox"]) if calibration is not None else dict(boxes=[]))
         )
         self._native_images = OrderedDict()
         self._native_lock = threading.RLock()

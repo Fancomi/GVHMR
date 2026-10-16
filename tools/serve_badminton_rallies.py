@@ -16,8 +16,11 @@ def main():
     parser.add_argument("--output-root", type=Path, default=PROJ_ROOT / "outputs/badminton_rallies_v1")
     parser.add_argument("--baseline-root", type=Path, default=PROJ_ROOT / "outputs/badminton_corner_fix_v1_continuity")
     parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument(
+        "--display-crop", type=Path, help="Explicit display-only crop sidecar, bound to frozen bbox SHA"
+    )
     args = parser.parse_args()
-    data = prepare_viewer(args.output_root, args.baseline_root)
+    data = prepare_viewer(args.output_root, args.baseline_root, display_crop=args.display_crop)
     serve_viewer(data, port=args.port)
 
 

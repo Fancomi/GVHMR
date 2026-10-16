@@ -11,6 +11,7 @@ from hmr4d.lidar_mocap.rally_viewer import (
     badminton_detection_bbox,
     crop_viewer_points,
     bbox_rotation_float32,
+    apply_display_net_extension,
 )
 
 
@@ -80,6 +81,46 @@ class NativeRoiTests(unittest.TestCase):
         mask = crop_viewer_points(points, badminton_detection_bbox(self.bbox()))
         np.testing.assert_array_equal(points, before)
         np.testing.assert_array_equal(np.flatnonzero(mask), [1, 3])
+
+    def test_display_net_extension_changes_only_positive_local_face(self):
+        original = self.bbox()
+        original["boxes"][0]["size"][0] = 10
+        original["boxes"][1]["id"] = "region_2"
+        settings = dict(
+            schema="badminton-display-crop-v1",
+            sport="badminton",
+            scope="display_only",
+            base_bbox_sha256="a" * 64,
+            net_ignore_id="region_2",
+            net_positive_local_x_extension_m=0.19,
+        )
+        adjusted = apply_display_net_extension(original, settings, "a" * 64)
+        points = np.array([[-3.1, 0, 1], [3.1, 0, 1], [3.25, 0, 1]], np.float32)
+        np.testing.assert_array_equal(
+            crop_viewer_points(points, badminton_detection_bbox(original)), [True, True, True]
+        )
+        np.testing.assert_array_equal(
+            crop_viewer_points(points, badminton_detection_bbox(adjusted)), [True, False, True]
+        )
+        self.assertEqual(original["boxes"][1]["center"], [0, 0, 0.9])
+        self.assertEqual(adjusted["boxes"][1]["center"], [0.095, 0, 0.9])
+        self.assertEqual(adjusted["boxes"][1]["size"], [6.19, 0.6, 1.8])
+        with self.assertRaisesRegex(ValueError, "SHA mismatch"):
+            apply_display_net_extension(original, settings, "b" * 64)
+
+    def test_display_net_uses_original_float64_center_and_native_float32_direction(self):
+        bbox = self.bbox()
+        bbox["boxes"][1].update(id="region_2", center=[11.8, 0.736139, -1.92984], rotation_deg=[0, 0, 3.38739])
+        settings = dict(
+            schema="badminton-display-crop-v1",
+            sport="badminton",
+            scope="display_only",
+            base_bbox_sha256="a" * 64,
+            net_ignore_id="region_2",
+            net_positive_local_x_extension_m=0.19,
+        )
+        adjusted = apply_display_net_extension(bbox, settings, "a" * 64)
+        np.testing.assert_array_equal(adjusted["boxes"][1]["center"], [11.894834022521973, 0.74175223357746, -1.92984])
 
     def test_batch_uses_one_native_decode_stream_per_camera(self):
         calls = []
