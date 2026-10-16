@@ -33,7 +33,13 @@ seven-source rally intake, validate baseline reuse, observe both native cameras,
 and publish verified SMPL/LiDAR training subsets in a separate paired run.
 `tools/serve_badminton_rallies.py` / `rally_viewer.py` + `rally_viewer.html` serve
 native dual-camera MP4 playback, synchronized rally seeks and exact paired-frame
-stored-fit overlays. `tools/verify_badminton_viewer.py` exercises real Chrome.
+stored-fit overlays. `preview_decoder.py` retains PTS-checked decode streams;
+the client buffers complete native RGB/mesh/cloud bundles and defaults to the
+native badminton Region-minus-Ignore display filter. `tools/verify_badminton_viewer.py`
+exercises real Chrome; `tools/benchmark_badminton_playback.py` measures actual
+complete commits, buffer waits, decoder seeks and visible RGB identity.
+`tools/report_badminton_rally_delivery.py` adds a hash-bound quality receipt to
+an already verified publication without rewriting its manifest or tensors.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

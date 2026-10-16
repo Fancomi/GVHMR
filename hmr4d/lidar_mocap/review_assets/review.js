@@ -103,13 +103,16 @@ window.REVIEW_GET_VIEW=()=>({center:center.slice(),distance,yaw,pitch});
 window.REVIEW_SET_VIEW=view=>{center=view.center.slice();distance=view.distance;yaw=view.yaw;pitch=view.pitch;draw();};
 window.REVIEW_SET_MOTION=motion=>{visibleMotion=motion||null;draw();};
 window.REVIEW_SET_CONTROL=(id,value)=>{if($(id)){if($(id).type==='checkbox')$(id).checked=value;else $(id).value=value;draw();}};
+window.REVIEW_PREPARE_FRAME=unpackFrame;
 // The seven-source online adapter sends the same packed native-frame contract
 // as offline data.js. Reuse full mesh normals/topology, point cloud, controls
 // and camera math without creating a second 3D renderer.
 window.REVIEW_STREAM_FRAME=frame=>{const changed=!clip||clip.id!==frame.session_id;
  clipNumber=0;clip={id:frame.session_id,frames:[frame],duration_s:frame.offset_s||0};index=0;mediaTime=frame.offset_s||0;
  if(changed)orient();showFrame(0);window.REVIEW_STATE.streaming=true;
- window.REVIEW_STATE.displayedBackgroundPoints=frame.displayed_background_points;};
+ window.REVIEW_STATE.displayedBackgroundPoints=frame.displayed_background_points;
+ window.REVIEW_STATE.rawPointCount=frame.raw_point_count;window.REVIEW_STATE.pointScope=frame.point_scope;
+ if(frame.raw_point_count!=null)$('status').textContent=`扫描 ${frame.lidar_index} · ${frame.point_scope==='roi'?'正式 ROI':'全部源点'} ${frame.point_count} / 原始 ${frame.raw_point_count} 点 · ${frame.athletes.length} 份拟合`;};
 function reportEmbedded(){if(!clip||!window.REVIEW_STATE)return;parent.postMessage({type:'review-state',state:window.REVIEW_STATE,view:window.REVIEW_GET_VIEW(),
  times:clip.frames.map(f=>({lidar_index:f.lidar_index,scan_mid_us:f.scan_mid_us,offset_s:f.offset_s})),
  images:['cam1','cam2'].map(id=>({src:$(id).getAttribute('src'),ready:$(id).complete&&$(id).naturalWidth>0}))},'*');}

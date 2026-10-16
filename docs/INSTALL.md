@@ -226,7 +226,7 @@ The native source viewer starts independently while production runs:
 ```powershell
 uv run --no-sync python tools/serve_badminton_rallies.py
 # Optional browser driver, using installed Chrome (no browser download):
-uv pip install --python .venv/Scripts/python.exe playwright
+uv pip install --python .venv/Scripts/python.exe playwright orjson
 uv run --no-sync python tools/verify_badminton_viewer.py
 ```
 
@@ -235,8 +235,8 @@ Open `http://127.0.0.1:8767/`. HTML and a source/rally manifest are generated in
 HTTP byte-range requests without copies/transcodes. Source/rally selection,
 play/pause, rates, loop and seek use recorded native common-time and media-PTS
 anchors. The default paired mode plays original scan transactions using each
-camera's PTS-verified decoded native RGB. The SessionIndex decoder is shared
-with fitting/offline reviews; JPEG90 previews bind record index, PTS, common
+camera's PTS-verified decoded native RGB. Preview decoding checks the same
+SessionIndex rows as fitting/offline reviews; JPEG85 previews bind record index, PTS, common
 clock, original decoded BGR SHA and preview JPEG SHA. Both previews decode
 offscreen before one animation-frame commit updates their visible canvases,
 the full 3D scene, both camera projections and the public committed scan.
@@ -246,12 +246,32 @@ scan. The alternate native-video mode plays the original MP4 timeline.
 "Exact paired frame" pauses at a scan. JPEG previews are lossy display assets;
 their frame binding and displayed decoded-preview pixels are verified separately.
 
+The preview decoder retains one PyAV stream per source/camera, with two decode
+threads. It seeks only on a new stream, backwards requests or gaps over four
+seconds, then decodes forward using actual PTS. Playback requests batches of
+four consecutive recorded scans, with up to three requests in flight, sixteen
+decoded complete bundles buffered, and twelve bundles prepared before starting.
+Both camera JPEGs and full mesh normals are prepared ahead of their display
+time. Mesh projection UVs use packed Float32 rather than nested JSON arrays;
+optional `orjson` accelerates HTTP serialization (stdlib JSON remains supported).
+`window.viewer.bufferState()` records actual complete commits and buffer waits;
+the status endpoint includes decoder seek/frame counters.
+
+Default point display follows native `badmintonDetectionBboxSet`: the ground
+box's top plane defines a five-metre-high Region with the same XY extent and
+rotation, then ground/net Ignore boxes are removed. Float32 Z*Y*X quaternion
+rotation and closed box boundaries match the native filter. An obsolete third
+Region is ignored. The **全部源点** switch restores all source returns. This
+filter affects displayed background and human returns in both 3D and camera
+projections; it does not alter original inputs, calibration, fits or QA.
+
 The 3D view reuses `review_assets/review.js`, the existing offline WebGL2 player:
 all 6,890 SMPL vertices, triangle topology, computed normals, opacity/wireframe,
 real human returns, background points and orbit controls. The online adapter
 passes the same packed native-frame geometry contract as offline `data.js`.
 Large background scans display a deterministic subset of at most 25,000 actual
-returns; fitted mesh/human cloud remain complete. Both camera overlays project
+returns after the selected display filter; fitted meshes remain complete.
+Human returns retain all points allowed by that display filter. Both camera overlays project
 the same stored mesh and actual points with frozen Brown K/d/R/t. Full projected
 triangles form a translucent silhouette union. No geometry is interpolated;
 pending/outside-rally scans keep their actual raw cloud and explicitly show
@@ -278,11 +298,29 @@ commit again:
 
 ```powershell
 uv run --no-sync python tools/verify_badminton_viewer.py --atomic-only --output outputs/badminton_rallies_v1/viewer/atomic_loading_verification.json
+uv run --no-sync python tools/benchmark_badminton_playback.py --source 20261012_163452 --source 20261009_202713 --seconds 8
 ```
 
 `iframe#scene.contentWindow.REVIEW_STATE` reports scan/mesh/vertex/point counts.
+The playback benchmark measures actual complete frame commits, startup delay,
+commit-gap median/P95/max, buffer waits, decoder seeks and visible RGB identity
+on the reported browser/GPU. Wall-clock advancement alone is not a frame count.
+The server snapshots its HTML/JS/CSS together at startup; restart after backend
+or client edits to deploy a consistent version.
 Final delivery `quality_summary.json` distinguishes original input/rally scans,
 fit QA rejections, bilateral exclusions and final person frames by source.
+For a published run created by an already-loaded older exporter, add the same
+quality report and an independent hash-bound receipt without changing its
+training manifest or tensors:
+
+```powershell
+uv run --no-sync python tools/report_badminton_rally_delivery.py
+```
+
+`delivery_receipt.json` binds the published manifest, verification and quality
+report, explicitly records the sealed rally scope, and discloses resumed-call
+timing limits. A generic scope string in an older published manifest does not
+expand the source manifest's sealed rally selection.
 
 Segmentation evaluates bone scores only on points inside each person's box;
 outside scores were always infinite. Three 615k-point native scans matched the

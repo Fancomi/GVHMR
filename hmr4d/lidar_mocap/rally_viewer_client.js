@@ -7,6 +7,7 @@ const videos=[$('cam1'),$('cam2')],canvases=[$('overlay1'),$('overlay2')];
 // without exposing a new RGB frame beneath an older point/mesh projection.
 const nativeFrames=videos.map((v,i)=>{const c=document.createElement('canvas');
  c.id='nativeFrame'+(i+1);c.width=1920;c.height=1080;c.style.visibility='hidden';v.after(c);return c;});
+const scopeLabel=document.createElement('label');scopeLabel.innerHTML='<input type="checkbox" id="allPoints">全部源点';$('projectCloud').parentElement.after(scopeLabel);
 function projectedRenderer(canvas){
  const gl=canvas.getContext('webgl2',{alpha:true,premultipliedAlpha:false,antialias:true,preserveDrawingBuffer:true});
  if(!gl)throw Error('投影叠加需要 WebGL2');
@@ -21,21 +22,22 @@ function projectedRenderer(canvas){
  function clear(){gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);}
  function draw(array,rgba,mode,pointSize=2,faceIndices=null){
   gl.useProgram(program);gl.disable(gl.BLEND);gl.disable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);
-  gl.bindBuffer(gl.ARRAY_BUFFER,points);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(array.flat()),gl.STREAM_DRAW);
+  const flat=array instanceof Float32Array?array:new Float32Array(array.flat());
+  gl.bindBuffer(gl.ARRAY_BUFFER,points);gl.bufferData(gl.ARRAY_BUFFER,flat,gl.STREAM_DRAW);
   gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
   gl.uniform4fv(color,rgba);gl.uniform1f(size,pointSize);
   if(faceIndices){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,indices);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,faceIndices,gl.STREAM_DRAW);gl.drawElements(mode,faceIndices.length,gl.UNSIGNED_SHORT,0);}
-  else gl.drawArrays(mode,0,array.length);
+  else gl.drawArrays(mode,0,flat.length/2);
  }
  function render(data,cam){clear();let fullMeshes=0;
   if($('projectCloud').checked)draw(data.background_projection?.[cam]||[],[.35,.79,.85,.65],gl.POINTS,1.6);
   data.athletes.forEach((a,k)=>{const g=a.cameras[cam],rgb=[[1,.62,.19],[.31,.64,1],[.5,.88,.53],[.85,.52,.89]][k%4];
-   if(g.mesh.length===6890){
-    let usable=faces;if(g.mesh.some(p=>!p)){const valid=[];for(let j=0;j<faces.length;j+=3)
-     if(g.mesh[faces[j]]&&g.mesh[faces[j+1]]&&g.mesh[faces[j+2]])valid.push(faces[j],faces[j+1],faces[j+2]);usable=new Uint16Array(valid);}
+   if(g._meshFlat&&g._meshFlat.length===13780){
+    let usable=faces;if(g._meshValid.some(v=>!v)){const valid=[];for(let j=0;j<faces.length;j+=3)
+     if(g._meshValid[faces[j]]&&g._meshValid[faces[j+1]]&&g._meshValid[faces[j+2]])valid.push(faces[j],faces[j+1],faces[j+2]);usable=new Uint16Array(valid);}
     // Constant alpha is written once per rasterized pixel, without additive
     // blending across overlapping front/back faces: an exact silhouette union.
-    draw(g.mesh.map(p=>p||[-10000,-10000]),[...rgb,.24],gl.TRIANGLES,1,usable);fullMeshes++;
+    draw(g._meshFlat,[...rgb,.24],gl.TRIANGLES,1,usable);fullMeshes++;
    }else draw(g.mesh.filter(Boolean),[...rgb,1],gl.POINTS,2);
    draw(g.cloud.filter(Boolean),[1,1,.25,1],gl.POINTS,2.3);
    const bones=[];manifest.edges.forEach(([a,b])=>{if(g.joints[a]&&g.joints[b])bones.push(g.joints[a],g.joints[b]);});
@@ -49,6 +51,77 @@ const colors=['#ffaa40','#62adff','#94e69d','#df9bff'];
 let manifest,faces,sourceId,source,clip,loading=false,playing=false,lastSync=0;
 let reviewTime=0,lastTick=0,lastFrameRequest=0,frameBusy=false,generation=0,lastData=null;
 let resolveReady;const ready=new Promise(resolve=>{resolveReady=resolve;});
+const readyFrames=new Map(),prefetchTasks=new Map();let nextPrefetchIndex=null;
+const scope=()=>$('allPoints').checked?'all':'roi';
+let commitTimes=[],playToken=0,bufferWaitStart=null,bufferWaits=[];
+function clearReadyFrames(){for(const task of prefetchTasks.values())task.controller.abort();prefetchTasks.clear();nextPrefetchIndex=null;
+ for(const b of readyFrames.values())b.decoded.forEach(x=>x.close());readyFrames.clear();}
+function bufferState(){const frames=[...readyFrames.values()].sort((a,b)=>a.data.frame.offset_s-b.data.frame.offset_s);
+ return {ready:frames.length,ahead_seconds:frames.length?Math.max(0,frames.at(-1).data.frame.offset_s-reviewTime):0,pending:prefetchTasks.size,scope:scope(),commits:commitTimes,
+  starvation_gaps:commitTimes.slice(1).map((c,i)=>c.time-commitTimes[i].time).filter(g=>g>250),
+  buffer_underruns:bufferWaits.length+(bufferWaitStart==null?0:1),buffer_wait_ms:bufferWaits.reduce((n,v)=>n+v,0)+(bufferWaitStart==null?0:performance.now()-bufferWaitStart)};}
+async function decodeBundle(data){
+ for(const a of data.athletes)for(const g of Object.values(a.cameras))if(g.mesh_xy_f32){
+  g._meshFlat=new Float32Array(Uint8Array.from(atob(g.mesh_xy_f32),c=>c.charCodeAt(0)).buffer);
+  g._meshValid=Uint8Array.from(atob(g.mesh_valid_u8),c=>c.charCodeAt(0));
+  let rows=null;Object.defineProperty(g,'mesh',{get(){return rows||(rows=Array.from(g._meshValid,(v,i)=>v?[g._meshFlat[i*2],g._meshFlat[i*2+1]]:null));}});
+ }
+ const decoded=await Promise.all(['cam1','cam2'].map(async cam=>{const image=data.native_images[cam],native=data.native[cam];
+  if(image.record_index!==native.record_index||Math.abs(image.media_pts_us/1e6-native.pts)>.000002)throw Error('原生图像与扫描配对不一致');
+  return createImageBitmap(await(await fetch('data:image/jpeg;base64,'+image.jpeg_base64)).blob());}));
+ await sceneReady();await new Promise(resolve=>requestAnimationFrame(resolve));
+ $('scene').contentWindow.REVIEW_PREPARE_FRAME(data.frame);
+ return {data,decoded};
+}
+function startPrefetch(index){
+ const version=generation,sid=sourceId,pointScope=scope(),controller=new AbortController(),task={controller,remaining:Math.min(4,source.scan_times.length-index)};prefetchTasks.set(index,task);
+ task.promise=(async()=>{try{
+  const t=source.scan_times[index];
+  const response=await fetch('/api/bundles?source='+sid+'&t='+t+'&count=4&scope='+pointScope,{signal:controller.signal});
+  if(!response.ok)throw Error('帧包载入失败');const batch=await response.json();
+  for(const data of batch.frames){if(version!==generation||controller.signal.aborted)return;if(!data.frame){task.remaining--;continue;}
+   if(readyFrames.has(data.lidar_index)){task.remaining--;continue;}
+   const bundle=await decodeBundle(data);
+   if(version!==generation||controller.signal.aborted){bundle.decoded.forEach(b=>b.close());return;}
+   readyFrames.set(data.lidar_index,bundle);
+   task.remaining--;
+   while(readyFrames.size>16){const key=Math.min(...readyFrames.keys());readyFrames.get(key).decoded.forEach(b=>b.close());readyFrames.delete(key);}
+  }
+ }catch(e){if(e.name!=='AbortError')$('error').textContent=e.message;}
+ finally{if(prefetchTasks.get(index)===task)prefetchTasks.delete(index);}})();
+ return task.promise;
+}
+function fillBuffer(){
+ if(nextPrefetchIndex==null)return;
+ const ahead=[...readyFrames.keys()].filter(i=>i>(lastData?.lidar_index??-1)).length;
+ let reserved=ahead+[...prefetchTasks.values()].reduce((n,t)=>n+t.remaining,0);
+ while(prefetchTasks.size<3&&reserved<=12&&nextPrefetchIndex<source.scan_times.length){
+  const index=nextPrefetchIndex;nextPrefetchIndex+=4;reserved+=4;startPrefetch(index);
+ }
+}
+async function prefetchFrames(){
+ if(nextPrefetchIndex==null)nextPrefetchIndex=(lastData?.lidar_index??0)+1;
+ fillBuffer();
+ for(let i=0;i<500;i++){
+  const ahead=[...readyFrames.keys()].filter(k=>k>(lastData?.lidar_index??-1)).length;
+  if(ahead>=12||(!prefetchTasks.size&&nextPrefetchIndex>=source.scan_times.length))return;
+  if(!prefetchTasks.size)fillBuffer();await new Promise(resolve=>setTimeout(resolve,20));
+ }
+ throw Error('播放缓存载入超时');
+}
+function commitBundle(bundle){
+ const {data,decoded}=bundle;
+ nativeFrames.forEach((c,i)=>{c.getContext('2d',{alpha:false}).drawImage(decoded[i],0,0,c.width,c.height);c.style.visibility='visible';});
+ $('scene').contentWindow.REVIEW_STREAM_FRAME(data.frame);drawProjection(data);
+ lastData=data;window.lastPairedFrame=data;
+ window.committedPairedFrame={sourceId,scan:data.lidar_index,lidar_index:data.lidar_index,scan_mid_us:data.scan_mid_us,native:data.native,point_scope:data.frame.point_scope,
+  images:Object.fromEntries(Object.entries(data.native_images).map(([cam,{jpeg_base64,...meta}])=>[cam,meta]))};
+ if(playing){commitTimes.push({scan:data.lidar_index,time:performance.now()});if(commitTimes.length>150)commitTimes.shift();}
+ const fitted=data.athletes.map((a,i)=>'人体'+(i+1)+'：'+a.mean_mm.toFixed(1)+' mm，'+(a.accepted?'拟合 QA 通过':'已排除')).join('；');
+ $('fitInfo').textContent='扫描 '+data.lidar_index+' · 原生帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index+
+  ' · '+(data.frame.point_scope==='roi'?'正式 ROI ':'全部源点 ')+data.frame.point_count.toLocaleString()+' / 原始 '+data.frame.raw_point_count.toLocaleString()+' 点 · '+
+  (fitted||'该帧 SMPL 待生成或位于拟合回合之外');
+}
 const paired=()=>$('mode').value==='paired';
 function clock(value,cam,inverse=false){
  const a=source.cameras[cam].clock_anchors,k=inverse?1:0,o=1-k;let l=0,r=a.length-1;
@@ -57,7 +130,7 @@ function clock(value,cam,inverse=false){
 }
 function commonTime(camera=1){return paired()&&lastData?.native?clock(lastData.native['cam'+camera].pts,'cam'+camera,true):clock(videos[camera-1].currentTime,'cam'+camera,true);}
 function clearOverlay(){projectionRenderers.forEach(r=>r.clear());}
-function stopPlayback(){playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
+function stopPlayback(){playToken++;playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
 async function pause(){const desired=reviewTime;stopPlayback();
  while(frameBusy)await new Promise(resolve=>setTimeout(resolve,10));
  if(paired()&&lastData?.frame&&Math.abs(lastData.frame.offset_s-desired)>.15)await frameAt(desired);
@@ -79,32 +152,15 @@ async function sceneReady(){for(let i=0;i<200;i++){
 async function frameAt(t){
  if(frameBusy)return;frameBusy=true;const version=generation,sid=sourceId;
  try{
-  const data=await(await fetch('/api/geometry?source='+sid+'&t='+t)).json();
+  const data=await(await fetch('/api/geometry?source='+sid+'&t='+t+'&scope='+scope())).json();
   if(version!==generation)return;
   if(!data.frame){clearOverlay();$('fitInfo').textContent='该扫描缺少双相机原生时间配对。';return;}
-  const decoded=await Promise.all(['cam1','cam2'].map(async cam=>{
-   const image=data.native_images[cam],native=data.native[cam];
-   if(image.record_index!==native.record_index||Math.abs(image.media_pts_us/1e6-native.pts)>.000002)throw Error('原生图像与扫描配对不一致');
-   const blob=await(await fetch('data:image/jpeg;base64,'+image.jpeg_base64)).blob();return createImageBitmap(blob);
-  }));
-  await sceneReady();await new Promise(resolve=>requestAnimationFrame(resolve));
-  if(version!==generation){decoded.forEach(b=>b.close());return;}
-  // Commit both decoded RGB canvases, full 3D geometry, camera projections and
-  // the public scan state in one animation-frame callback. No media seek is
-  // part of this transaction, and no diagnostic state is published early.
-  nativeFrames.forEach((c,i)=>{c.getContext('2d',{alpha:false}).drawImage(decoded[i],0,0,c.width,c.height);c.style.visibility='visible';decoded[i].close();});
-  $('scene').contentWindow.REVIEW_STREAM_FRAME(data.frame);drawProjection(data);
-  lastData=data;window.lastPairedFrame=data;
-  window.committedPairedFrame={sourceId:sid,scan:data.lidar_index,scan_mid_us:data.scan_mid_us,native:data.native,
-   images:Object.fromEntries(Object.entries(data.native_images).map(([cam,{jpeg_base64,...meta}])=>[cam,meta]))};
-  const fitted=data.athletes.map((a,i)=>'人体'+(i+1)+'：'+a.mean_mm.toFixed(1)+' mm，'+(a.accepted?'拟合 QA 通过':'已排除')).join('；');
-  $('fitInfo').textContent='扫描 '+data.lidar_index+' · 原生帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index+
-   ' · 实测 '+data.frame.point_count.toLocaleString()+' 点（三维背景显示 '+data.frame.displayed_background_points.toLocaleString()+' 个实际返回点） · '+
-   (fitted||'该帧 SMPL 待生成或位于拟合回合之外');
+  const bundle=await decodeBundle(data);await new Promise(resolve=>requestAnimationFrame(resolve));
+  if(version===generation)commitBundle(bundle);bundle.decoded.forEach(b=>b.close());
  }catch(e){$('error').textContent=e.message;}finally{frameBusy=false;}
 }
 async function seek(t){
- stopPlayback();generation++;reviewTime=Math.max(0,Math.min(source.duration-.03,t));$('seek').value=reviewTime;
+ stopPlayback();generation++;clearReadyFrames();reviewTime=Math.max(0,Math.min(source.duration-.03,t));$('seek').value=reviewTime;
  if(paired()){
   while(frameBusy)await new Promise(resolve=>setTimeout(resolve,20));await frameAt(reviewTime);
  }else {await Promise.all(videos.map((v,i)=>moveVideo(v,clock(reviewTime,'cam'+(i+1)))));nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();}
@@ -122,8 +178,10 @@ async function selectRally(index){
  history.replaceState(null,'','?source='+sourceId+'&rally='+index);
 }
 async function play(){
+ if(paired()){videos.forEach(v=>v.pause());$('play').textContent='准备播放';
+  const version=generation,token=++playToken;if(bufferState().ahead_seconds<.6)await prefetchFrames();if(version!==generation||token!==playToken)return;
+  commitTimes=[];bufferWaitStart=null;bufferWaits=[];playing=true;lastTick=performance.now();$('play').textContent='暂停';return;}
  playing=true;lastTick=performance.now();$('play').textContent='暂停';
- if(paired()){videos.forEach(v=>v.pause());return;}
  nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();videos.forEach(v=>v.playbackRate=+$('speed').value);
  try{await Promise.all(videos.map(v=>v.play()));}catch(e){pause();$('error').textContent=e.message;}
 }
@@ -133,7 +191,17 @@ function update(now){
   if(playing&&paired())reviewTime+=Math.max(0,now-lastTick)/1000*+$('speed').value;
   const t=paired()?reviewTime:commonTime();if(!paired())reviewTime=t;$('seek').value=t;$('time').textContent=t.toFixed(2)+' / '+source.duration.toFixed(2)+' s';
   if(playing){
-   if(paired()){if(now-lastFrameRequest>=100&&!frameBusy){lastFrameRequest=now;frameAt(t);}}
+   if(paired()){
+    const frames=[...readyFrames.values()].sort((a,b)=>a.data.frame.offset_s-b.data.frame.offset_s);
+    let candidate=null;for(const b of frames)if(b.data.frame.offset_s<=t)candidate=b;
+    if(t-(lastData?.frame.offset_s??t)>.16&&(!candidate||candidate.data.lidar_index===lastData?.lidar_index)){
+     if(bufferWaitStart==null)bufferWaitStart=now;
+    }
+    if(candidate&&candidate.data.lidar_index!==lastData?.lidar_index){commitBundle(candidate);lastFrameRequest=now;
+     if(bufferWaitStart!=null){bufferWaits.push(now-bufferWaitStart);bufferWaitStart=null;}
+     for(const [key,b] of readyFrames)if(key<candidate.data.lidar_index-1){b.decoded.forEach(x=>x.close());readyFrames.delete(key);}}
+    fillBuffer();
+   }
    else if(now-lastSync>200){const t2=commonTime(2),rate=+$('speed').value;
     if(Math.abs(t2-t)>.045)videos[1].currentTime=clock(t,'cam2');
     else videos[1].playbackRate=rate*Math.max(.98,Math.min(1.02,1+(t-t2)*.4));lastSync=now;}
@@ -153,14 +221,15 @@ async function status(){try{
  ));
  }catch(e){$('error').textContent=e.message;}}
 $('source').onchange=()=>selectSource($('source').value);$('rally').onchange=()=>selectRally(+$('rally').value);
-$('play').onclick=()=>playing?pause():play();$('seek').onchange=()=>seek(+$('seek').value);
+$('play').onclick=()=>playing||$('play').textContent==='准备播放'?pause():play();$('seek').onchange=()=>seek(+$('seek').value);
 $('back').onclick=()=>seek(Math.max(0,(paired()?reviewTime:commonTime())-1));
 $('forward').onclick=()=>seek(Math.min(source.duration-.03,(paired()?reviewTime:commonTime())+1));$('exact').onclick=pairedFrame;
 $('previous').onclick=()=>selectRally(source.rallies[Math.max(0,source.rallies.indexOf(clip)-1)].index);
 $('next').onclick=()=>selectRally(source.rallies[Math.min(source.rallies.length-1,source.rallies.indexOf(clip)+1)].index);
 $('speed').onchange=()=>{videos.forEach(v=>v.playbackRate=+$('speed').value);};
 $('mode').onchange=()=>seek(reviewTime);$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
-window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSource(...args);},selectRally,seek,play,pause,pairedFrame,commonTime,get sourceId(){return sourceId;},get loading(){return loading;}};
+$('allPoints').onchange=()=>seek(commonTime());
+window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSource(...args);},selectRally,seek,play,pause,pairedFrame,commonTime,bufferState,get sourceId(){return sourceId;},get loading(){return loading;}};
 (async()=>{try{
  manifest=await(await fetch('/api/manifest')).json();faces=new Uint16Array(Uint8Array.from(atob(manifest.faces),c=>c.charCodeAt(0)).buffer);
  $('rallyMinutes').textContent=manifest.rally_window_minutes.toFixed(2)+' 分钟';$('inputScans').textContent=manifest.unique_paired_input_scans.toLocaleString()+' 帧';

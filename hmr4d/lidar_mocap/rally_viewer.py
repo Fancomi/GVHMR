@@ -1,12 +1,14 @@
 """Local native-video rally viewer; read-only inputs and HTTP byte-range media.
 
-Playback uses recorded PTS/common-time correspondences. Exact paired-frame mode
-seeks each camera to its own verified native PTS before showing fitted geometry.
+Playback uses recorded PTS/common-time correspondences. Paired mode buffers
+complete native RGB/SMPL/point-cloud bundles before their atomic display commit.
 """
 
 from __future__ import annotations
 
 from bisect import bisect_left
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import base64
 import hashlib
 from functools import lru_cache
@@ -15,19 +17,113 @@ import json
 from pathlib import Path
 import re
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import cv2
 
+try:
+    import orjson
+except ImportError:
+    orjson = None
+
 from .calibration import CalibrationSnapshot
 from .pipeline import write_json
 from .rally_pipeline import load_run_session, read_json, read_rows
 from .review import EDGES
+from .preview_decoder import PreviewDecoder
 
 
 def packed(array, dtype="<f4"):
     return base64.b64encode(np.asarray(array, dtype=dtype).tobytes()).decode("ascii")
+
+
+def bbox_rotation_float32(degrees):
+    """Eigen AngleAxisf Z*Y*X quaternion composition, retaining Float32 math."""
+    r = np.asarray(degrees, dtype=np.float32) * np.float32(np.float32(np.pi) / np.float32(180))
+    sx, sy, sz = np.sin(r * np.float32(0.5))
+    cx, cy, cz = np.cos(r * np.float32(0.5))
+    w0 = cz * cy
+    x0 = -sz * sy
+    y0 = cz * sy
+    z0 = sz * cy
+    w = w0 * cx - x0 * sx
+    x = w0 * sx + x0 * cx
+    y = y0 * cx + z0 * sx
+    z = z0 * cx - y0 * sx
+    tx = np.float32(2) * x
+    ty = np.float32(2) * y
+    tz = np.float32(2) * z
+    twx = tx * w
+    twy = ty * w
+    twz = tz * w
+    txx = tx * x
+    txy = ty * x
+    txz = tz * x
+    tyy = ty * y
+    tyz = tz * y
+    tzz = tz * z
+    return np.array(
+        [
+            [1 - (tyy + tzz), txy - twz, txz + twy],
+            [txy + twz, 1 - (txx + tzz), tyz - twx],
+            [txz - twy, tyz + twx, 1 - (txx + tyy)],
+        ],
+        dtype=np.float32,
+    )
+
+
+def badminton_detection_bbox(bbox):
+    """Mirror native badmintonDetectionBboxSet: ground/net Ignore + 5m Region."""
+    boxes = bbox.get("boxes", [])
+    if len(boxes) == 1 and boxes[0]["type"].lower() == "region":
+        return dict(boxes=boxes)
+    if len(boxes) < 2:
+        return dict(boxes=[])
+    boxes = [dict(box, type="Ignore") for box in boxes[:2]]
+    ground = boxes[0]
+    rotation = bbox_rotation_float32(ground.get("rotation_deg", [0, 0, 0]))
+    center = np.asarray(ground["center"], dtype=np.float32)
+    size = np.asarray(ground["size"], dtype=np.float32).copy()
+    offset = np.array([0, 0, size[2] * np.float32(0.5) + np.float32(2.5)], dtype=np.float32)
+    center = center + rotation @ offset
+    size[2] = np.float32(5)
+    boxes.append(dict(ground, id="region_3", type="Region", center=center.tolist(), size=size.tolist()))
+    return dict(boxes=boxes)
+
+
+def crop_viewer_points(points, bbox):
+    """Accepted Region union minus Ignore union, evaluated after exactly one M."""
+    points = np.asarray(points, dtype=np.float32)
+    regions = []
+    ignored = []
+    for box in bbox.get("boxes", []):
+        if not box.get("enabled", True):
+            continue
+        kind = box["type"].lower()
+        if kind == "region":
+            local = (points - np.asarray(box["center"], dtype=np.float32)) @ bbox_rotation_float32(
+                box.get("rotation_deg", [0, 0, 0])
+            )
+            inside = (np.abs(local) <= np.asarray(box["size"], dtype=np.float32) * np.float32(0.5)).all(axis=1)
+            regions.append(inside)
+        elif kind == "ignore":
+            ignored.append(box)
+        else:
+            raise ValueError("Unsupported accepted bbox type: " + box["type"])
+    included = np.logical_or.reduce(regions) if regions else np.zeros(len(points), dtype=bool)
+    included &= np.isfinite(points).all(axis=1)
+    for box in ignored:
+        indices = np.flatnonzero(included)
+        if not len(indices):
+            break
+        local = (points[indices] - np.asarray(box["center"], np.float32)) @ bbox_rotation_float32(
+            box.get("rotation_deg", [0, 0, 0])
+        )
+        inside = (np.abs(local) <= np.asarray(box["size"], np.float32) * np.float32(0.5)).all(axis=1)
+        included[indices[inside]] = False
+    return included
 
 
 def prepare_viewer(run_root, baseline_root):
@@ -81,6 +177,7 @@ def prepare_viewer(run_root, baseline_root):
             duration=(end - begin) / 1e6,
             cameras=cameras,
             rallies=sorted(clips, key=lambda c: c["index"]),
+            scan_times=[round((p["scan_mid_us"] - begin) / 1e6, 6) for p in session.pairs()],
         )
     manifest = dict(
         schema="badminton-native-rally-viewer-v1",
@@ -100,11 +197,20 @@ def prepare_viewer(run_root, baseline_root):
     topology = smplx.create(PROJ_ROOT / "inputs/checkpoints/body_models", model_type="smpl", gender="neutral")
     manifest["faces"] = packed(np.asarray(topology.faces), "<u2")
     manifest["reference_plane"] = calibration.reference_plane
+    manifest["point_filter"] = dict(
+        rule="native badmintonDetectionBboxSet: ground-top-derived 5m Region AND NOT ground/net Ignore",
+        default="roi",
+        available=["roi", "all"],
+        boxes=badminton_detection_bbox(calibration.data["bbox"])["boxes"],
+    )
     output = root / "viewer"
     output.mkdir(parents=True, exist_ok=True)
     write_json(output / "manifest.json", manifest)
     template = Path(__file__).with_name("rally_viewer.html").read_text(encoding="utf-8")
     (output / "index.html").write_text(template, encoding="utf-8")
+    (output / "viewer.js").write_bytes(Path(__file__).with_name("rally_viewer_client.js").read_bytes())
+    for name in ("review.js", "review.css"):
+        (output / name).write_bytes((Path(__file__).with_name("review_assets") / name).read_bytes())
     return ViewerData(root, baseline, calibration, manifest, sessions, media)
 
 
@@ -118,6 +224,14 @@ class ViewerData:
         self.media = media
         self._quality = {}
         self._lock = threading.Lock()
+        self.viewer_bbox = (
+            badminton_detection_bbox(calibration.data["bbox"]) if calibration is not None else dict(boxes=[])
+        )
+        self._native_images = OrderedDict()
+        self._native_lock = threading.RLock()
+        self.preview_decoder = PreviewDecoder()
+        self._preview_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="native_rgb")
+        self._geometry_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="native_geometry")
 
     def status(self):
         state = read_json(self.root / "build_status.json")
@@ -133,6 +247,7 @@ class ViewerData:
         if paired.exists():
             delivered = read_json(paired)
             state["paired_accepted"] = delivered["accepted"]
+        state["preview_decoder"] = self.preview_decoder.diagnostics()
         return state
 
     def quality_rows(self, sid):
@@ -157,7 +272,7 @@ class ViewerData:
                 for i, rows in indexed.items()
             }
 
-    def overlay(self, sid, relative_seconds):
+    def overlay(self, sid, relative_seconds, scope="roi"):
         source = self.manifest["sources"][sid]
         session = self.sessions[sid]
         target = round(relative_seconds * 1e6) + source["common_origin_us"]
@@ -184,7 +299,7 @@ class ViewerData:
             delta_ms=(pair["scan_mid_us"] - target) / 1000,
         )
         for row in rows:
-            projected = self.project_fit(row["fit_path"])
+            projected = self.project_fit(row["fit_path"], scope)
             result["athletes"].append(
                 dict(
                     motion_id=row["motion_id"],
@@ -196,32 +311,37 @@ class ViewerData:
             )
         return result
 
-    def geometry(self, sid, relative_seconds):
+    def geometry(self, sid, relative_seconds, scope="roi"):
         """One original scan with full stored SMPL; no interpolated geometry."""
-        result = self.overlay(sid, relative_seconds)
+        if scope not in ("roi", "all"):
+            raise ValueError("Unknown point display scope")
+        result = self.overlay(sid, relative_seconds, scope)
         if not result["native"]:
             return result
         session = self.sessions[sid]
         pair = session.pairs()[result["lidar_index"]]
         cloud = session.read_cloud(pair)
+        raw_count = len(cloud)
+        if scope == "roi":
+            cloud = cloud[crop_viewer_points(cloud, self.viewer_bbox)]
         sampled = cloud[:: max(1, (len(cloud) + 24999) // 25000)]
         rows = self.quality_rows(sid).get(pair["lidar_index"], [])
         athletes = []
         colors = [(255, 157, 48), (79, 163, 255), (128, 224, 134), (216, 132, 226)]
         for k, row in enumerate(rows):
-            with np.load(row["fit_path"]) as fit:
-                athletes.append(
-                    dict(
-                        motion_id=row["motion_id"],
-                        accepted=row["accepted"],
-                        qa=row["qa"],
-                        rejection_reasons=row["rejection_reasons"],
-                        color=colors[k % len(colors)],
-                        vertices=packed(fit["vertices"]),
-                        joints=packed(fit["joints"]),
-                        cloud=packed(fit["source_cloud"]),
-                    )
+            asset = self.render_fit(row["fit_path"], scope)
+            athletes.append(
+                dict(
+                    motion_id=row["motion_id"],
+                    accepted=row["accepted"],
+                    qa=row["qa"],
+                    rejection_reasons=row["rejection_reasons"],
+                    color=colors[k % len(colors)],
+                    vertices=asset["vertices"],
+                    joints=asset["joints"],
+                    cloud=asset["cloud"],
                 )
+            )
         result["frame"] = dict(
             session_id=sid,
             scan_mid_us=pair["scan_mid_us"],
@@ -230,6 +350,8 @@ class ViewerData:
             offset_s=(pair["scan_mid_us"] - self.manifest["sources"][sid]["common_origin_us"]) / 1e6,
             cloud=packed(sampled),
             point_count=len(cloud),
+            raw_point_count=raw_count,
+            point_scope=scope,
             displayed_background_points=len(sampled),
             athletes=athletes,
         )
@@ -250,18 +372,29 @@ class ViewerData:
             result["background_projection"][cam] = np.round(uv[valid], 1).tolist()
         return result
 
-    @lru_cache(maxsize=64)
     def native_image(self, sid, camera, record_index):
+        key = (sid, camera, record_index)
+        with self._native_lock:
+            if key in self._native_images:
+                self._native_images.move_to_end(key)
+                return self._native_images[key]
+        session = self.sessions[sid]
+        if hasattr(session, "video_paths"):
+            image = next(self.preview_decoder.frames(session, camera, [record_index]))[1]
+        else:
+            image = session.read_image(camera, record_index)
+        return self._cache_native_image(sid, camera, record_index, image)
+
+    def _cache_native_image(self, sid, camera, record_index, image):
         session = self.sessions[sid]
         native = session.camera_rows(camera)[record_index]
-        # SessionIndex independently checks the actual MP4 frame's container
-        # PTS. This is the same decoder used by fitting and offline reviews.
-        image = session.read_image(camera, record_index)
-        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        # PreviewDecoder checks actual container PTS against SessionIndex rows;
+        # its raw pixels are checked against the fitting/offline decoder.
+        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ok:
             raise IOError("Cannot encode verified native video frame")
         blob = encoded.tobytes()
-        return dict(
+        value = dict(
             record_index=record_index,
             media_pts_us=native["media_pts_us"],
             common_time_us=native["common_time_us"],
@@ -269,27 +402,106 @@ class ViewerData:
             height=image.shape[0],
             raw_bgr_sha256=hashlib.sha256(image.tobytes()).hexdigest(),
             jpeg_sha256=hashlib.sha256(blob).hexdigest(),
+            jpeg_quality=85,
             jpeg_base64=base64.b64encode(blob).decode("ascii"),
         )
+        with self._native_lock:
+            self._native_images[sid, camera, record_index] = value
+            while len(self._native_images) > 128:
+                self._native_images.popitem(last=False)
+        return value
+
+    def geometry_batch(self, sid, relative_seconds, count=12, scope="roi"):
+        """Decode each camera once across consecutive native scan bundles."""
+        if not 1 <= count <= 16:
+            raise ValueError("Batch count must be between 1 and 16")
+        started = time.perf_counter()
+        session = self.sessions[sid]
+        pairs = session.pairs()
+        target = round(relative_seconds * 1e6) + self.manifest["sources"][sid]["common_origin_us"]
+        times = [p["scan_mid_us"] for p in pairs]
+        index = min(bisect_left(times, target), len(pairs) - 1)
+        if index and abs(times[index - 1] - target) <= abs(times[index] - target):
+            index -= 1
+        selected = pairs[index : index + count]
+
+        def fill_camera(camera):
+            with self._native_lock:
+                missing = sorted(
+                    {
+                        p["cameras"][camera]["record_index"]
+                        for p in selected
+                        if p["cameras"][camera]["status"] == "matched"
+                        and (sid, camera, p["cameras"][camera]["record_index"]) not in self._native_images
+                    }
+                )
+            stream = (
+                self.preview_decoder.frames(session, camera, missing)
+                if hasattr(session, "video_paths")
+                else session.iter_video_frames(camera, missing)
+            )
+            for native_index, image in stream:
+                self._cache_native_image(sid, camera, native_index, image)
+
+        futures = [self._preview_pool.submit(fill_camera, camera) for camera in ("cam1", "cam2")]
+        for future in futures:
+            future.result()
+        decoded_at = time.perf_counter()
+        times = [(pair["scan_mid_us"] - self.manifest["sources"][sid]["common_origin_us"]) / 1e6 for pair in selected]
+        futures = [self._geometry_pool.submit(self.geometry, sid, t, scope) for t in times]
+        frames = [future.result() for future in futures]
+        return dict(
+            source_id=sid,
+            scope=scope,
+            frames=frames,
+            count=len(frames),
+            begin_index=index,
+            timing_seconds=dict(
+                native_decode=decoded_at - started,
+                geometry=time.perf_counter() - decoded_at,
+                total=time.perf_counter() - started,
+            ),
+            next_time=(
+                (pairs[index + count]["scan_mid_us"] - self.manifest["sources"][sid]["common_origin_us"]) / 1e6
+                if index + count < len(pairs)
+                else None
+            ),
+        )
+
+    def project_fit(self, path, scope="roi"):
+        return self.render_fit(path, scope)["cameras"]
 
     @lru_cache(maxsize=128)
-    def project_fit(self, path):
+    def render_fit(self, path, scope="roi"):
         result = {}
         with np.load(path) as fit:
             arrays = dict(
                 mesh=fit["vertices"],
                 joints=fit["joints"],
-                cloud=fit["source_cloud"][:: max(1, len(fit["source_cloud"]) // 900)],
+                cloud=fit["source_cloud"],
             )
+        if scope == "roi":
+            arrays["cloud"] = arrays["cloud"][crop_viewer_points(arrays["cloud"], self.viewer_bbox)]
+        asset = dict(vertices=packed(arrays["mesh"]), joints=packed(arrays["joints"]), cloud=packed(arrays["cloud"]))
+        arrays["cloud"] = arrays["cloud"][:: max(1, len(arrays["cloud"]) // 900)]
         for cam in ("cam1", "cam2"):
             result[cam] = {}
             for name, points in arrays.items():
                 uv, depth = self.calibration.project(points, cam, distort=True)
-                result[cam][name] = [
-                    [round(float(x), 1), round(float(y), 1)] if d > 0 and np.isfinite([x, y]).all() else None
-                    for (x, y), d in zip(uv, depth)
-                ]
-        return result
+                valid = (depth > 0) & np.isfinite(uv).all(axis=1)
+                if name == "mesh":
+                    xy = np.round(uv, 1).astype(np.float32)
+                    xy[~valid] = -10000
+                    result[cam]["mesh_xy_f32"] = packed(xy)
+                    result[cam]["mesh_valid_u8"] = packed(valid, np.uint8)
+                    result[cam]["mesh_vertex_count"] = len(xy)
+                    continue
+                values = np.round(uv, 1).tolist()
+                for i in np.flatnonzero(~valid):
+                    values[int(i)] = None
+                result[cam][name] = values
+        asset["cameras"] = result
+        return asset
 
 
 def serve_viewer(data, host="127.0.0.1", port=8767):
@@ -307,7 +519,11 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
             blob = (
                 value
                 if isinstance(value, bytes)
-                else json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                else (
+                    orjson.dumps(value)
+                    if orjson is not None
+                    else json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+                )
             )
             self.send_response(200)
             self.send_header("Content-Type", mime)
@@ -326,9 +542,7 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                 if path == "/api/manifest":
                     return self.blob(data.manifest, "application/json", head)
                 if path == "/viewer.js":
-                    return self.blob(
-                        Path(__file__).with_name("rally_viewer_client.js").read_bytes(), "application/javascript", head
-                    )
+                    return self.blob((data.root / "viewer/viewer.js").read_bytes(), "application/javascript", head)
                 if path == "/api/status":
                     return self.blob(data.status(), "application/json", head)
                 if path == "/api/overlay":
@@ -336,7 +550,23 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                     return self.blob(data.overlay(query["source"][0], float(query["t"][0])), "application/json", head)
                 if path == "/api/geometry":
                     query = parse_qs(parsed.query)
-                    return self.blob(data.geometry(query["source"][0], float(query["t"][0])), "application/json", head)
+                    return self.blob(
+                        data.geometry(query["source"][0], float(query["t"][0]), query.get("scope", ["roi"])[0]),
+                        "application/json",
+                        head,
+                    )
+                if path == "/api/bundles":
+                    query = parse_qs(parsed.query)
+                    return self.blob(
+                        data.geometry_batch(
+                            query["source"][0],
+                            float(query["t"][0]),
+                            int(query.get("count", ["12"])[0]),
+                            query.get("scope", ["roi"])[0],
+                        ),
+                        "application/json",
+                        head,
+                    )
                 if path in ("/scene/", "/scene/index.html"):
                     m = dict(
                         data.manifest,
@@ -362,7 +592,7 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                     html = html.replace('id="background" type="checkbox"', 'id="background" type="checkbox" checked')
                     return self.blob(html.encode("utf-8"), "text/html; charset=utf-8", head)
                 if path in ("/scene/review.js", "/scene/review.css"):
-                    asset = Path(__file__).with_name("review_assets") / Path(path).name
+                    asset = data.root / "viewer" / Path(path).name
                     return self.blob(
                         asset.read_bytes(), "application/javascript" if asset.suffix == ".js" else "text/css", head
                     )

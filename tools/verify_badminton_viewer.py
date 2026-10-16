@@ -254,6 +254,20 @@ def main():
                     visible_native_rgb=rgb_checks,
                 )
             )
+            roi_scan = observed["scan"]
+            roi_count = observed["points"]
+            page.locator("#allPoints").check()
+            page.wait_for_function("!frameBusy && lastPairedFrame.frame.point_scope==='all'", timeout=45000)
+            full_cloud = page.evaluate(
+                "({scan:lastPairedFrame.lidar_index,count:lastPairedFrame.frame.point_count,raw:lastPairedFrame.frame.raw_point_count})"
+            )
+            assert full_cloud["scan"] == roi_scan and full_cloud["count"] == full_cloud["raw"] >= roi_count
+            page.locator("#allPoints").uncheck()
+            page.wait_for_function("!frameBusy && lastPairedFrame.frame.point_scope==='roi'", timeout=45000)
+            assert page.evaluate("lastPairedFrame.frame.point_count") == roi_count
+            cloud_checks[-1].update(
+                roi_points=roi_count, all_source_points=full_cloud["raw"], point_scope_toggle_passed=True
+            )
         page.screenshot(path=str(args.output.with_suffix(".png")), full_page=True)
         version = browser.version
         browser.close()
