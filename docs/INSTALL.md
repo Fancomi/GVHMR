@@ -258,6 +258,9 @@ and both camera projections, full mesh vertex counts, WebGL errors and actual
 beside the generated page. `/api/geometry?source=<id>&t=<relative-seconds>` is a
 read-only original-scan endpoint. `window.viewer` exposes selectSource,
 selectRally, seek, play, pause, pairedFrame and commonTime for diagnostics;
+await `window.viewer.ready` (or wait for `window.viewerReady === true`) before
+automating initial source switches; await each selection/seek Promise and wait
+for `!frameBusy` before inspecting the displayed native-frame transaction.
 `iframe#scene.contentWindow.REVIEW_STATE` reports scan/mesh/vertex/point counts.
 Final delivery `quality_summary.json` distinguishes original input/rally scans,
 fit QA rejections, bilateral exclusions and final person frames by source.

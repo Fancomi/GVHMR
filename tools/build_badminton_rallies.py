@@ -22,17 +22,21 @@ def publish(pipeline):
     root = pipeline.output_root
     paired = root.with_name(root.name + "_paired")
     if (paired / "datasets/dataset_manifest.json").exists():
-        return verify_export(paired)
+        verify_export(paired)
+        result = read_json(paired / "datasets/dataset_manifest.json")
+    else:
+        result = None
     # Old exact-native observations are imported only after source/time/fit
     # matching. New sources fill missing YOLO detections without pose refitting.
     cache = list((PROJ_ROOT / "outputs/badminton_dualcam_paired_full_v2/observations").glob("*_cam[12].json"))
-    observations = observe_all(root, paired, cache_reports=cache)
-    if not observations["completed"]:
-        raise ValueError("Native person observations incomplete")
-    audit_cached(root, paired, observations["reports"], disk_evidence=True)
-    result = export_reviewed(
-        root, paired, detection_only=True, full_observation_manifest=paired / "observations/manifest.json"
-    )
+    if result is None:
+        observations = observe_all(root, paired, cache_reports=cache)
+        if not observations["completed"]:
+            raise ValueError("Native person observations incomplete")
+        audit_cached(root, paired, observations["reports"], disk_evidence=True)
+        result = export_reviewed(
+            root, paired, detection_only=True, full_observation_manifest=paired / "observations/manifest.json"
+        )
     state = read_json(root / "build_status.json")
     for sid, entry in result["exports"].items():
         before = state["sources"][sid]["accepted"]
@@ -66,6 +70,12 @@ def main():
         "--threads", type=int, default=8, help="CPU tensor threads; limits oversubscription during production"
     )
     args = parser.parse_args()
+    published = args.output_root.with_name(args.output_root.name + "_paired") / "datasets/dataset_manifest.json"
+    if published.exists() and args.stage in ("run", "fit", "teacher", "export"):
+        from hmr4d.lidar_mocap.dual_view import verify_export
+
+        print(json.dumps(verify_export(published.parent.parent), indent=2), flush=True)
+        return
     if args.wait:
         if args.stage != "publish":
             parser.error("--wait requires --stage publish")

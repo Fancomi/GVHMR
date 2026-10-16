@@ -506,6 +506,8 @@ def _verify_export_data(manifest):
         raise ValueError('Original source manifest changed')
     if manifest.get('audit_sha256') and file_sha(manifest['audit'])!=manifest['audit_sha256']:
         raise ValueError('Dataset audit changed')
+    if manifest.get('quality_summary_sha256') and file_sha(manifest['quality_summary'])!=manifest['quality_summary_sha256']:
+        raise ValueError('Dataset quality report changed')
     result=dict(sessions={})
     for sid,entry in manifest['exports'].items():
         tensor_sha,metadata_sha=file_sha(entry['path']),file_sha(entry['metadata'])

@@ -3,9 +3,48 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const videos=[$('cam1'),$('cam2')],canvases=[$('overlay1'),$('overlay2')];
+function projectedRenderer(canvas){
+ const gl=canvas.getContext('webgl2',{alpha:true,premultipliedAlpha:false,antialias:true,preserveDrawingBuffer:true});
+ if(!gl)throw Error('投影叠加需要 WebGL2');
+ function compile(type,text){const s=gl.createShader(type);gl.shaderSource(s,text);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;}
+ const program=gl.createProgram();
+ gl.attachShader(program,compile(gl.VERTEX_SHADER,'#version 300 es\nin vec2 p;uniform float pointSize;void main(){gl_Position=vec4(p.x/960.0-1.0,1.0-p.y/540.0,0.0,1.0);gl_PointSize=pointSize;}'));
+ gl.attachShader(program,compile(gl.FRAGMENT_SHADER,'#version 300 es\nprecision highp float;uniform vec4 color;out vec4 c;void main(){c=color;}'));
+ gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));
+ const position=gl.getAttribLocation(program,'p'),color=gl.getUniformLocation(program,'color'),size=gl.getUniformLocation(program,'pointSize');
+ const points=gl.createBuffer(),indices=gl.createBuffer();
+ function clear(){gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);}
+ function draw(array,rgba,mode,pointSize=2,faceIndices=null){
+  gl.useProgram(program);gl.disable(gl.BLEND);gl.disable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);
+  gl.bindBuffer(gl.ARRAY_BUFFER,points);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(array.flat()),gl.STREAM_DRAW);
+  gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
+  gl.uniform4fv(color,rgba);gl.uniform1f(size,pointSize);
+  if(faceIndices){gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,indices);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,faceIndices,gl.STREAM_DRAW);gl.drawElements(mode,faceIndices.length,gl.UNSIGNED_SHORT,0);}
+  else gl.drawArrays(mode,0,array.length);
+ }
+ function render(data,cam){clear();let fullMeshes=0;
+  if($('projectCloud').checked)draw(data.background_projection?.[cam]||[],[.35,.79,.85,.65],gl.POINTS,1.6);
+  data.athletes.forEach((a,k)=>{const g=a.cameras[cam],rgb=[[1,.62,.19],[.31,.64,1],[.5,.88,.53],[.85,.52,.89]][k%4];
+   if(g.mesh.length===6890){
+    let usable=faces;if(g.mesh.some(p=>!p)){const valid=[];for(let j=0;j<faces.length;j+=3)
+     if(g.mesh[faces[j]]&&g.mesh[faces[j+1]]&&g.mesh[faces[j+2]])valid.push(faces[j],faces[j+1],faces[j+2]);usable=new Uint16Array(valid);}
+    // Constant alpha is written once per rasterized pixel, without additive
+    // blending across overlapping front/back faces: an exact silhouette union.
+    draw(g.mesh.map(p=>p||[-10000,-10000]),[...rgb,.24],gl.TRIANGLES,1,usable);fullMeshes++;
+   }else draw(g.mesh.filter(Boolean),[...rgb,1],gl.POINTS,2);
+   draw(g.cloud.filter(Boolean),[1,1,.25,1],gl.POINTS,2.3);
+   const bones=[];manifest.edges.forEach(([a,b])=>{if(g.joints[a]&&g.joints[b])bones.push(g.joints[a],g.joints[b]);});
+   draw(bones,[...rgb,1],gl.LINES);
+  });return {camera:cam,fullMeshes,webglError:gl.getError()};
+ }
+ return {clear,render};
+}
+const projectionRenderers=canvases.map(projectedRenderer);
 const colors=['#ffaa40','#62adff','#94e69d','#df9bff'];
 let manifest,faces,sourceId,source,clip,loading=false,playing=false,lastSync=0;
 let reviewTime=0,lastTick=0,lastFrameRequest=0,frameBusy=false,generation=0,lastData=null;
+let resolveReady;const ready=new Promise(resolve=>{resolveReady=resolve;});
 const paired=()=>$('mode').value==='paired';
 function clock(value,cam,inverse=false){
  const a=source.cameras[cam].clock_anchors,k=inverse?1:0,o=1-k;let l=0,r=a.length-1;
@@ -13,7 +52,7 @@ function clock(value,cam,inverse=false){
  return a[l][o]+(value-a[l][k])*(a[r][o]-a[l][o])/(a[r][k]-a[l][k]);
 }
 function commonTime(camera=1){return clock(videos[camera-1].currentTime,'cam'+camera,true);}
-function clearOverlay(){canvases.forEach(c=>c.getContext('2d').clearRect(0,0,c.width,c.height));}
+function clearOverlay(){projectionRenderers.forEach(r=>r.clear());}
 function pause(){playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
 function mediaReady(v){return v.readyState>=1?Promise.resolve():new Promise((resolve,reject)=>{
  v.addEventListener('loadedmetadata',resolve,{once:true});v.addEventListener('error',()=>reject(Error('视频载入失败')),{once:true});});}
@@ -23,23 +62,7 @@ async function moveVideo(v,t){
  const timer=setTimeout(()=>reject(Error('原生帧解码超时')),15000);v.addEventListener('seeked',done,{once:true});v.currentTime=t;});
 }
 function drawProjection(data){
- clearOverlay();canvases.forEach((canvas,i)=>{const ctx=canvas.getContext('2d'),cam='cam'+(i+1);
-  if($('projectCloud').checked){ctx.fillStyle='#77ceda';(data.background_projection?.[cam]||[]).forEach(p=>ctx.fillRect(p[0],p[1],1.5,1.5));}
-  data.athletes.forEach((a,k)=>{const g=a.cameras[cam],color=colors[k%colors.length];
-   ctx.fillStyle=color;
-   if(g.mesh.length===6890){
-    // Every projected triangle uses the same winding, so a single nonzero
-    // path fills their union without front/back faces erasing each other.
-    ctx.beginPath();for(let j=0;j<faces.length;j+=3){const p=g.mesh[faces[j]],q=g.mesh[faces[j+1]],r=g.mesh[faces[j+2]];
-     if(!p||!q||!r)continue;const positive=(q[0]-p[0])*(r[1]-p[1])-(q[1]-p[1])*(r[0]-p[0])>=0;
-     ctx.moveTo(...p);ctx.lineTo(...(positive?q:r));ctx.lineTo(...(positive?r:q));ctx.closePath();}
-    ctx.globalAlpha=.24;ctx.fill('nonzero');ctx.globalAlpha=1;
-   }else g.mesh.forEach(p=>{if(p)ctx.fillRect(p[0]-1,p[1]-1,2,2);});
-   ctx.fillStyle='#ffff55';g.cloud.forEach(p=>{if(p)ctx.fillRect(p[0]-1,p[1]-1,2,2);});
-   ctx.strokeStyle=color;ctx.lineWidth=3;manifest.edges.forEach(([a,b])=>{if(g.joints[a]&&g.joints[b]){
-    ctx.beginPath();ctx.moveTo(...g.joints[a]);ctx.lineTo(...g.joints[b]);ctx.stroke();}});
-  });
- });
+ window.projectionStates=projectionRenderers.map((r,i)=>r.render(data,'cam'+(i+1)));
 }
 async function sceneReady(){for(let i=0;i<200;i++){
  if($('scene').contentWindow.REVIEW_STREAM_FRAME)return;
@@ -67,10 +90,12 @@ async function seek(t){
  }else await Promise.all(videos.map((v,i)=>moveVideo(v,clock(reviewTime,'cam'+(i+1)))));
 }
 async function selectSource(sid,rallyIndex){
+ ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=true);
  loading=true;pause();generation++;sourceId=sid;source=manifest.sources[sid];$('source').value=sid;$('seek').max=source.duration;
  $('rally').replaceChildren(...source.rallies.map(c=>new Option('回合 '+c.index+' · '+(c.end-c.begin).toFixed(1)+'s',c.index)));
  videos.forEach((v,i)=>{v.src=source.cameras['cam'+(i+1)].url;v.load();});await Promise.all(videos.map(mediaReady));
  await selectRally(rallyIndex||source.rallies[0].index);loading=false;
+ ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=false);
 }
 async function selectRally(index){
  clip=source.rallies.find(c=>c.index==index);$('rally').value=index;await seek(Math.max(0,clip.begin));
@@ -115,11 +140,11 @@ $('previous').onclick=()=>selectRally(source.rallies[Math.max(0,source.rallies.i
 $('next').onclick=()=>selectRally(source.rallies[Math.min(source.rallies.length-1,source.rallies.indexOf(clip)+1)].index);
 $('speed').onchange=()=>{videos.forEach(v=>v.playbackRate=+$('speed').value);};
 $('mode').onchange=()=>seek(commonTime());$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
-window.viewer={selectSource,selectRally,seek,play,pause,pairedFrame,commonTime,get sourceId(){return sourceId;},get loading(){return loading;}};
+window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSource(...args);},selectRally,seek,play,pause,pairedFrame,commonTime,get sourceId(){return sourceId;},get loading(){return loading;}};
 (async()=>{try{
  manifest=await(await fetch('/api/manifest')).json();faces=new Uint16Array(Uint8Array.from(atob(manifest.faces),c=>c.charCodeAt(0)).buffer);
  $('rallyMinutes').textContent=manifest.rally_window_minutes.toFixed(2)+' 分钟';$('inputScans').textContent=manifest.unique_paired_input_scans.toLocaleString()+' 帧';
  $('source').replaceChildren(...Object.keys(manifest.sources).map(s=>new Option(s,s)));
  const q=new URLSearchParams(location.search);await selectSource(q.get('source')||Object.keys(manifest.sources)[0],+q.get('rally')||undefined);
- window.viewerReady=true;status();setInterval(status,10000);lastTick=performance.now();requestAnimationFrame(update);
+ window.viewerReady=true;resolveReady();status();setInterval(status,10000);lastTick=performance.now();requestAnimationFrame(update);
  }catch(e){$('error').textContent=e.stack;}})();
