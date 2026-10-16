@@ -28,6 +28,12 @@ does not admit fitting; default session loading remains unchanged.
 `tools/prepare_badminton_rallies.py` / `rally_inventory.py` verify sealed
 acquisition/native-analysis/rally contracts and prepare exact PNG/frame-map
 ranges on CPU. Window minutes remain separate from qualified body-label minutes.
+`tools/build_badminton_rallies.py` / `rally_pipeline.py` fit the explicit sealed
+seven-source rally intake, validate baseline reuse, observe both native cameras,
+and publish verified SMPL/LiDAR training subsets in a separate paired run.
+`tools/serve_badminton_rallies.py` / `rally_viewer.py` + `rally_viewer.html` serve
+native dual-camera MP4 playback, synchronized rally seeks and exact paired-frame
+stored-fit overlays. `tools/verify_badminton_viewer.py` exercises real Chrome.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

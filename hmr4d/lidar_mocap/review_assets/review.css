@@ -3,3 +3,4 @@
 a{color:#90c8ff}
 .embedded header,.embedded .report,.embedded nav,.embedded .transport,.embedded #timeline,.embedded footer,.embedded #provenance,.embedded #metrics{display:none}
 .embedded main{display:block;padding:8px;max-width:none}.embedded .views{display:block}.embedded canvas{height:340px}.embedded .cameras{display:block}.embedded .controls{display:none}.embedded figure{margin-top:12px}.embedded .workspace>details{display:none}.embedded #status{font-size:11px;margin-bottom:5px}.embedded .three>h2,.embedded .three>p{display:none}
+.stream .cameras{display:none}.stream .controls{display:flex}.stream canvas{height:430px}

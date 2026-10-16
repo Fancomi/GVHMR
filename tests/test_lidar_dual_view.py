@@ -175,6 +175,37 @@ class ExportIntegrityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'changed after native observation began'):
             export_reviewed(self.source,self.output,detection_only=True,full_observation_manifest=observation_path)
 
+    def test_session_leakage_prevents_complete_publication(self):
+        path=self.source/'datasets/dataset_manifest.json';dataset=json.loads(path.read_text())
+        dataset['suggested_session_splits']['test']=dict(sessions=[self.sid]);path.write_text(json.dumps(dataset))
+        audit_path=self.output/'audit.json';audit=json.loads(audit_path.read_text())
+        audit['source_dataset_manifest_sha256']=file_sha(path);audit_path.write_text(json.dumps(audit))
+        with self.assertRaisesRegex(ValueError,'Session leakage'):
+            export_reviewed(self.source,self.output,self.review_path)
+        self.assertFalse((self.output/'datasets/dataset_manifest.json').exists())
+
+    def test_multiple_training_sessions_concatenate_exact_person_values(self):
+        person=dict(detector_index=0,independent_detection_bbox_xyxy=[10,20,100,300],
+                    independent_detection_confidence=.7,association_bbox_iou=.6,association_margin=.2)
+        self.candidate['dualcam']={cam:dict(observation=person) for cam in ('cam1','cam2')}
+        sid='second';data={key:value.clone()+.1 for key,value in self.data.items() if key in FIELDS}
+        data['motion_id']=['second:window:1:0','second:window:2:0']
+        tensor=self.source/'datasets/second.pth';joblib.dump(data,tensor)
+        metadata=self.source/'datasets/second.metadata.jsonl';metadata.write_text('{}\n{}\n')
+        path=self.source/'datasets/dataset_manifest.json';dataset=json.loads(path.read_text())
+        dataset['exports'][sid]=dict(path=str(tensor),metadata=str(metadata))
+        dataset['suggested_session_splits']['train']['sessions'].append(sid);path.write_text(json.dumps(dataset))
+        candidate=copy.deepcopy(self.candidate)
+        candidate.update(id='c0002',session_id=sid,source_index=0,source_metadata=dict(motion_id=data['motion_id'][0],lidar_index=88))
+        candidates=self.output/'candidates.jsonl';candidates.write_text(json.dumps(self.candidate)+'\n'+json.dumps(candidate)+'\n')
+        audit_path=self.output/'audit.json';audit=json.loads(audit_path.read_text())
+        audit.update(gate=dict(policy='bilateral_detection'),source_dataset_manifest_sha256=file_sha(path),candidate_file_sha256=file_sha(candidates))
+        audit['source_exports'][sid]=dict(sha256=file_sha(tensor),metadata_sha256=file_sha(metadata));audit_path.write_text(json.dumps(audit))
+        result=export_reviewed(self.source,self.output,detection_only=True)
+        merged=joblib.load(result['suggested_session_splits']['train']['path'])
+        self.assertEqual(merged['motion_id'],[self.motion,data['motion_id'][0]])
+        for name in FIELDS:self.assertTrue(torch.equal(merged[name],torch.cat([self.data[name][1:2],data[name][0:1]],dim=0)))
+
     def test_resume_repairs_only_partial_tail_and_rejects_changed_source(self):
         frame=dict(lidar_index=1,scan_mid_us=100,cameras={},athletes=[dict(motion_id='a')])
         record=dict(lidar_index=1,scan_mid_us=100,paired_cameras={},camera_name='cam1',

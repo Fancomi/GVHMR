@@ -17,6 +17,7 @@ from hmr4d import PROJ_ROOT
 from .calibration import CalibrationSnapshot
 from .dual_view import _bound_output, _canonical, _read, file_sha
 from .rgb_observations import RGBKeypointChecker, add_raw_pixel_observations, write_json
+from .rally_pipeline import window_directory, load_run_session
 
 
 def source_selection(source):
@@ -24,12 +25,16 @@ def source_selection(source):
     dataset = _read(dataset_path)
     sources = dict(dataset_manifest=dict(path=str(dataset_path), sha256=file_sha(dataset_path)),
                    calibration=file_sha(source/'calibration/calibration_snapshot.json'), files=[])
+    if dataset.get('source_registry'):
+        path=Path(dataset['source_registry'])
+        if file_sha(path)!=dataset['source_registry_sha256']:raise ValueError('Source registry changed')
+        sources['files'].append(dict(path=str(path),sha256=file_sha(path)))
     for sid, entry in dataset['exports'].items():
         for name in ('path', 'metadata'):
             path = Path(entry[name])
             sources['files'].append(dict(path=str(path), sha256=file_sha(path)))
         for window in dataset['selected_windows'][sid]:
-            path = source/'sessions'/sid/'windows'/window/'quality.jsonl'
+            path = window_directory(source,dataset,sid,window)/'quality.jsonl'
             sources['files'].append(dict(path=str(path), sha256=file_sha(path)))
             teacher_directory=path.parent/'teacher'
             for name in ('manifest.json','detections.pt'):
@@ -50,7 +55,7 @@ def selected_frames(source, dataset, sid):
     frames = {}
     found = set()
     for window in dataset['selected_windows'][sid]:
-        path = source/'sessions'/sid/'windows'/window/'quality.jsonl'
+        path = window_directory(source,dataset,sid,window)/'quality.jsonl'
         with path.open(encoding='utf-8') as handle:
             for line in handle:
                 row = json.loads(line)
@@ -147,7 +152,7 @@ def teacher_detections(source, dataset, sid, camera, calibration, session):
     import torch
     result={}
     for window in dataset['selected_windows'][sid]:
-        directory=source/'sessions'/sid/'windows'/window
+        directory=window_directory(source,dataset,sid,window)
         config=_read(directory/'window.json')
         if config['settings']['camera'] != camera:
             continue
@@ -214,6 +219,7 @@ def observe_all(source_root, output_root, device='cuda:0', pose_batch_size=4,
     write_json(observer_path, state)
     new_frames = 0
     for sid in dataset['exports']:
+        checker.sessions[sid]=load_run_session(source,calibration,sid)
         frames = selected_frames(source, dataset, sid)
         frame_lookup = {f['lidar_index']:f for f in frames}
         for camera in ('cam1', 'cam2'):

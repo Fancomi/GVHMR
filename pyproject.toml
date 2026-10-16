@@ -56,7 +56,7 @@ serve = ["flask>=3.0,<4.0"]
 include = ["hmr4d*"]
 
 [tool.setuptools.package-data]
-hmr4d = ["configs/**/*.yaml", "utils/body_model/*.pt", "utils/body_model/*.json", "network/hmr2/configs/*"]
+hmr4d = ["configs/**/*.yaml", "utils/body_model/*.pt", "utils/body_model/*.json", "network/hmr2/configs/*", "lidar_mocap/*.html", "lidar_mocap/*.js", "lidar_mocap/review_assets/*"]
 
 [tool.uv]
 link-mode = "copy"

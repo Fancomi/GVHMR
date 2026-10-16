@@ -62,8 +62,11 @@ def _validate_preproc_precision(precision):
 def _normalize_rows(frame_rows):
     rows = []
     for row in frame_rows:
-        rows.append({key: int(row[key]) for key in
-                     ("record_index", "common_time_us", "media_pts_us", "source_frame_no")})
+        normalized={key:int(row[key]) for key in ("record_index", "common_time_us", "media_pts_us")}
+        # Generic native sidecars can omit the original SSP frame counter.
+        # PTS/decode/common-time bindings stay mandatory; never invent a counter.
+        normalized["source_frame_no"]=None if row.get("source_frame_no") is None else int(row["source_frame_no"])
+        rows.append(normalized)
     if not rows:
         raise ValueError("Teacher inference requires at least one native video frame")
     for key in ("record_index", "common_time_us", "media_pts_us"):
@@ -558,7 +561,7 @@ def run_teacher(video_path, frame_rows, camera, output_dir, batch_size=4, resume
                     "identity_ambiguous": torch.tensor([o["identity_ambiguous"] for o in observations]),
                     "tracking_identity_verified": False,
                     "static_camera": True, "native_video_frame_rows": selected_rows,
-                    **{key: torch.tensor([r[key] for r in selected_rows], dtype=torch.int64)
+                    **{key: torch.tensor([r[key] if r[key] is not None else -1 for r in selected_rows], dtype=torch.int64)
                        for key in ("record_index", "common_time_us", "media_pts_us", "source_frame_no")},
                 }
                 _save_tensor(track_path, cached_track)
@@ -683,6 +686,10 @@ def sample_track(track, target_times_us, max_time_error_us=18_000):
         **{key: _numpy(track[key]).astype(np.int64)[nearest]
            for key in ("record_index", "media_pts_us", "source_frame_no")},
     }
+    # -1 is only the tensor storage sentinel for an absent original counter.
+    # Serialized fit provenance retains null, not a fabricated frame number.
+    if np.any(metadata['source_frame_no']<0):
+        metadata['source_frame_no']=np.array([None if n<0 else int(n) for n in metadata['source_frame_no']],dtype=object)
     return {"smpl_params_incam": params, "kp2d": _numpy(track["kp2d"])[nearest].astype(np.float32),
             "bbx_xyxy": _numpy(track["bbx_xyxy"])[nearest].astype(np.float32),
             "bbx_xys": _numpy(track["bbx_xys"])[nearest].astype(np.float32),

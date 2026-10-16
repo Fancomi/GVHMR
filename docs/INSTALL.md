@@ -179,6 +179,96 @@ drop the terminal frame. Overlapping windows count once per source. Window
 minutes include pre-roll/cooldown and do not certify qualified training time.
 This command starts no model inference or body fitting.
 
+The explicit seven-source body production entry (original three plus four new
+sources, 204 accepted native rallies) is:
+
+```powershell
+uv run --no-sync python tools/build_badminton_rallies.py --stage prepare
+uv run --no-sync python tools/build_badminton_rallies.py
+```
+
+Default input is `outputs/upstream_rally_intake_v1/verification.json`, bound to
+acquisition SHA `360c4898437c6cb563f607cbdaa5b8cbd790ebd11db34e506c96a4340df60a70`.
+The input contains 39.6134098 deduplicated rally-window minutes and 23,946
+unique paired PNG scans. These are input counts, not accepted person labels.
+`outputs/badminton_rallies_v1/build_status.json` tracks each source's pending,
+running, fitted/reused, failed and completed stages, with fitted/QA/exclusion
+counts. New sources have 847 / 4,414 / 3,516 / 3,328 selected paired scans,
+grouped into 35 bounded fitting windows. Rest frames do not become labels.
+Exact PNG membership, including each terminal scan, controls selection.
+
+The command reuses original baseline fits only after checking camera/source,
+clock/frame-map and fit-artifact bindings. Original caches remain in their
+frozen run. New camera-admitted indexes use the existing teacher and SMPL fitter
+with unchanged cameras. The dataset-only device-time source `192753` keeps its
+original host-axis rejection and uses only its reviewed device-clock contract.
+Matching per-window teacher/fit caches resume after rerunning the same command;
+changed inputs/settings fail and require a new output root. Errors remain in
+the per-source status and process traceback; they are never counted as success.
+
+After all body windows finish, the same command observes corresponding native
+people in both cameras, imports only exact matching previous evidence, applies
+the existing bilateral person-detection rule and verifies all tensor values
+before publishing `outputs/badminton_rallies_v1_paired/datasets/dataset_manifest.json`.
+The body-QA export under `badminton_rallies_v1/datasets` is an intermediate and
+must not be confused with the final bilateral-qualified dataset. A separately
+started body job can be followed by
+`tools/build_badminton_rallies.py --stage publish --wait`.
+Keep one body supervisor and one publisher at most; do not publish concurrently
+twice. For the newer user-requested split, whole-session train is `163452` plus
+the four new sources, validation is `161544`, and test is `154726`. The old
+full_v2 dataset and its earlier split/results remain unchanged. This newly
+designated test source has appeared in prior training and is not a fresh blind
+test. Cross-session physical identities remain unverified.
+
+The native source viewer starts independently while production runs:
+
+```powershell
+uv run --no-sync python tools/serve_badminton_rallies.py
+# Optional browser driver, using installed Chrome (no browser download):
+uv pip install --python .venv/Scripts/python.exe playwright
+uv run --no-sync python tools/verify_badminton_viewer.py
+```
+
+Open `http://127.0.0.1:8767/`. HTML and a source/rally manifest are generated in
+`outputs/badminton_rallies_v1/viewer/`; original H264 MP4 streams through local
+HTTP byte-range requests without copies/transcodes. Source/rally selection,
+play/pause, rates, loop and seek use recorded native common-time and media-PTS
+anchors. The default paired mode plays exact original scan transactions: it
+seeks each camera to that scan's own frozen native PTS, then updates the 3D
+scene and both camera projections together. The alternate native-video mode
+plays the full original MP4 timeline. "Exact paired frame" pauses at a scan.
+
+The 3D view reuses `review_assets/review.js`, the existing offline WebGL2 player:
+all 6,890 SMPL vertices, triangle topology, computed normals, opacity/wireframe,
+real human returns, background points and orbit controls. The online adapter
+passes the same packed native-frame geometry contract as offline `data.js`.
+Large background scans display a deterministic subset of at most 25,000 actual
+returns; fitted mesh/human cloud remain complete. Both camera overlays project
+the same stored mesh and actual points with frozen Brown K/d/R/t. Full projected
+triangles form a translucent silhouette union. No geometry is interpolated;
+pending/outside-rally scans keep their actual raw cloud and explicitly show
+missing body fits. Counts/status refresh during production.
+
+The browser verifier uses a separate headless installed Chrome, decodes both
+videos and exercises first/middle/last rally playback/seeking for all seven
+sources (21 cases). It also checks native PTS transactions, all-source raw cloud
+and both camera projections, full mesh vertex counts, WebGL errors and actual
+3D scan progression while playing. Its JSON receipt and screenshot are written
+beside the generated page. `/api/geometry?source=<id>&t=<relative-seconds>` is a
+read-only original-scan endpoint. `window.viewer` exposes selectSource,
+selectRally, seek, play, pause, pairedFrame and commonTime for diagnostics;
+`iframe#scene.contentWindow.REVIEW_STATE` reports scan/mesh/vertex/point counts.
+Final delivery `quality_summary.json` distinguishes original input/rally scans,
+fit QA rejections, bilateral exclusions and final person frames by source.
+
+Segmentation evaluates bone scores only on points inside each person's box;
+outside scores were always infinite. Three 615k-point native scans matched the
+previous implementation's selected points/indices exactly and ran 6.33–7.05x
+faster in that isolated stage (`segmentation_benchmark.json`). This is not an
+end-to-end uncached throughput claim. The build CLI caps tensor CPU threads to
+eight; launch with `OPENBLAS_NUM_THREADS=1` to avoid BLAS oversubscription.
+
 For offline previews and measured fit quality/efficiency:
 
 ```powershell

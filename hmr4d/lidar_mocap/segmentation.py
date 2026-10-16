@@ -89,10 +89,15 @@ def segment_people(points, tracks, calibration, camera='cam2', *, radius=.22, mi
         wh = np.maximum(box[2:] - box[:2], 1)
         margin = wh * .06
         inside = valid & (uv >= box[:2]-margin).all(1) & (uv <= box[2:]+margin).all(1)
-        center_score = np.linalg.norm((uv - (box[:2]+box[2:])/2) / wh, axis=1)
-        skeleton = _skeleton_distance(uv, np.asarray(track['kp2d']), wh[1])
+        # Scores outside this person's box remain infinite and are never used.
+        # Evaluate the identical per-point formula only on possible members;
+        # full-room fixed24 exports otherwise repeat 14 bone distances over
+        # hundreds of thousands of irrelevant background returns per athlete.
+        candidates = uv[inside]
+        center_score = np.linalg.norm((candidates - (box[:2]+box[2:])/2) / wh, axis=1)
+        skeleton = _skeleton_distance(candidates, np.asarray(track['kp2d']), wh[1])
         score = np.where(np.isfinite(skeleton), skeleton + center_score*.08, center_score)
-        scores[inside,k] = score[inside]
+        scores[inside,k] = score
     active = np.flatnonzero(np.isfinite(scores).any(1))
     if not len(active):
         return result

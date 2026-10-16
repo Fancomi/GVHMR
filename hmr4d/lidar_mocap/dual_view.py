@@ -244,7 +244,8 @@ def audit_cached(source_root, output_root, report_paths, gate=DualViewGate(), di
                     else:
                         counts['with_bilateral_person_observations'] += 1
                         fit_path = Path(metadata['fit_path']).resolve()
-                        if not fit_path.is_relative_to(source/'sessions'):
+                        fit_roots=[Path(p).resolve() for p in dataset.get('fit_roots',[str(source/'sessions')])]
+                        if not any(fit_path.is_relative_to(root) for root in fit_roots):
                             raise ValueError('Source fit escapes the selected frozen run')
                         fit_sha = file_sha(fit_path)
                         if gate.policy=='full_body':
@@ -439,8 +440,18 @@ def export_reviewed(source_root, output_root, review_path=None, *, detection_onl
     splits = {}
     for name, original in dataset['suggested_session_splits'].items():
         sids = original['sessions']
-        if len(sids)!=1:raise ValueError('This version preserves the existing one-session-per-split contract')
-        splits[name] = dict(exports[sids[0]],sessions=sids)
+        if len(sids)==1:
+            splits[name] = dict(exports[sids[0]],sessions=sids)
+        else:
+            merged=[]
+            for sid in sids:
+                data=joblib.load(exports[sid]['path'])
+                rows=[json.loads(line) for line in Path(exports[sid]['metadata']).read_text(encoding='utf-8').splitlines()]
+                for index,row in enumerate(rows):
+                    sample={key:data[key][index].numpy() for key in FIELDS}
+                    sample.update(motion_id=data['motion_id'][index],metadata=row);merged.append(sample)
+            split=export_joblib(merged,output/'datasets'/f'{name}.pth')
+            splits[name]=dict(split,sessions=sids,sha256=file_sha(split['path']),metadata_sha256=file_sha(split['metadata']))
     scope = 'full_existing_source_dataset' if full_observation_manifest else 'pilot_existing_native_observation_evidence'
     manifest = dict(schema='badminton-ptv3-dualcam-dataset-v1',status='complete',scope=scope,
                     accepted=sum(entry['accepted'] for entry in exports.values()),exports=exports,suggested_session_splits=splits,
@@ -464,6 +475,12 @@ def export_reviewed(source_root, output_root, review_path=None, *, detection_onl
     # The consumer watches status=complete. Validate all values before the
     # atomic manifest write, so training cannot start on an unchecked export.
     verification=_verify_export_data(manifest)
+    if dataset.get('scope')=='sealed_seven_source_rally_subset':
+        from .rally_report import report_rally_delivery
+        manifest['scope']='full_sealed_seven_source_rally_subset'
+        report_rally_delivery(source,output,manifest)
+        manifest['quality_summary']=str(output/'quality_summary.json')
+        manifest['quality_summary_sha256']=file_sha(output/'quality_summary.json')
     manifest_path=output/'datasets/dataset_manifest.json'
     write_json(manifest_path,manifest)
     verification.update(dataset_manifest=str(manifest_path),dataset_manifest_sha256=file_sha(manifest_path))
@@ -514,4 +531,20 @@ def _verify_export_data(manifest):
                                      export_hashes_bound_in_manifest='sha256' in entry and 'metadata_sha256' in entry)
     result['accepted']=sum(e['accepted'] for e in result['sessions'].values())
     if result['accepted']!=manifest['accepted']:raise ValueError('Delivered total differs from manifest')
+    assigned=set()
+    for name,split in manifest.get('suggested_session_splits',{}).items():
+        sids=split['sessions']
+        if assigned.intersection(sids) or len(sids)!=len(set(sids)):
+            raise ValueError('Session leakage between delivered splits')
+        assigned.update(sids)
+        if len(sids)<=1:continue
+        if file_sha(split['path'])!=split['sha256'] or file_sha(split['metadata'])!=split['metadata_sha256']:
+            raise ValueError('Merged split artifact hash mismatch')
+        merged=joblib.load(split['path']);parts=[joblib.load(manifest['exports'][sid]['path']) for sid in sids]
+        if merged['motion_id']!=[motion for part in parts for motion in part['motion_id']]:
+            raise ValueError('Merged split person/order mismatch')
+        for field in FIELDS:
+            if not torch.equal(merged[field],torch.cat([part[field] for part in parts],dim=0)):
+                raise ValueError('Merged split changed source values: '+field)
+        result.setdefault('merged_splits',{})[name]=dict(accepted=len(merged['motion_id']),exact_session_concatenation=True)
     return result

@@ -82,7 +82,7 @@ function orient(){const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinit
 }
 const fmt=(n,d=2)=>Number.isFinite(n)?n.toFixed(d):'未量化';
 function showFrame(i){if(!clip)return;index=Math.max(0,Math.min(clip.frames.length-1,i));const f=clip.frames[index];$('timeline').value=index;
- $('cam1').src=f.cam1_image;$('cam2').src=f.cam2_image;
+ if(f.cam1_image)$('cam1').src=f.cam1_image;if(f.cam2_image)$('cam2').src=f.cam2_image;
  $('clock').textContent=`${mediaTime.toFixed(2)} / ${clip.duration_s.toFixed(2)} 秒 · 帧 ${index+1}/${clip.frames.length}`;
  const rejected=f.athletes.filter(a=>!a.accepted).map(a=>a.motion_id.split(':').slice(-2).join(':'));
  $('status').textContent=`${manifest.clips[clipNumber].session_id} · 扫描 ${f.lidar_index} · ${f.point_count} 个原始返回点 · ${f.athletes.length} 份拟合${f.athletes.length?'':'（本帧无拟合，未补帧）'}${rejected.length?' · 拒收轨迹 '+rejected.join(', '):''}`;
@@ -103,6 +103,13 @@ window.REVIEW_GET_VIEW=()=>({center:center.slice(),distance,yaw,pitch});
 window.REVIEW_SET_VIEW=view=>{center=view.center.slice();distance=view.distance;yaw=view.yaw;pitch=view.pitch;draw();};
 window.REVIEW_SET_MOTION=motion=>{visibleMotion=motion||null;draw();};
 window.REVIEW_SET_CONTROL=(id,value)=>{if($(id)){if($(id).type==='checkbox')$(id).checked=value;else $(id).value=value;draw();}};
+// The seven-source online adapter sends the same packed native-frame contract
+// as offline data.js. Reuse full mesh normals/topology, point cloud, controls
+// and camera math without creating a second 3D renderer.
+window.REVIEW_STREAM_FRAME=frame=>{const changed=!clip||clip.id!==frame.session_id;
+ clipNumber=0;clip={id:frame.session_id,frames:[frame],duration_s:frame.offset_s||0};index=0;mediaTime=frame.offset_s||0;
+ if(changed)orient();showFrame(0);window.REVIEW_STATE.streaming=true;
+ window.REVIEW_STATE.displayedBackgroundPoints=frame.displayed_background_points;};
 function reportEmbedded(){if(!clip||!window.REVIEW_STATE)return;parent.postMessage({type:'review-state',state:window.REVIEW_STATE,view:window.REVIEW_GET_VIEW(),
  times:clip.frames.map(f=>({lidar_index:f.lidar_index,scan_mid_us:f.scan_mid_us,offset_s:f.offset_s})),
  images:['cam1','cam2'].map(id=>({src:$(id).getAttribute('src'),ready:$(id).complete&&$(id).naturalWidth>0}))},'*');}
@@ -143,4 +150,4 @@ if(quality){const speed=quality.efficiency,passed=quality.quality.passed,stages=
  <p><a href="quality_efficiency.md">完整效率／质量报告</a> · <a href="cam1_check.md">Cam1 逐片段检查</a></p>`;$('report').appendChild(stats);
 }
 for(const [title,data] of [['效率与质量报告',manifest.quality_report],['Cam1 独立关键帧检查',manifest.cam1_check]]){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=title;detail.appendChild(summary);const pre=document.createElement('pre');pre.textContent=data?JSON.stringify(data,null,2):'尚未量化；查看报告文件或后续更新。';detail.appendChild(pre);$('report').appendChild(detail);}
-loadClip(Math.max(0,Math.min(manifest.clips.length-1,Number(new URLSearchParams(location.search).get('clip'))||0)));
+if(!manifest.stream_mode)loadClip(Math.max(0,Math.min(manifest.clips.length-1,Number(new URLSearchParams(location.search).get('clip'))||0)));
