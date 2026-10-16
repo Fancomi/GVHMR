@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 import base64
+import hashlib
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -17,6 +18,7 @@ import threading
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
+import cv2
 
 from .calibration import CalibrationSnapshot
 from .pipeline import write_json
@@ -231,6 +233,9 @@ class ViewerData:
             displayed_background_points=len(sampled),
             athletes=athletes,
         )
+        result["native_images"] = {
+            cam: self.native_image(sid, cam, pair["cameras"][cam]["record_index"]) for cam in ("cam1", "cam2")
+        }
         result["background_projection"] = {}
         for cam in ("cam1", "cam2"):
             uv, depth = self.calibration.project(sampled, cam, distort=True)
@@ -244,6 +249,28 @@ class ViewerData:
             )
             result["background_projection"][cam] = np.round(uv[valid], 1).tolist()
         return result
+
+    @lru_cache(maxsize=64)
+    def native_image(self, sid, camera, record_index):
+        session = self.sessions[sid]
+        native = session.camera_rows(camera)[record_index]
+        # SessionIndex independently checks the actual MP4 frame's container
+        # PTS. This is the same decoder used by fitting and offline reviews.
+        image = session.read_image(camera, record_index)
+        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        if not ok:
+            raise IOError("Cannot encode verified native video frame")
+        blob = encoded.tobytes()
+        return dict(
+            record_index=record_index,
+            media_pts_us=native["media_pts_us"],
+            common_time_us=native["common_time_us"],
+            width=image.shape[1],
+            height=image.shape[0],
+            raw_bgr_sha256=hashlib.sha256(image.tobytes()).hexdigest(),
+            jpeg_sha256=hashlib.sha256(blob).hexdigest(),
+            jpeg_base64=base64.b64encode(blob).decode("ascii"),
+        )
 
     @lru_cache(maxsize=128)
     def project_fit(self, path):

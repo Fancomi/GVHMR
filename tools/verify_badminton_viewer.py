@@ -13,12 +13,81 @@ from urllib.request import urlopen
 from playwright.sync_api import sync_playwright
 
 
+def visible_rgb_checks(page):
+    """Compare the actual visible RGB canvases to the PTS-bound decoded JPEGs."""
+    return page.evaluate("""async()=>{const result=[];
+    for(const [i,cam] of ['cam1','cam2'].entries()){
+      const source=lastPairedFrame.native_images[cam],c=document.getElementById('nativeFrame'+(i+1));
+      const bitmap=await createImageBitmap(await(await fetch('data:image/jpeg;base64,'+source.jpeg_base64)).blob());
+      const ref=document.createElement('canvas');ref.width=c.width;ref.height=c.height;
+      ref.getContext('2d',{alpha:false}).drawImage(bitmap,0,0,ref.width,ref.height);bitmap.close();
+      const a=c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+      const b=ref.getContext('2d').getImageData(0,0,ref.width,ref.height).data;
+      let different=0;for(let k=0;k<a.length;k++)if(a[k]!==b[k])different++;
+      result.push({camera:cam,record_index:source.record_index,media_pts_us:source.media_pts_us,
+       raw_bgr_sha256:source.raw_bgr_sha256,native_jpeg_sha256:source.jpeg_sha256,different_rgba_components:different,
+       visible:c.style.visibility==='visible'});
+    }return result;}""")
+
+
+def verify_atomic_loading(page):
+    page.evaluate("viewer.selectSource('20261012_163452')")
+    page.select_option("#mode", "paired")
+    page.evaluate("viewer.seek(32.4377)")
+    before = page.evaluate("committedPairedFrame.scan")
+    held = []
+    page.route("**/api/geometry?*", lambda route: held.append(route))
+    try:
+        page.evaluate("viewer.seek(33.0377); true")
+        page.wait_for_function("frameBusy")
+        page.wait_for_timeout(80)
+        during = page.evaluate("committedPairedFrame.scan")
+        scene = page.frame_locator("#scene").locator("body").evaluate("()=>REVIEW_STATE.scan")
+        rgb = visible_rgb_checks(page)
+        assert held and during == before == scene and all(c["different_rgba_components"] == 0 for c in rgb), (
+            before,
+            during,
+            scene,
+            rgb,
+        )
+        held[0].continue_()
+        held.clear()
+        page.wait_for_function("!frameBusy", timeout=45000)
+    finally:
+        for route in held:
+            route.continue_()
+        page.unroute("**/api/geometry?*")
+    after = page.evaluate("committedPairedFrame.scan")
+    assert after > before, (before, after)
+    page.evaluate("viewer.play()")
+    page.wait_for_timeout(850)
+    page.evaluate("viewer.pause()")
+    paused = page.evaluate("committedPairedFrame.scan")
+    scene = page.frame_locator("#scene").locator("body").evaluate("()=>REVIEW_STATE.scan")
+    projections = page.evaluate("projectionStates")
+    final_rgb = visible_rgb_checks(page)
+    assert paused == scene and all(c["scan"] == paused and not c["webglError"] for c in projections)
+    assert all(c["visible"] and c["different_rgba_components"] == 0 for c in final_rgb)
+    return dict(
+        passed=True,
+        before_scan=before,
+        loading_scan=during,
+        after_seek_scan=after,
+        paused_scan=paused,
+        retained_previous_complete_frame_while_loading=True,
+        loading_rgb=rgb,
+        paused_rgb=final_rgb,
+        projections=projections,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8767/")
     parser.add_argument(
         "--output", type=Path, default=Path("outputs/badminton_rallies_v1/viewer/browser_verification.json")
     )
+    parser.add_argument("--atomic-only", action="store_true", help="Only loading/pause/pixel transaction regression")
     args = parser.parse_args()
     errors = []
     checks = []
@@ -42,6 +111,15 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(args.url, wait_until="domcontentloaded")
         page.wait_for_function("window.viewerReady === true", timeout=180000)
+        if args.atomic_only:
+            result = verify_atomic_loading(page)
+            result.update(page_errors=errors, browser_version=browser.version, url=args.url)
+            assert not errors, errors
+            args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
+            page.screenshot(path=str(args.output.with_suffix(".png")), full_page=True)
+            browser.close()
+            print(json.dumps(result))
+            return
         page.select_option("#mode", "native")
         manifest = page.evaluate('fetch("/api/manifest").then(r=>r.json())')
         for sid, source in manifest["sources"].items():
@@ -108,7 +186,7 @@ def main():
                     raise AssertionError(f"Baseline exact overlay missing: {sid}")
                 page.wait_for_function("[cam1,cam2].every(v=>!v.seeking)", timeout=30000)
                 errors_pts = page.evaluate(
-                    "[Math.abs(cam1.currentTime-lastPairedFrame.native.cam1.pts),Math.abs(cam2.currentTime-lastPairedFrame.native.cam2.pts)]"
+                    "['cam1','cam2'].map(c=>Math.abs(lastPairedFrame.native_images[c].media_pts_us/1e6-lastPairedFrame.native[c].pts))"
                 )
                 if max(errors_pts) > 0.001:
                     raise AssertionError(f"Overlay native PTS mismatch: {sid}")
@@ -151,10 +229,11 @@ def main():
             if any(count != 6890 for pair_counts in projected_mesh_vertices for count in pair_counts):
                 raise AssertionError(f"Camera overlay lacks full projected SMPL: {sid}")
             observed = page.evaluate(
-                "({scan:lastPairedFrame.lidar_index,points:lastPairedFrame.frame.point_count,projection_counts:Object.fromEntries(Object.entries(lastPairedFrame.background_projection).map(([k,v])=>[k,v.length])),native_pts_errors:[Math.abs(cam1.currentTime-lastPairedFrame.native.cam1.pts),Math.abs(cam2.currentTime-lastPairedFrame.native.cam2.pts)]})"
+                "({source_id:committedPairedFrame.sourceId,scan:lastPairedFrame.lidar_index,points:lastPairedFrame.frame.point_count,projection_counts:Object.fromEntries(Object.entries(lastPairedFrame.background_projection).map(([k,v])=>[k,v.length])),native_pts_errors:['cam1','cam2'].map(c=>Math.abs(lastPairedFrame.native_images[c].media_pts_us/1e6-lastPairedFrame.native[c].pts))})"
             )
             valid = (
                 state["scan"] == observed["scan"]
+                and observed["source_id"] == sid
                 and state["pointCount"] == observed["points"]
                 and observed["points"] > 0
                 and all(v > 0 for v in observed["projection_counts"].values())
@@ -163,13 +242,16 @@ def main():
             )
             if not valid:
                 raise AssertionError(f"Seven-source raw scan/projection transaction failed: {sid}")
+            rgb_checks = visible_rgb_checks(page)
+            if any(not c["visible"] or c["different_rgba_components"] for c in rgb_checks):
+                raise AssertionError(f"Visible native RGB does not match committed scan: {sid} {rgb_checks}")
             cloud_checks.append(
                 dict(
-                    source_id=sid,
                     passed=True,
                     **observed,
                     projected_mesh_vertices=projected_mesh_vertices,
                     webgl_error=state["webglError"],
+                    visible_native_rgb=rgb_checks,
                 )
             )
         page.screenshot(path=str(args.output.with_suffix(".png")), full_page=True)

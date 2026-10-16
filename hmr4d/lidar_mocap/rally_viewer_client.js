@@ -3,6 +3,10 @@
 'use strict';
 const $=id=>document.getElementById(id);
 const videos=[$('cam1'),$('cam2')],canvases=[$('overlay1'),$('overlay2')];
+// Visible RGB is a frozen native-frame canvas. Hidden media elements can seek
+// without exposing a new RGB frame beneath an older point/mesh projection.
+const nativeFrames=videos.map((v,i)=>{const c=document.createElement('canvas');
+ c.id='nativeFrame'+(i+1);c.width=1920;c.height=1080;c.style.visibility='hidden';v.after(c);return c;});
 function projectedRenderer(canvas){
  const gl=canvas.getContext('webgl2',{alpha:true,premultipliedAlpha:false,antialias:true,preserveDrawingBuffer:true});
  if(!gl)throw Error('投影叠加需要 WebGL2');
@@ -36,7 +40,7 @@ function projectedRenderer(canvas){
    draw(g.cloud.filter(Boolean),[1,1,.25,1],gl.POINTS,2.3);
    const bones=[];manifest.edges.forEach(([a,b])=>{if(g.joints[a]&&g.joints[b])bones.push(g.joints[a],g.joints[b]);});
    draw(bones,[...rgb,1],gl.LINES);
-  });return {camera:cam,fullMeshes,webglError:gl.getError()};
+  });return {camera:cam,scan:data.lidar_index,nativeRecord:data.native[cam].record_index,fullMeshes,webglError:gl.getError()};
  }
  return {clear,render};
 }
@@ -51,9 +55,14 @@ function clock(value,cam,inverse=false){
  while(l+1<r){const m=(l+r)>>1;if(a[m][k]<=value)l=m;else r=m;}
  return a[l][o]+(value-a[l][k])*(a[r][o]-a[l][o])/(a[r][k]-a[l][k]);
 }
-function commonTime(camera=1){return clock(videos[camera-1].currentTime,'cam'+camera,true);}
+function commonTime(camera=1){return paired()&&lastData?.native?clock(lastData.native['cam'+camera].pts,'cam'+camera,true):clock(videos[camera-1].currentTime,'cam'+camera,true);}
 function clearOverlay(){projectionRenderers.forEach(r=>r.clear());}
-function pause(){playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
+function stopPlayback(){playing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';}
+async function pause(){const desired=reviewTime;stopPlayback();
+ while(frameBusy)await new Promise(resolve=>setTimeout(resolve,10));
+ if(paired()&&lastData?.frame&&Math.abs(lastData.frame.offset_s-desired)>.15)await frameAt(desired);
+ if(paired()&&lastData?.frame)reviewTime=lastData.frame.offset_s;
+}
 function mediaReady(v){return v.readyState>=1?Promise.resolve():new Promise((resolve,reject)=>{
  v.addEventListener('loadedmetadata',resolve,{once:true});v.addEventListener('error',()=>reject(Error('视频载入失败')),{once:true});});}
 async function moveVideo(v,t){
@@ -72,11 +81,22 @@ async function frameAt(t){
  try{
   const data=await(await fetch('/api/geometry?source='+sid+'&t='+t)).json();
   if(version!==generation)return;
-  window.lastPairedFrame=data;lastData=data;
   if(!data.frame){clearOverlay();$('fitInfo').textContent='该扫描缺少双相机原生时间配对。';return;}
-  await Promise.all(videos.map((v,i)=>moveVideo(v,data.native['cam'+(i+1)].pts)));
-  if(version!==generation)return;
-  await sceneReady();$('scene').contentWindow.REVIEW_STREAM_FRAME(data.frame);drawProjection(data);
+  const decoded=await Promise.all(['cam1','cam2'].map(async cam=>{
+   const image=data.native_images[cam],native=data.native[cam];
+   if(image.record_index!==native.record_index||Math.abs(image.media_pts_us/1e6-native.pts)>.000002)throw Error('原生图像与扫描配对不一致');
+   const blob=await(await fetch('data:image/jpeg;base64,'+image.jpeg_base64)).blob();return createImageBitmap(blob);
+  }));
+  await sceneReady();await new Promise(resolve=>requestAnimationFrame(resolve));
+  if(version!==generation){decoded.forEach(b=>b.close());return;}
+  // Commit both decoded RGB canvases, full 3D geometry, camera projections and
+  // the public scan state in one animation-frame callback. No media seek is
+  // part of this transaction, and no diagnostic state is published early.
+  nativeFrames.forEach((c,i)=>{c.getContext('2d',{alpha:false}).drawImage(decoded[i],0,0,c.width,c.height);c.style.visibility='visible';decoded[i].close();});
+  $('scene').contentWindow.REVIEW_STREAM_FRAME(data.frame);drawProjection(data);
+  lastData=data;window.lastPairedFrame=data;
+  window.committedPairedFrame={sourceId:sid,scan:data.lidar_index,scan_mid_us:data.scan_mid_us,native:data.native,
+   images:Object.fromEntries(Object.entries(data.native_images).map(([cam,{jpeg_base64,...meta}])=>[cam,meta]))};
   const fitted=data.athletes.map((a,i)=>'人体'+(i+1)+'：'+a.mean_mm.toFixed(1)+' mm，'+(a.accepted?'拟合 QA 通过':'已排除')).join('；');
   $('fitInfo').textContent='扫描 '+data.lidar_index+' · 原生帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index+
    ' · 实测 '+data.frame.point_count.toLocaleString()+' 点（三维背景显示 '+data.frame.displayed_background_points.toLocaleString()+' 个实际返回点） · '+
@@ -84,14 +104,14 @@ async function frameAt(t){
  }catch(e){$('error').textContent=e.message;}finally{frameBusy=false;}
 }
 async function seek(t){
- pause();generation++;clearOverlay();reviewTime=Math.max(0,Math.min(source.duration-.03,t));$('seek').value=reviewTime;
+ stopPlayback();generation++;reviewTime=Math.max(0,Math.min(source.duration-.03,t));$('seek').value=reviewTime;
  if(paired()){
   while(frameBusy)await new Promise(resolve=>setTimeout(resolve,20));await frameAt(reviewTime);
- }else await Promise.all(videos.map((v,i)=>moveVideo(v,clock(reviewTime,'cam'+(i+1)))));
+ }else {await Promise.all(videos.map((v,i)=>moveVideo(v,clock(reviewTime,'cam'+(i+1)))));nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();}
 }
 async function selectSource(sid,rallyIndex){
  ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=true);
- loading=true;pause();generation++;sourceId=sid;source=manifest.sources[sid];$('source').value=sid;$('seek').max=source.duration;
+ loading=true;stopPlayback();generation++;sourceId=sid;source=manifest.sources[sid];$('source').value=sid;$('seek').max=source.duration;
  $('rally').replaceChildren(...source.rallies.map(c=>new Option('回合 '+c.index+' · '+(c.end-c.begin).toFixed(1)+'s',c.index)));
  videos.forEach((v,i)=>{v.src=source.cameras['cam'+(i+1)].url;v.load();});await Promise.all(videos.map(mediaReady));
  await selectRally(rallyIndex||source.rallies[0].index);loading=false;
@@ -104,14 +124,14 @@ async function selectRally(index){
 async function play(){
  playing=true;lastTick=performance.now();$('play').textContent='暂停';
  if(paired()){videos.forEach(v=>v.pause());return;}
- clearOverlay();videos.forEach(v=>v.playbackRate=+$('speed').value);
+ nativeFrames.forEach(c=>c.style.visibility='hidden');clearOverlay();videos.forEach(v=>v.playbackRate=+$('speed').value);
  try{await Promise.all(videos.map(v=>v.play()));}catch(e){pause();$('error').textContent=e.message;}
 }
-async function pairedFrame(){pause();$('mode').value='paired';reviewTime=commonTime();await seek(reviewTime);}
+async function pairedFrame(){const t=commonTime();stopPlayback();$('mode').value='paired';await seek(t);}
 function update(now){
  if(source&&!loading){
   if(playing&&paired())reviewTime+=Math.max(0,now-lastTick)/1000*+$('speed').value;
-  const t=paired()?reviewTime:commonTime();$('seek').value=t;$('time').textContent=t.toFixed(2)+' / '+source.duration.toFixed(2)+' s';
+  const t=paired()?reviewTime:commonTime();if(!paired())reviewTime=t;$('seek').value=t;$('time').textContent=t.toFixed(2)+' / '+source.duration.toFixed(2)+' s';
   if(playing){
    if(paired()){if(now-lastFrameRequest>=100&&!frameBusy){lastFrameRequest=now;frameAt(t);}}
    else if(now-lastSync>200){const t2=commonTime(2),rate=+$('speed').value;
@@ -139,7 +159,7 @@ $('forward').onclick=()=>seek(Math.min(source.duration-.03,(paired()?reviewTime:
 $('previous').onclick=()=>selectRally(source.rallies[Math.max(0,source.rallies.indexOf(clip)-1)].index);
 $('next').onclick=()=>selectRally(source.rallies[Math.min(source.rallies.length-1,source.rallies.indexOf(clip)+1)].index);
 $('speed').onchange=()=>{videos.forEach(v=>v.playbackRate=+$('speed').value);};
-$('mode').onchange=()=>seek(commonTime());$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
+$('mode').onchange=()=>seek(reviewTime);$('projectCloud').onchange=()=>{if(lastData)drawProjection(lastData);};
 window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSource(...args);},selectRally,seek,play,pause,pairedFrame,commonTime,get sourceId(){return sourceId;},get loading(){return loading;}};
 (async()=>{try{
  manifest=await(await fetch('/api/manifest')).json();faces=new Uint16Array(Uint8Array.from(atob(manifest.faces),c=>c.charCodeAt(0)).buffer);

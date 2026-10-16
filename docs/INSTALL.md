@@ -234,10 +234,17 @@ Open `http://127.0.0.1:8767/`. HTML and a source/rally manifest are generated in
 `outputs/badminton_rallies_v1/viewer/`; original H264 MP4 streams through local
 HTTP byte-range requests without copies/transcodes. Source/rally selection,
 play/pause, rates, loop and seek use recorded native common-time and media-PTS
-anchors. The default paired mode plays exact original scan transactions: it
-seeks each camera to that scan's own frozen native PTS, then updates the 3D
-scene and both camera projections together. The alternate native-video mode
-plays the full original MP4 timeline. "Exact paired frame" pauses at a scan.
+anchors. The default paired mode plays original scan transactions using each
+camera's PTS-verified decoded native RGB. The SessionIndex decoder is shared
+with fitting/offline reviews; JPEG90 previews bind record index, PTS, common
+clock, original decoded BGR SHA and preview JPEG SHA. Both previews decode
+offscreen before one animation-frame commit updates their visible canvases,
+the full 3D scene, both camera projections and the public committed scan.
+Loading retains the previous complete image/geometry combination. `pause()`
+returns a Promise that drains an in-flight transaction and settles the requested
+scan. The alternate native-video mode plays the original MP4 timeline.
+"Exact paired frame" pauses at a scan. JPEG previews are lossy display assets;
+their frame binding and displayed decoded-preview pixels are verified separately.
 
 The 3D view reuses `review_assets/review.js`, the existing offline WebGL2 player:
 all 6,890 SMPL vertices, triangle topology, computed normals, opacity/wireframe,
@@ -261,6 +268,18 @@ selectRally, seek, play, pause, pairedFrame and commonTime for diagnostics;
 await `window.viewer.ready` (or wait for `window.viewerReady === true`) before
 automating initial source switches; await each selection/seek Promise and wait
 for `!frameBusy` before inspecting the displayed native-frame transaction.
+In paired mode use `window.committedPairedFrame`, `lastPairedFrame` and visible
+`nativeFrame1/2` canvases. `video.currentTime` belongs to the alternate MP4 mode
+and is not proof of the currently displayed paired RGB. The verifier compares
+every visible RGB pixel against that scan's bound decoded JPEG, not just PTS
+or mesh counts. The focused regression holds the next geometry response while
+checking previous RGB/3D retention, then plays/pauses and checks the same-frame
+commit again:
+
+```powershell
+uv run --no-sync python tools/verify_badminton_viewer.py --atomic-only --output outputs/badminton_rallies_v1/viewer/atomic_loading_verification.json
+```
+
 `iframe#scene.contentWindow.REVIEW_STATE` reports scan/mesh/vertex/point counts.
 Final delivery `quality_summary.json` distinguishes original input/rally scans,
 fit QA rejections, bilateral exclusions and final person frames by source.
