@@ -365,6 +365,36 @@ the requested 100 training epochs; actual training belongs to the consumer queue
 `overlap_verification.json` and `receipt.json` bind the duplicate checks and final
 manifest. This is session isolation, not verified unseen-person generalization.
 
+For the reported 1009/rally-1 color switch and far-foot distortion, the read-only
+CPU audit covers all delivered union labels plus their formally selected fitted
+windows:
+
+```powershell
+uv run --no-sync python tools/audit_badminton_body_labels.py
+uv run --no-sync python tools/verify_badminton_track_colors.py
+```
+
+`outputs/badminton_label_audit_v2/index.html` contains the investigation, native
+camera comparisons and per-source counts. Its JSONL records and source-union
+SHA bind the numeric audit; `--reuse-report <previous/report.json>` can reuse
+hash-verified measurements of the same immutable union. Write to a new output
+directory when reusing a report. Exact-frame viewer links support `&scan=1535`.
+Colors now follow the local detector track across segment changes, in both
+cameras and 3D; the footer shows actual track/segment IDs. Colors and local IDs
+do not establish identity across windows or sources.
+
+The audit found 648 old-display recoloring events, 90 short-gap nearby-track
+fragment candidates and 587 delivered frames with a confident ankle residual
+over 20 px. The latter two are screening candidates, not verified identity or
+anatomical error rates. An ankle residual uses the participating detector and
+can miss a twisting forefoot. Production pose constraints currently use cam2;
+cam1 provides detection/association admission, not dual-camera pose fitting.
+Whole-body one-sided point-to-surface means do not establish correct feet.
+Compare actual mapped geometry through conversion and fitting: raw local
+SMPL-X/SMPL parameter differences use different rest bases and cannot establish
+geometric rotation. This investigation changes display colors and reports only;
+tracking, fitted bodies, calibration and published training values stay frozen.
+
 Segmentation evaluates bone scores only on points inside each person's box;
 outside scores were always infinite. Three 615k-point native scans matched the
 previous implementation's selected points/indices exactly and ran 6.33–7.05x

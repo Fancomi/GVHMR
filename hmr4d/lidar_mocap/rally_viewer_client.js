@@ -31,7 +31,7 @@ function projectedRenderer(canvas){
  }
  function render(data,cam){clear();let fullMeshes=0;
   if($('projectCloud').checked)draw(data.background_projection?.[cam]||[],[.35,.79,.85,.65],gl.POINTS,1.6);
-  data.athletes.forEach((a,k)=>{const g=a.cameras[cam],rgb=[[1,.62,.19],[.31,.64,1],[.5,.88,.53],[.85,.52,.89]][k%4];
+  data.athletes.forEach(a=>{const g=a.cameras[cam],rgb=a.color.map(c=>c/255);
    if(g._meshFlat&&g._meshFlat.length===13780){
     let usable=faces;if(g._meshValid.some(v=>!v)){const valid=[];for(let j=0;j<faces.length;j+=3)
      if(g._meshValid[faces[j]]&&g._meshValid[faces[j+1]]&&g._meshValid[faces[j+2]])valid.push(faces[j],faces[j+1],faces[j+2]);usable=new Uint16Array(valid);}
@@ -47,7 +47,6 @@ function projectedRenderer(canvas){
  return {clear,render};
 }
 const projectionRenderers=canvases.map(projectedRenderer);
-const colors=['#ffaa40','#62adff','#94e69d','#df9bff'];
 let manifest,faces,sourceId,source,clip,loading=false,playing=false,lastSync=0;
 let reviewTime=0,lastTick=0,lastFrameRequest=0,frameBusy=false,generation=0,lastData=null;
 let preparing=false,scrubbing=false,pendingViewFit=true;
@@ -69,6 +68,7 @@ function bufferState(){const frames=[...readyFrames.values()].sort((a,b)=>a.data
   starvation_gaps:commitTimes.slice(1).map((c,i)=>c.time-commitTimes[i].time).filter(g=>g>250),
   buffer_underruns:bufferWaits.length+(bufferWaitStart==null?0:1),buffer_wait_ms:bufferWaits.reduce((n,v)=>n+v,0)+(bufferWaitStart==null?0:performance.now()-bufferWaitStart)};}
 async function decodeBundle(data){
+ for(const a of data.athletes)if(!a.color)a.color=data.frame.athletes.find(p=>p.motion_id===a.motion_id).color;
  for(const a of data.athletes)for(const g of Object.values(a.cameras))if(g.mesh_xy_f32){
   g._meshFlat=new Float32Array(Uint8Array.from(atob(g.mesh_xy_f32),c=>c.charCodeAt(0)).buffer);
   g._meshValid=Uint8Array.from(atob(g.mesh_valid_u8),c=>c.charCodeAt(0));
@@ -130,7 +130,7 @@ function commitBundle(bundle){
  if(playing){commitTimes.push({scan:data.lidar_index,time:performance.now()});if(commitTimes.length>150)commitTimes.shift();}
  const scan=document.createElement('span');scan.className='scan';scan.textContent='扫描 '+data.lidar_index+' · '+(data.frame.point_scope==='roi'?'ROI ':'全部 ')+data.frame.point_count.toLocaleString()+' 点';
  scan.title='原始 '+data.frame.raw_point_count+' 点；原生相机帧 '+data.native.cam1.record_index+' / '+data.native.cam2.record_index;
- const actors=data.athletes.map((a,i)=>{const node=document.createElement('span');node.className='actor';node.style.color=colors[i%colors.length];node.textContent='人体 '+(i+1)+' · '+a.mean_mm.toFixed(1)+' mm'+(a.accepted?'':' · 已排除');node.title=a.motion_id+'；'+(a.accepted?'拟合 QA 通过':a.rejection_reasons.join(', '));return node;});
+ const actors=data.athletes.map(a=>{const node=document.createElement('span');node.className='actor';node.style.color='rgb('+a.color.join(',')+')';const id=a.motion_id.split(':').slice(-2).join('·');node.textContent='轨迹 '+id+' · '+a.mean_mm.toFixed(1)+' mm'+(a.accepted?'':' · QA 拒收');node.title=a.motion_id+'；窗口内检测轨迹，跨窗口身份未验证；'+(a.accepted?'拟合 QA 通过':a.rejection_reasons.join(', '));return node;});
  $('fitInfo').replaceChildren(scan,...actors);if(!actors.length)$('fitInfo').append('该扫描无已存储拟合');
 }
 const paired=()=>$('mode').value==='paired';
@@ -269,5 +269,9 @@ window.viewer={ready,selectSource:async(...args)=>{await ready;return selectSour
  $('rallyMinutes').textContent=manifest.rally_window_minutes.toFixed(2)+' 分钟';$('inputScans').textContent=manifest.unique_paired_input_scans.toLocaleString()+' 帧';
  $('source').replaceChildren(...Object.keys(manifest.sources).map(s=>new Option(s,s)));
  const q=new URLSearchParams(location.search);await selectSource(q.get('source')||Object.keys(manifest.sources)[0],+q.get('rally')||undefined);
+ if(q.has('scan')){const index=Number(q.get('scan'));if(Number.isInteger(index)&&source.scan_times[index]!=null){
+  const t=source.scan_times[index],rally=source.rallies.find(r=>r.begin<=t&&r.end>=t);
+  if(rally&&rally!==clip)await selectRally(rally.index);else if(!rally)$('loop').checked=false;
+  await seek(t);history.replaceState(null,'','?source='+sourceId+'&rally='+clip.index+'&scan='+index);}}
  window.viewerReady=true;resolveReady();status();setInterval(status,10000);lastTick=performance.now();requestAnimationFrame(update);
  }catch(e){$('error').textContent=e.stack;}})();

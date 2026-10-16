@@ -43,6 +43,12 @@ an already verified publication without rewriting its manifest or tensors.
 `tools/build_badminton_reference_union.py` verifies the old full data plus four
 new sources, proves old rally overlap by person/scan and exact tensor values,
 and publishes a session-disjoint reference-only union without copying data.
+`tools/audit_badminton_body_labels.py` scans every delivered union label on CPU
+for viewer recoloring, short-gap track fragments and lower-limb support review
+candidates. It writes separate reports and never rewrites labels or cameras.
+`track_colors.py` assigns stable display colors to local detector tracks;
+`tools/verify_badminton_track_colors.py` checks the reported opening-seconds
+regression, exact-scan links and native RGB/mesh synchronization in Chrome.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

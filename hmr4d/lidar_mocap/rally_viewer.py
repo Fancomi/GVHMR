@@ -34,6 +34,7 @@ from .pipeline import write_json
 from .rally_pipeline import load_run_session, read_json, read_rows
 from .review import EDGES
 from .preview_decoder import PreviewDecoder
+from .track_colors import track_color_registry
 
 
 def packed(array, dtype="<f4"):
@@ -290,6 +291,10 @@ class ViewerData:
         self.sessions = sessions
         self.media = media
         self._quality = {}
+        self._track_colors = {}
+        self._color_signatures = {}
+        dataset = root / "datasets/dataset_manifest.json" if root is not None else None
+        self._selected_windows = read_json(dataset).get("selected_windows", {}) if dataset and dataset.exists() else {}
         self._lock = threading.Lock()
         self.viewer_bbox = (
             viewer_bbox
@@ -325,6 +330,8 @@ class ViewerData:
         )
         with self._lock:
             for path in directory.glob("*/quality.jsonl"):
+                if sid in self._selected_windows and path.parent.name not in self._selected_windows[sid]:
+                    continue
                 signature = path.stat().st_mtime_ns, path.stat().st_size
                 if path not in self._quality or self._quality[path][0] != signature:
                     # A window is reviewable only after its atomic report exists.
@@ -334,12 +341,19 @@ class ViewerData:
                     for row in read_rows(path):
                         indexed.setdefault(row["lidar_index"], []).append(row)
                     self._quality[path] = signature, indexed
-            return {
+            frames = {
                 i: rows
                 for path, (_, indexed) in self._quality.items()
                 if path.parent.parent == directory
                 for i, rows in indexed.items()
             }
+            signature = tuple(
+                (str(path), item[0]) for path, item in self._quality.items() if path.parent.parent == directory
+            )
+            if self._color_signatures.get(sid) != signature:
+                self._track_colors.update(track_color_registry(frames))
+                self._color_signatures[sid] = signature
+            return frames
 
     def overlay(self, sid, relative_seconds, scope="roi"):
         source = self.manifest["sources"][sid]
@@ -372,6 +386,7 @@ class ViewerData:
             result["athletes"].append(
                 dict(
                     motion_id=row["motion_id"],
+                    color=self._track_colors[row["motion_id"]],
                     accepted=row["accepted"],
                     mean_mm=row["qa"]["final_p2surface_mean_m"] * 1000,
                     rejection_reasons=row["rejection_reasons"],
@@ -396,8 +411,7 @@ class ViewerData:
         sampled = cloud[:: max(1, (len(cloud) + 24999) // 25000)]
         rows = self.quality_rows(sid).get(pair["lidar_index"], [])
         athletes = []
-        colors = [(255, 157, 48), (79, 163, 255), (128, 224, 134), (216, 132, 226)]
-        for k, row in enumerate(rows):
+        for row in rows:
             asset = self.render_fit(row["fit_path"], scope)
             athletes.append(
                 dict(
@@ -405,7 +419,7 @@ class ViewerData:
                     accepted=row["accepted"],
                     qa=row["qa"],
                     rejection_reasons=row["rejection_reasons"],
-                    color=colors[k % len(colors)],
+                    color=self._track_colors[row["motion_id"]],
                     vertices=asset["vertices"],
                     joints=asset["joints"],
                     cloud=asset["cloud"],
