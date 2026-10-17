@@ -15,6 +15,7 @@ from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import read_json
+from hmr4d.lidar_mocap.repair_execution import repair_efficiency
 
 
 def main():
@@ -142,8 +143,6 @@ def main():
         for row in read_json(window["observations_path"]):
             if "left_forefoot_direction_change_vs_same_converted_reference_deg" in row:
                 foot.append(row)
-    log = PROJ_ROOT / ".local/repair_v2_full.log"
-    duration = (labels / "repair_receipt.json").stat().st_mtime - log.stat().st_ctime
     seconds = sum(
         (
             read_json(Path(j["source_window"]) / "window.json")["right_us"]
@@ -169,13 +168,7 @@ def main():
         training_published=False,
         teacher_counts=dict(teacher),
         max_contract_errors_m=dict(maxima),
-        efficiency=dict(
-            baseline_fit_wall_seconds=duration,
-            wall_seconds=time.time() - log.stat().st_ctime,
-            selected_source_seconds=seconds,
-            fitted_person_scans_per_wall_second=new_fitted / (time.time() - log.stat().st_ctime),
-            scope="Elapsed from the full fit job launch through refinement, rendering and validation; pre-existing native/pixel caches are reused.",
-        ),
+        efficiency=repair_efficiency(root, new_fitted, seconds),
         native_leg_refinement=legs,
         common_observation_cohorts=metrics["cohorts"],
         foot_examples=foot,

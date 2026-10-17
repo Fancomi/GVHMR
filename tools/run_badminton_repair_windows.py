@@ -5,22 +5,24 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
-
-import psutil
 
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import read_json
+from hmr4d.lidar_mocap.repair_execution import record_execution
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
+    p.add_argument("--seed-teacher-root", type=Path, help="Optional verified teacher cache; no historical run is required")
     args = p.parse_args()
     root = args.root.resolve()
     labels = root / "final_labels"
+    if (labels / "post_refinement.json").exists():
+        raise ValueError("This run has sealed leg corrections; use a fresh root for baseline fitting")
     plan = read_json(labels / "repair_plan.json")
+    record_execution(root)
     command = [
         sys.executable,
         "-u",
@@ -29,8 +31,6 @@ def main():
         "run",
         "--output-root",
         str(labels),
-        "--seed-teacher-root",
-        str(PROJ_ROOT / "outputs/badminton_body_repair_v1/labels"),
         "--native-poses-root",
         str(root),
         "--joint-ray-filter",
@@ -39,31 +39,13 @@ def main():
         "--identity-decisions",
         str(root / "identity_evidence/identity_decisions.json"),
     ]
+    if args.seed_teacher_root:
+        command += ["--seed-teacher-root", str(args.seed_teacher_root.resolve())]
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", PYTHONFAULTHANDLER="1")
     for cursor, job in enumerate(plan["jobs"], 1):
         sid = job["source_id"]
         window = Path(job["source_window"]).name
         dest = labels / "sessions" / sid / "windows" / window
-        if sid == "20261012_163452":
-            # The bulk auxiliary worker owns only this source. Stop and confirm
-            # its termination before the primary can touch any unfinished window.
-            for process in psutil.process_iter(["name", "cmdline"]):
-                try:
-                    cmd = process.info["cmdline"] or []
-                    if (
-                        process.info["name"].lower() == "python.exe"
-                        and "--partition-worker" in cmd
-                        and "--window" not in cmd
-                        and "20261012_163452" in cmd
-                    ):
-                        process.terminate()
-                        try:
-                            process.wait(timeout=20)
-                        except psutil.TimeoutExpired:
-                            process.kill()
-                            process.wait(timeout=20)
-                except psutil.NoSuchProcess:
-                    pass
         if not (dest / "fit_report.json").exists():
             success = False
             for attempt in range(1, 4):
@@ -96,6 +78,7 @@ def main():
     result = subprocess.run(command, env=env, cwd=PROJ_ROOT)
     if result.returncode:
         raise RuntimeError(f"Final aggregate/resume validation failed: {result.returncode}")
+    record_execution(root, baseline_finished=True)
     print("All windows and full aggregate complete", flush=True)
 
 

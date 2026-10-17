@@ -17,7 +17,9 @@ from hmr4d.lidar_mocap.rally_viewer import ViewerData, load_display_bbox, serve_
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repair-root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v1/case_labels")
+    parser.add_argument(
+        "--repair-root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2/final_labels"
+    )
     parser.add_argument("--source-root", type=Path, default=PROJ_ROOT / "outputs/badminton_rallies_v1")
     parser.add_argument("--display-crop", type=Path)
     parser.add_argument("--port", type=int, default=8771)

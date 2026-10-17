@@ -11,6 +11,8 @@ and temporary experiments in ignored `.local/`. See [TODO.md](TODO.md) for owner
 | Inference HTTP service | `scripts/run_service.sh` | `tools/serve/app.py` → `tools/serve/infer_core.py` → GVHMR model | Service jobs; see `scripts/README.md` |
 
 Badminton operations and environment: [docs/INSTALL.md](docs/INSTALL.md).
+Validated identity/foot repair strategy, rejected approaches, run stages and
+retention rules: [docs/BADMINTON_BODY_REPAIR.md](docs/BADMINTON_BODY_REPAIR.md).
 Training uses Hydra and requires an experiment, for example
 `uv run --no-sync python tools/train.py exp=gvhmr/mixed/mixed --help`.
 The stage adapter `tools/pair_badminton.py` serves prepare/teacher/fit/export
@@ -54,8 +56,7 @@ frozen native detection. `body_repair.py` shares the exact published-window
 selection with `tools/repair_badminton_body_labels.py`, which rebuilds teacher
 contexts and bodies into a separate version, retaining unchanged pixel caches.
 `tools/serve_badminton_body_repair.py` reuses the native viewer for explicit
-repair candidates; `tools/report_badminton_body_repair.py` makes fixed-native
-before/after images and compares point, foot and held-out camera evidence.
+repair candidates and defaults to the completed v2 labels.
 `tools/prepare_badminton_repair_cases.py` fixes ten continuous old/new clips,
 all ankle-review candidates and detector boundaries. Native observations from
 `tools/observe_badminton_repair_poses.py` feed fixed-camera epipolar matching
@@ -71,6 +72,8 @@ point sets. These repair outputs remain separate from published training data.
 observed left/right leg labels has a strong fixed-camera geometric witness.
 `leg_selection.py` selects continuous corrections over actual scan times.
 `tools/run_badminton_repair_windows.py` isolates native processing per window;
+`repair_execution.py` retains launch/completion timing in the run itself,
+independent of disposable logs. Verified teacher seeds are optional.
 `tools/finish_badminton_body_repair.py` waits for complete baseline receipts,
 applies guarded corrections with backups, repeats native/body checks and
 regenerates the ten old/new clips before sealing the final receipt.
