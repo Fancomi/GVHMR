@@ -78,7 +78,7 @@ class BadmintonPipeline:
 
     def _fit_digest(self):
         paths = [Path(__file__).with_name(name+'.py') for name in
-                 ('pipeline','fitting','segmentation','export','calibration','sessions')]
+                 ('pipeline','fitting','segmentation','export','calibration','sessions','multiview','pose_provider','segment_cache')]
         paths.append(PROJ_ROOT/'hmr4d/utils/body_model/contracts.py')
         digest = hashlib.sha256()
         for path in paths:
@@ -225,9 +225,10 @@ class BadmintonPipeline:
         write_json(self.output_root/'last_run_report.json',report)
         return report
 
-    def _fit_window(self, session, pairs, teacher_manifest, output, fitter):
+    def _fit_window(self, session, pairs, teacher_manifest, output, fitter, *,segment_cache=None,pose_provider=None):
         import torch
         from .teacher import load_teacher_track,sample_track
+        execution_digest = self._fit_digest()
         times = [p['scan_mid_us'] for p in pairs]
         tracks = []
         for entry in teacher_manifest['tracks']:
@@ -245,12 +246,19 @@ class BadmintonPipeline:
                 if bool(sampled['valid'][i]):
                     visible.append({'track_id':str(k),'bbox':np.asarray(sampled['bbx_xyxy'][i]),
                                     'kp2d':np.asarray(sampled['kp2d'][i])})
-            cloud = session.read_cloud(pair)
-            segments = segment_people(cloud,visible,self.calibration,self.settings['camera'],
-                                      min_points=self.settings['min_points'])
+            if pose_provider is not None:
+                visible,pose_excluded=pose_provider.bind(session,pair,visible)
+                exclusions.extend(dict(lidar_index=pair['lidar_index'],track=int(e['track_id']),reason=e['reason']) for e in pose_excluded)
+            segments=segment_cache.get(pair,visible) if segment_cache is not None else None
+            if segments is None:
+                cloud = session.read_cloud(pair)
+                segments = segment_people(cloud,visible,self.calibration,self.settings['camera'],
+                                          min_points=self.settings['min_points'])
             for k in visible:
                 index = int(k['track_id'])
                 segment = segments[k['track_id']]
+                segment['keypoints_by_camera']={name:view['kp2d'] for name,view in k.get('views',{}).items()} or {self.settings['camera']:k['kp2d']}
+                segment['pose_evidence']=k.get('pose_evidence')
                 if segment['status']=='segmented':
                     by_track[index].append((i,pair,segment))
                 else:
@@ -276,12 +284,15 @@ class BadmintonPipeline:
                 indices = [f[0] for f in batch]
                 params = {name:value[indices] for name,value in sampled['smpl_params_incam'].items()}
                 clouds = [f[2]['points'] for f in batch]
+                camera_names=sorted(set(name for f in batch for name in f[2]['keypoints_by_camera']))
+                batch_keypoints={name:np.stack([f[2]['keypoints_by_camera'].get(name,np.zeros((17,3),np.float32)) for f in batch]) for name in camera_names}
+                if len(camera_names)==1:batch_keypoints=batch_keypoints[self.settings['camera']]
                 result = fitter.fit_batch(params,clouds,self.calibration,camera=self.settings['camera'],
-                                          keypoints=sampled['kp2d'][indices],previous=previous,
+                                          keypoints=batch_keypoints,previous=previous,
                                           iterations=self.settings['iterations'],
                                           timestamps_us=[f[1]['scan_mid_us'] for f in batch])
                 chosen_weight=fitter.config.reprojection_weight
-                errors=[q.get('reprojection_mean_px') for q in result['qa']]
+                errors=[max((x for x in q.get('reprojection_by_camera_px',{}).values() if x is not None),default=q.get('reprojection_mean_px')) for q in result['qa']]
                 retry=(previous is not None and previous.get('shape_fixed',False)
                        and any(e is not None and np.isfinite(e) and e>8 for e in errors))
                 if retry:
@@ -289,7 +300,7 @@ class BadmintonPipeline:
                     try:
                         fitter.config=replace(base_config,reprojection_weight=3.)
                         candidate=fitter.fit_batch(params,clouds,self.calibration,camera=self.settings['camera'],
-                                                   keypoints=sampled['kp2d'][indices],previous=previous,
+                                                   keypoints=batch_keypoints,previous=previous,
                                                    iterations=self.settings['iterations'],
                                                    timestamps_us=[f[1]['scan_mid_us'] for f in batch])
                     finally:
@@ -317,6 +328,8 @@ class BadmintonPipeline:
                                 'source_point_count':len(segment['points']),'accepted':not reasons,
                                 'source_index_space':'decoded_fixed24_valid_returns_after_raw_to_viewer_rotation',
                                 'rejection_reasons':reasons,'teacher':str(entry['path']),
+                                'native_pose_evidence':segment.get('pose_evidence'),
+                                'keypoint_cameras':list(segment['keypoints_by_camera']),
                                 'teacher_sampling':{name:(value[indices[j]].item() if isinstance(value,np.ndarray) else value)
                                                     for name,value in sampled['metadata'].items()}}
                     reviews.append(metadata)
@@ -354,13 +367,16 @@ class BadmintonPipeline:
                   'teacher_tracks':len(tracks),'fitted':len(reviews),'accepted':len(accepted_samples),
                   'fit_rejection_reasons':dict(Counter(r for q in reviews for r in q['rejection_reasons'])),
                   'segmentation_exclusions':exclusions,'export':export,
-                  'fit_algorithm_digest':self._fit_digest(),'fitting_config':asdict(fitter.config),
+                  'fit_algorithm_digest':execution_digest,'fitting_config':asdict(fitter.config),
                   'projection_retry_policy':{'trigger_max_px':8,'weight':3.,'shape_fixed_required':True,
                                              'batch_mean_surface_tolerance_m':.001,'batch_mean_p90_tolerance_m':.002,
                                              'minimum_mean_reprojection_improvement_px':.5,'accepted_count_must_not_decrease':True},
                   'settings':self.settings,
                   'teacher_provenance_hash':teacher_manifest['provenance_hash'],
                   'source_lidar_sha256':{p['lidar_path']:_hash_file(p['lidar_path']) for p in pairs}}
+        if segment_cache is not None:
+            report['frozen_segmentation_reuse']=dict(segment_cache.evidence,hits=segment_cache.hits,misses=segment_cache.misses)
+        if pose_provider is not None:report['native_pose_receipt_sha256']=pose_provider.digest
         artifact_paths = [output/'ptv3.pth',output/'ptv3.metadata.jsonl',output/'quality.jsonl']
         artifact_paths += [Path(r['fit_path']) for r in reviews]
         report['artifacts_sha256'] = {p.relative_to(output).as_posix():_hash_file(p) for p in artifact_paths}

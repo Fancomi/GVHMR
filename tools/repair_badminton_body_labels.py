@@ -21,6 +21,9 @@ from hmr4d.lidar_mocap.fitting import FittingConfig, SMPLFitter
 from hmr4d.lidar_mocap.pipeline import BadmintonPipeline, write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
 from hmr4d.lidar_mocap.teacher import _jsonable, run_teacher
+from hmr4d.lidar_mocap.pose_provider import NativePoseProvider
+from hmr4d.lidar_mocap.segment_cache import FrozenSegmentCache
+from hmr4d.lidar_mocap.pose_ray_filter import RayFilteredPoseProvider
 
 
 def main():
@@ -32,18 +35,34 @@ def main():
     parser.add_argument("--output-root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v1/labels")
     parser.add_argument("--source", action="append")
     parser.add_argument("--window", action="append")
+    parser.add_argument("--case-plan", type=Path)
     parser.add_argument("--stage", choices=("prepare", "teacher", "fit", "run"), default="run")
     parser.add_argument("--distal-pose-weight", type=float, default=0.03)
+    parser.add_argument("--lower-limb-reprojection-weight", type=float, default=1.0)
+    parser.add_argument("--native-poses-root", type=Path)
+    parser.add_argument("--joint-ray-filter", action="store_true")
+    parser.add_argument("--seed-teacher-root", type=Path)
+    parser.add_argument("--identity-decisions", type=Path)
+    parser.add_argument('--partition-worker',action='store_true',help='Disjoint one-source worker; preserve the full plan and defer aggregate export')
+    parser.add_argument("--no-segment-cache", action="store_true")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--threads", type=int, default=4)
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
     root = args.output_root.resolve()
+    if (root/'post_refinement.json').exists():
+        raise ValueError('This candidate root contains sealed postprocessed labels; use a fresh output root for baseline fitting')
     jobs = [
         (sid, window)
         for sid, window in published_windows(args.union)
         if (not args.source or sid in args.source) and (not args.window or window.name in args.window)
     ]
+    if args.case_plan:
+        cases = read_json(args.case_plan)
+        if cases["source_union_sha256"] != file_sha(args.union):
+            raise ValueError("Case plan uses another union")
+        chosen = {(c["source_id"], Path(c["source_window"]).name) for c in cases["clips"]}
+        jobs = [(sid, w) for sid, w in jobs if (sid, w.name) in chosen]
     if not jobs or not root.is_relative_to((PROJ_ROOT / "outputs").resolve()):
         raise ValueError("Select existing frozen windows and a separate workspace output root")
     if any(root == window or root in window.parents or window in root.parents for _, window in jobs):
@@ -57,7 +76,12 @@ def main():
     source_calibration = CalibrationSnapshot.load(args.source_root / "calibration/calibration_snapshot.json")
     if calibration.data["snapshot_digest"] != source_calibration.data["snapshot_digest"]:
         raise ValueError("Body repair cannot change cameras/calibration")
-    cfg = FittingConfig(distal_pose_prior_weight=args.distal_pose_weight)
+    cfg = FittingConfig(
+        distal_pose_prior_weight=args.distal_pose_weight,
+        lower_limb_reprojection_weight=args.lower_limb_reprojection_weight,
+    )
+    provider = RayFilteredPoseProvider if args.joint_ray_filter else NativePoseProvider
+    poses = provider(args.native_poses_root, calibration) if args.native_poses_root else None
     plan = dict(
         schema="badminton-body-repair-plan-v1",
         source_union=str(args.union.resolve()),
@@ -70,7 +94,14 @@ def main():
             for sid, window in jobs
         ],
     )
-    write_json(root / "repair_plan.json", plan)
+    if args.partition_worker:
+        if not args.source or len(args.source)!=1 or not (root/'repair_plan.json').exists():
+            raise ValueError('A partition worker requires one explicit source and an existing full plan')
+        full=read_json(root/'repair_plan.json')
+        if full['source_union_sha256']!=plan['source_union_sha256'] or not {(j['source_id'],j['source_window']) for j in plan['jobs']} <= {(j['source_id'],j['source_window']) for j in full['jobs']}:
+            raise ValueError('Partition is not part of the frozen full plan')
+    else:
+        write_json(root / "repair_plan.json", plan)
     if args.stage == "prepare":
         print(f"Prepared {len(jobs)} frozen windows; no inference or training publication", flush=True)
         return
@@ -78,6 +109,14 @@ def main():
     pipeline.calibration = calibration
     sessions = {}
     completed = []
+    decisions = read_json(args.identity_decisions) if args.identity_decisions else None
+    if decisions and decisions["source_union_sha256"] != plan["source_union_sha256"]:
+        raise ValueError("Identity decisions refer to another delivered union")
+    if decisions and (
+        decisions["calibration_digest"] != plan["calibration_digest"]
+        or any(file_sha(Path(p)) != sha for p, sha in decisions["evidence_files"].items())
+    ):
+        raise ValueError("Sealed native identity evidence changed")
     for sid, original in jobs:
         output = root / "sessions" / sid / "windows" / original.name
         output.mkdir(parents=True, exist_ok=True)
@@ -85,12 +124,22 @@ def main():
         if config["calibration_digest"] != plan["calibration_digest"]:
             raise ValueError("Original window uses another calibration")
         pipeline.settings = dict(config["settings"], share_track_shape=True)
+        if poses is not None:
+            pipeline.settings["native_pose_receipt_sha256"] = poses.digest
+        if args.joint_ray_filter:
+            pipeline.settings["native_pose_joint_ray_policy_sha256"] = poses.policy_sha256
         manifest = read_json(original / "teacher/manifest.json")
         if _jsonable(calibration.camera(pipeline.settings["camera"])) != manifest["provenance"]["camera"]:
             raise ValueError("Original teacher camera differs from the frozen repair camera")
         if read_json(original / "fit_report.json")["teacher_provenance_hash"] != manifest["provenance_hash"]:
             raise ValueError("Original fit and teacher provenance differ")
         options = dict(manifest["provenance"]["options"], max_track_gap_frames=6)
+        decision = decisions["windows"].get(sid + ":" + original.name) if decisions else None
+        if decision and decision["source_teacher_manifest_sha256"] != file_sha(original / "teacher/manifest.json"):
+            raise ValueError("Identity source teacher changed")
+        if args.seed_teacher_root and decision is None and not (output / "teacher/manifest.json").exists():
+            seeded = args.seed_teacher_root / "sessions" / sid / "windows" / original.name / "teacher"
+            shutil.copytree(seeded, output / "teacher", dirs_exist_ok=True)
         if args.stage == "fit" and not (output / "teacher/manifest.json").exists():
             raise ValueError("Fit requires the completed repaired teacher stage")
         teacher = run_teacher(
@@ -99,6 +148,7 @@ def main():
             manifest["provenance"]["camera"],
             output / "teacher",
             reuse_preprocess_dir=original / "teacher",
+            identity_decisions=decision,
             **options,
         )
         if args.stage == "teacher":
@@ -144,13 +194,16 @@ def main():
         )
         started = time.perf_counter()
         fitter = SMPLFitter(device=args.device, config=cfg)
-        report = pipeline._fit_window(session, pairs, teacher, output, fitter)
+        segments = None if args.no_segment_cache else FrozenSegmentCache(original, pairs, plan["calibration_digest"])
+        report = pipeline._fit_window(
+            session, pairs, teacher, output, fitter, segment_cache=segments, pose_provider=poses
+        )
         completed.append(report)
         del fitter
         if args.device == "cuda":
             torch.cuda.empty_cache()
         write_json(
-            root / "repair_progress.json",
+            root / (f'repair_progress_{args.source[0]}.json' if args.partition_worker else 'repair_progress.json'),
             dict(
                 completed_windows=len(completed),
                 total_windows=len(jobs),
@@ -172,6 +225,10 @@ def main():
         )
         print(f"Complete: {len(completed)} repaired native teacher windows; fitted labels remain separate", flush=True)
     if args.stage in ("fit", "run"):
+        if args.partition_worker:
+            write_json(root/f'repair_receipt_{args.source[0]}.json',dict(state='partition_complete',windows=len(completed),source=args.source[0],training_published=False))
+            print(f'Partition complete: {len(completed)} windows; full aggregate deferred',flush=True)
+            return
         result = pipeline.aggregate(sorted({sid for sid, _ in jobs}))
         write_json(
             root / "repair_receipt.json",

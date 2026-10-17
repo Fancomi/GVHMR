@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SMPL 身份 / 脚部修复对比</title><link rel="stylesheet" href="comparison.css"></head>
+<body><main>
+<header><h1>身份与脚部修复 · 同帧对比</h1><span id="progress"></span></header>
+<nav><select id="clips" aria-label="选择片段"></select><label>人物 <select id="person"><option value="">全部</option></select></label><button id="play">播放</button><button id="prev">← 帧</button><button id="next">帧 →</button><select id="speed"><option value=".25">0.25×</option><option value=".5">0.5×</option><option value="1" selected>1×</option></select><label><input id="loop" type="checkbox" checked>循环</label><button id="reset">适配三维视野</button><label><input id="failed" type="checkbox">显示拒收拟合</label><label><input id="projectCloud" type="checkbox" checked>投影点云</label><label><input id="points" type="checkbox" checked>人体点</label><label><input id="zoom" type="checkbox">人体局部放大</label></nav>
+<div class="timeline"><input id="seek" type="range" min="0" max="49" value="0" step="1" aria-label="进度"><span id="clock">0 / 5 s</span></div>
+<div id="status" role="status">加载真实网格与原生视频帧…</div>
+<section id="views" aria-label="同步新旧三维与两机投影">
+<figure><figcaption>修复前 · SMPL / LiDAR</figcaption><canvas id="old3d"></canvas></figure>
+<figure class="camera"><figcaption>修复前 · CAM 1</figcaption><div class="image"><canvas id="oldRgb1" width="1920" height="1080"></canvas><canvas id="oldProjection1" width="1920" height="1080"></canvas></div></figure>
+<figure class="camera"><figcaption>修复前 · CAM 2</figcaption><div class="image"><canvas id="oldRgb2" width="1920" height="1080"></canvas><canvas id="oldProjection2" width="1920" height="1080"></canvas></div></figure>
+<figure><figcaption>修复后 · SMPL / LiDAR</figcaption><canvas id="new3d"></canvas></figure>
+<figure class="camera"><figcaption>修复后 · CAM 1</figcaption><div class="image"><canvas id="newRgb1" width="1920" height="1080"></canvas><canvas id="newProjection1" width="1920" height="1080"></canvas></div></figure>
+<figure class="camera"><figcaption>修复后 · CAM 2</figcaption><div class="image"><canvas id="newRgb2" width="1920" height="1080"></canvas><canvas id="newProjection2" width="1920" height="1080"></canvas></div></figure>
+</section>
+<footer><div id="metrics"></div><details><summary>身份 / 时间戳 / 评估边界</summary><div class="panel"><p>新旧两行使用完全相同的原生视频帧和 LiDAR 扫描。颜色按修复后的物理身份固定，轨迹编号保留真实旧 / 新编号。黄色点是各版本实际分割的人体点。拒收拟合默认隐藏，可开启检查。</p><p>相机内外参固定。修复后两台相机都参与拟合，像素残差是拟合误差；点到表面距离不代表关节真值。遮挡期间没有虚构观测或插值网格。拖动任一三维视图可同步旋转，滚轮同步缩放；局部放大只改变显示。</p><pre id="evidence"></pre></div></details></footer>
+<div id="error" role="alert"></div></main>
+<iframe class="worker" id="oldWorker" src="scene.html?embedded" title="旧三维渲染"></iframe><iframe class="worker" id="newWorker" src="scene.html?embedded" title="新三维渲染"></iframe>
+<script src="manifest.js"></script><script src="quality.js"></script><script src="diagnostics.js"></script><script src="projection.js"></script><script src="comparison.js"></script></body></html>

@@ -56,6 +56,24 @@ contexts and bodies into a separate version, retaining unchanged pixel caches.
 `tools/serve_badminton_body_repair.py` reuses the native viewer for explicit
 repair candidates; `tools/report_badminton_body_repair.py` makes fixed-native
 before/after images and compares point, foot and held-out camera evidence.
+`tools/prepare_badminton_repair_cases.py` fixes ten continuous old/new clips,
+all ankle-review candidates and detector boundaries. Native observations from
+`tools/observe_badminton_repair_poses.py` feed fixed-camera epipolar matching
+(`multiview.py`), reviewed identity decisions (`identity_repair.py`), dual-view
+point ownership and contradictory-ray filtering (`pose_ray_filter.py`).
+`tools/render_badminton_repair_comparison.py` exports portable synchronized
+six-panel HTML using the same full-mesh 3D and camera projection renderers.
+`tools/verify_badminton_native_repair.py` checks every accepted point member,
+native teacher crop and SMPL reconstruction; `tools/report_badminton_native_repair.py`
+compares both versions against the same raw camera observations and visible
+point sets. These repair outputs remain separate from published training data.
+`leg_refinement.py` proposes bounded native-SMPL leg corrections when swapping
+observed left/right leg labels has a strong fixed-camera geometric witness.
+`leg_selection.py` selects continuous corrections over actual scan times.
+`tools/run_badminton_repair_windows.py` isolates native processing per window;
+`tools/finish_badminton_body_repair.py` waits for complete baseline receipts,
+applies guarded corrections with backups, repeats native/body checks and
+regenerates the ten old/new clips before sealing the final receipt.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

@@ -531,6 +531,7 @@ def _preprocess_reuse(source, provenance):
         value = _jsonable(value)
         value.pop("algorithm_version", None)
         value["options"].pop("max_track_gap_frames", None)
+        value["options"].pop("identity_decisions_sha256", None)
         return value
     if old["algorithm_version"] not in (1, ALGORITHM_VERSION) or pixel_identity(old) != pixel_identity(provenance):
         raise ValueError(
@@ -602,6 +603,7 @@ def run_teacher(
     detector_imgsz=1280,
     preproc_precision="float32",
     reuse_preprocess_dir=None,
+    identity_decisions=None,
 ):
     """Run four GPU stages independently and save every observed athlete track.
 
@@ -630,6 +632,9 @@ def run_teacher(
         detector_imgsz=detector_imgsz,
         preproc_precision=preproc_precision,
     )
+    if identity_decisions is not None:
+        from .identity_repair import decision_digest
+        options["identity_decisions_sha256"] = decision_digest(identity_decisions)
     provenance, provenance_hash = _provenance(video_path, rows, camera, options)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
@@ -661,6 +666,10 @@ def run_teacher(
     if len(detection_cache["detections"]) != len(rows):
         raise ValueError("Detection cache frame count does not match source provenance")
     tracks = associate_detections(detection_cache["detections"], max_track_gap_frames=max_track_gap_frames)
+    identity_receipt = None
+    if identity_decisions is not None:
+        from .identity_repair import apply_identity_decisions
+        tracks, identity_receipt = apply_identity_decisions(tracks, identity_decisions)
     segments, rejected = _split_tracks(tracks, rows, min_track_frames)
     manifest = {
         "schema": SCHEMA,
@@ -678,6 +687,9 @@ def run_teacher(
         ),
     }
     manifest["tracking_algorithm"] = "observed_tracklet_boundary_recovery_v2"
+    if identity_receipt is not None:
+        manifest["tracking_algorithm"] = "native_dual_camera_reviewed_observed_tracklets_v3"
+        manifest["identity_repair"] = identity_receipt
     if reused:
         manifest["preprocessing_reuse"] = reused["evidence"]
     if not segments:

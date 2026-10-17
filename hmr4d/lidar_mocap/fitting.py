@@ -42,6 +42,7 @@ class FittingConfig:
     shape_prior_weight: float = 0.00002
     root_prior_weight: float = 0.002
     reprojection_weight: float = 1.0
+    lower_limb_reprojection_weight: float = 1.0
     floor_weight: float = 0.5
     temporal_weight: float = 0.02
     ground_tolerance_m: float = 0.02
@@ -74,6 +75,8 @@ class FittingConfig:
             raise ValueError("Continuity weights must be nonnegative")
         if self.distal_pose_prior_weight < 0:
             raise ValueError("Distal pose weight must be nonnegative")
+        if self.lower_limb_reprojection_weight <= 0:
+            raise ValueError("Lower-limb reprojection weight must be positive")
         if self.continuity_reference not in {"cloud_torso", "cloud_mesh_median"}:
             raise ValueError("Unknown physical motion reference")
 
@@ -368,11 +371,12 @@ def _project(calibration, points, camera, space):
     return result, None
 
 
-def _projection_loss(vertices, coco_regressor, calibration, keypoints, camera, space):
+def _projection_loss(vertices, coco_regressor, calibration, keypoints, camera, space, lower_limb_weight=1.):
     joints = torch.einsum("jv,tvc->tjc", coco_regressor, vertices)
     cameras = keypoints if isinstance(keypoints, Mapping) else {camera: keypoints}
     losses = []
     measurements = {}
+    frame_losses, frame_masks = [], []
     for name, observations in cameras.items():
         observations = _as_float(observations, vertices.device)
         if observations.shape != (len(vertices), 17, 3):
@@ -388,11 +392,18 @@ def _projection_loss(vertices, coco_regressor, calibration, keypoints, camera, s
         # 50 pixels marks the quadratic/linear boundary; divide by image-scale
         # squared so this term can share metre-based fitting weights.
         huber = torch.where(error < 50, 0.5 * error.square(), 50 * (error - 25)) / 1e6
-        losses.append((huber * confidence).sum() / confidence.sum().clamp_min(1))
+        weighted=confidence.clone()
+        weighted[:,[13,14,15,16]]*=lower_limb_weight
+        losses.append((huber * weighted).sum() / weighted.sum().clamp_min(1))
+        frame_losses.append((huber*weighted).sum(-1)/weighted.sum(-1).clamp_min(1))
+        frame_masks.append((weighted.sum(-1)>0).to(vertices.dtype))
         frame_error = (error * confidence).sum(-1) / confidence.sum(-1).clamp_min(1)
         measurements[name] = (frame_error, (confidence > 0.25).sum(-1))
     if not losses:
         return vertices.sum() * 0, measurements
+    if len(losses)>1:
+        masks=torch.stack(frame_masks)
+        return ((torch.stack(frame_losses)*masks).sum(0)/masks.sum(0).clamp_min(1)).mean(),measurements
     return torch.stack(losses).mean(), measurements
 
 
@@ -622,7 +633,7 @@ class SMPLFitter:
             loss = loss + cfg.floor_weight * torch.relu(-heights - cfg.ground_tolerance_m).square().mean()
             if keypoints is not None:
                 reprojection, _ = _projection_loss(vertices, self.coco_regressor, calibration,
-                                                    keypoints, camera, keypoints_space)
+                                                    keypoints, camera, keypoints_space,cfg.lower_limb_reprojection_weight)
                 loss = loss + cfg.reprojection_weight * reprojection
             if timed_continuity:
                 current_pelvis, reference_pelvis = pelvis, motion_reference_pelvis
@@ -673,7 +684,7 @@ class SMPLFitter:
             heights = (vertices - plane_origin) @ plane_normal
             if keypoints is not None:
                 _, reprojection_measurements = _projection_loss(vertices, self.coco_regressor, calibration,
-                                                                keypoints, camera, keypoints_space)
+                                                                keypoints, camera, keypoints_space,cfg.lower_limb_reprojection_weight)
             else:
                 reprojection_measurements = {}
             finite = torch.isfinite(vertices).flatten(1).all(-1) & torch.isfinite(body).all(-1)

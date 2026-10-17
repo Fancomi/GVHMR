@@ -104,6 +104,21 @@ function loadClip(i){playing=false;clipNumber=i;const generation=++loadGeneratio
 // These hooks support reproducible browser validation and ordinary controls.
 window.REVIEW_LOAD_CLIP=loadClip;window.REVIEW_SEEK=seek;window.REVIEW_PLAY=()=>{$('play').click();};
 window.REVIEW_GET_VIEW=()=>({center:center.slice(),distance,yaw,pitch});
+// A comparison parent requests both offscreen renders before committing any
+// visible canvas. postMessage also works for a portable file:// review.
+window.addEventListener('message',async event=>{
+ if(event.source===parent&&event.data?.type==='comparison-ping'){document.body.classList.add('comparison-worker');parent.postMessage({type:'comparison-ready'},'*');return;}
+ if(event.source!==parent||event.data?.type!=='comparison-render')return;
+ const {frame,view,requestId,controls}=event.data;
+ try{
+  for(const [key,value] of Object.entries(controls||{}))if($(key)){
+   if($(key).type==='checkbox')$(key).checked=value;else $(key).value=value;
+  }
+  window.REVIEW_STREAM_FRAME(frame);window.REVIEW_SET_VIEW(view);
+  const bitmap=await createImageBitmap(canvas);
+  parent.postMessage({type:'comparison-rendered',requestId,bitmap,state:window.REVIEW_STATE},'*',[bitmap]);
+ }catch(error){parent.postMessage({type:'comparison-rendered',requestId,error:String(error)},'*');}
+});
 window.REVIEW_SET_VIEW=view=>{center=view.center.slice();distance=view.distance;yaw=view.yaw;pitch=view.pitch;draw();};
 window.REVIEW_SET_MOTION=motion=>{visibleMotion=motion||null;draw();};
 window.REVIEW_SET_CONTROL=(id,value)=>{if($(id)){if($(id).type==='checkbox')$(id).checked=value;else $(id).value=value;draw();}};

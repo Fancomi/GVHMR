@@ -84,6 +84,11 @@ def segment_people(points, tracks, calibration, camera='cam2', *, radius=.22, mi
     height = (points - origin) @ normal
     valid = np.isfinite(uv).all(1) & (depth > 0) & (height > .04) & (height < 2.8)
     scores = np.full((len(points),len(tracks)), np.inf)
+    other_projections = {}
+    for track in tracks:
+        for name in track.get('views',{}):
+            if name!=camera and name not in other_projections:
+                other_projections[name] = calibration.project(points,name,distort=False)
     for k, track in enumerate(tracks):
         box = np.asarray(track['bbox'], dtype=float)
         wh = np.maximum(box[2:] - box[:2], 1)
@@ -98,6 +103,21 @@ def segment_people(points, tracks, calibration, camera='cam2', *, radius=.22, mi
         skeleton = _skeleton_distance(candidates, np.asarray(track['kp2d']), wh[1])
         score = np.where(np.isfinite(skeleton), skeleton + center_score*.08, center_score)
         scores[inside,k] = score
+        for name,view in track.get('views',{}).items():
+            if name==camera:continue
+            other_uv,other_depth=other_projections[name]
+            other_box=np.asarray(view['bbox'],float)
+            other_wh=np.maximum(other_box[2:]-other_box[:2],1)
+            supported=(np.isfinite(other_uv).all(1)&(other_depth>0)
+                       &(other_uv>=other_box[:2]-other_wh*.06).all(1)
+                       &(other_uv<=other_box[2:]+other_wh*.06).all(1))
+            scores[~supported,k]=np.inf
+            selected=inside&supported
+            candidate_uv=other_uv[selected]
+            center_distance=np.linalg.norm((candidate_uv-(other_box[:2]+other_box[2:])/2)/other_wh,axis=1)
+            bone_distance=_skeleton_distance(candidate_uv,np.asarray(view['kp2d']),other_wh[1])
+            other_score=np.where(np.isfinite(bone_distance),bone_distance+center_distance*.08,center_distance)
+            scores[selected,k]=(scores[selected,k]+other_score)/2
     active = np.flatnonzero(np.isfinite(scores).any(1))
     if not len(active):
         return result
@@ -113,7 +133,8 @@ def segment_people(points, tracks, calibration, camera='cam2', *, radius=.22, mi
             vote = np.bincount(nearest[local], minlength=len(tracks))
             winner = int(vote.argmax())
             # Touching athletes cannot become a single pseudo-labelled person.
-            if winner != k or vote[k] / len(local) < .90:
+            multiview=len(track.get('views',{}))>=2
+            if not multiview and (winner != k or vote[k] / len(local) < .90):
                 continue
             candidate = active[local[nearest[local] == k]]
             # Only include pixels actually supported by this athlete's box.

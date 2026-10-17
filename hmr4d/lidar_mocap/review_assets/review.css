@@ -13,3 +13,5 @@ a{color:#90c8ff}
 .embedded.stream canvas{height:0;flex:1;min-height:0;max-height:none}
 .embedded.stream .controls{flex:0 0 auto;gap:6px;margin-top:6px;font-size:11px}
 .embedded.stream .controls input[type=range]{width:65px}
+.embedded.stream.comparison-worker main{padding:0}
+.comparison-worker #status,.comparison-worker .controls{display:none}

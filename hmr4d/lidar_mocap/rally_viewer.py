@@ -626,6 +626,8 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                     return self.blob(data.manifest, "application/json", head)
                 if path == "/viewer.js":
                     return self.blob((data.root / "viewer/viewer.js").read_bytes(), "application/javascript", head)
+                if path == '/projection.js':
+                    return self.blob((Path(__file__).with_name('review_assets')/'projection.js').read_bytes(), 'application/javascript', head)
                 if path == "/api/status":
                     return self.blob(data.status(), "application/json", head)
                 if path == "/api/overlay":
