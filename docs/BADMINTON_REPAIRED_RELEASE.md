@@ -89,3 +89,33 @@ BGR 摘要均与发布观测一致，重建网格的 Brown 投影与存储网格
 先准备同一扫描的两台原生图像、各人的 GT 与两个模型网格、真实点云，再一次性提交所有视图。
 完整测试播放器应覆盖正式 test metadata 的全部唯一扫描，并显示当前 native scan / PTS；
 未准入或没有预测的帧明确缺失，不跨扫描补图或插值模型输出。
+
+## 历史原像素摘要的独立补证
+
+全量测试导出发现旧 `badminton_rallies_v1_paired` 的 cam1 journal 有两段共 13 帧的
+raw BGR 摘要与当前原片不一致：scan 5221–5224、5382–5390。生产 PyAV 13、消费端、
+首帧开始的连续解码和 18 个 seek 起点均得到一致的当前像素，未复现旧摘要。
+历史像素只留有摘要，无法单独从 SHA 还原当时生成异常的确切触发原因。
+
+执行完整测试像素审计与受影响扫描的双机全人物重验：
+
+```powershell
+uv run --no-sync python tools/audit_badminton_native_pixels.py
+```
+
+工具在独立 `outputs/badminton_native_pixel_audit_20261018/` 中输出完整审计及证据。
+本次精确检查 4,043 扫描 × 两台相机 = 8,086 张原生图像，cam2 全部匹配；
+对 13 个受影响扫描重新独立检测两台相机、按全部原生网格做唯一人物关联，
+26 个人帧的准入结果全部不变。该目录的 `investigation.json` 保留调查结论，
+`evidence/` 保留逐扫描检测 / 关联与新旧准入，`source_snapshots/` 保留实际执行源码。
+
+完整补充凭据已原子发布到
+`outputs/badminton_body_repair_v2_paired/native_pixel_corrections.json`，
+schema 为 `native-pixel-corrections/v1`。它绑定原 `training_manifest`、test metadata、
+原观测报告及每项重验文件的 SHA；每条更正明确限定 scene、camera、record index、
+精确 PTS、原摘要和复核摘要。原训练 / 发布清单、标签和样本集合全部保留。
+
+消费者仅在 `status=complete`、`all_person_admissions_unchanged=true` 且全部绑定验证通过时，
+对列出的具体帧应用新摘要；其他帧继续要求原像素严格一致。任何人物准入改变都终止补证，
+写独立变化报告；不能静默改集合、放宽像素比较或关闭原生图像审计。
+补充文件发布时使用同目录临时文件写完整 payload 后原子 rename，最终文件名不出现半成品。

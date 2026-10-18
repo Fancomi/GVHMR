@@ -85,6 +85,9 @@ proves every aggregate tensor against native-verified windows, seals the unique
 62,414-sample training view and exports gap-aware sequence and identity/point/SMPL
 lineage indexes. Consumer manifest and native projection contract:
 [docs/BADMINTON_REPAIRED_RELEASE.md](docs/BADMINTON_REPAIRED_RELEASE.md).
+`tools/audit_badminton_native_pixels.py` checks every test native pixel digest,
+reruns bilateral full-person association for affected scans and permits an
+independent, hash-bound pixel supplement only when all admissions stay unchanged.
 
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading
