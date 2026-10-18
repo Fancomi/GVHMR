@@ -532,6 +532,9 @@ def _verify_export_data(manifest):
                                      tensor_sha256=tensor_sha,metadata_sha256=metadata_sha,
                                      export_hashes_bound_in_manifest='sha256' in entry and 'metadata_sha256' in entry)
     result['accepted']=sum(e['accepted'] for e in result['sessions'].values())
+    if source.get("required_nonempty_splits"):
+        from .export import require_nonempty_splits
+        require_nonempty_splits(dict(manifest, required_nonempty_splits=source["required_nonempty_splits"]))
     if result['accepted']!=manifest['accepted']:raise ValueError('Delivered total differs from manifest')
     assigned=set()
     for name,split in manifest.get('suggested_session_splits',{}).items():

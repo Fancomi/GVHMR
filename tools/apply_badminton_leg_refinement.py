@@ -277,10 +277,13 @@ def main():
         write_json(root / "leg_refinement_receipt.json", receipt)
     pipeline = BadmintonPipeline(cal.data["sessions_root"], "D:/PROJECT/LIDAR/lidar_project", labels)
     pipeline.calibration = cal
-    aggregate = pipeline.aggregate(sorted({j["source_id"] for j in plan["jobs"]}))
+    original_union = read_json(plan["source_union"])
+    aggregate_sources = sorted({j["source_id"] for j in plan["jobs"]})
+    if original_union.get("schema") == "badminton-new-source-repair-input-v1":
+        aggregate_sources = sorted({sid for ids in original_union["session_splits"].values() for sid in ids})
+    aggregate = pipeline.aggregate(aggregate_sources)
     # Keep the existing seven-source session protocol; the legacy aggregate's
     # first-three-source suggestion is insufficient for this candidate run.
-    original_union = read_json(plan["source_union"])
     splits = {}
     assigned = []
     for name, reference in original_union["suggested_session_splits"].items():
@@ -307,6 +310,10 @@ def main():
         training_published=False,
         admission="body_QA_candidates_pending_dual_camera_export",
     )
+    if original_union.get("schema") == "badminton-new-source-repair-input-v1":
+        from hmr4d.lidar_mocap.export import require_nonempty_splits
+        aggregate["required_nonempty_splits"] = ["train", "val", "test"]
+        require_nonempty_splits(aggregate)
     write_json(labels / "datasets/dataset_manifest.json", aggregate)
     receipt.update(
         state="complete",

@@ -84,6 +84,16 @@ def validate_session_splits(splits, sources):
     return {name: list(splits[name]) for name in ("train", "val", "test")}
 
 
+def validate_split_windows(splits, sources):
+    """Prepared paired windows, rather than source names, must populate each split."""
+    counts = {name: sum(sources.get(sid, {}).get("fit_windows", 0) for sid in ids)
+              for name, ids in splits.items()}
+    empty = [name for name, count in counts.items() if count < 1]
+    if empty:
+        raise ValueError("No usable prepared paired window in split(s): " + ", ".join(empty))
+    return counts
+
+
 class RallyPipeline(BadmintonPipeline):
     def __init__(self, intake, output_root, baseline_root, lidar_project_root, *, calibration_dir=None, session_splits=None):
         self.intake_path = Path(intake).resolve()
@@ -145,7 +155,6 @@ class RallyPipeline(BadmintonPipeline):
         split_path = self.output_root / "session_splits.json"
         if split_path.exists() and read_json(split_path) != self.session_splits:
             raise ValueError("Run session split changed; use a new output root")
-        write_json(split_path, self.session_splits)
         registry = dict(
             schema="badminton-rally-run-source-registry-v1",
             data_root=str(self.data_root),
@@ -191,6 +200,10 @@ class RallyPipeline(BadmintonPipeline):
                 excluded=None,
                 failures=[],
             )
+        if self.calibration_dir is not None:
+            state["split_fit_windows"] = validate_split_windows(self.session_splits, state["sources"])
+        # A failed new-source window gate must not freeze an unusable split.
+        write_json(split_path, self.session_splits)
         path = self.output_root / "build_status.json"
         if not path.exists():
             write_json(path, state)

@@ -700,8 +700,16 @@ uv run --no-sync python tools/build_badminton_rallies.py --intake outputs/upstre
 ```
 
 The split JSON has nonempty train/val/test source-ID lists, each intake source
-exactly once. A chronological six-source split uses train 153618/155040/155844/161256,
-validation 162740, test 164748 (prefix each with 20261015_). These recordings were
+exactly once. The revised six-source split uses train 153618/155040/155844/164748,
+validation 161256, test 162740 (prefix each with 20261015_).
+The older native analysis reported zero rallies for the short 164748 source; this
+is a prior, not a claim about the newly processed data. Independent prepare requires
+at least one actual paired fitting window in each split, while individual zero-rally
+sources remain allowed. Counts must ultimately follow new native/paired/body-QA
+outputs; a prepared window alone does not establish a qualified body label.
+New-source body manifests explicitly require train/val/test to retain real accepted
+samples; the standard bilateral verifier repeats this count check before publication.
+An individual source can remain an empty tensor without invented samples. These recordings were
 reviewed for calibration; this is not a blind calibration test or a guarantee of
 independent physical people. The selected lists freeze in session_splits.json;
 changed splits require a new output root.

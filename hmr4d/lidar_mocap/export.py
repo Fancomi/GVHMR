@@ -58,3 +58,16 @@ def export_joblib(samples, output_path):
             'fields':{k:list(v.shape) for k,v in data.items() if torch.is_tensor(v)},
             'coordinate_space':'lidar_viewer_xyz_m', 'transl_convention':'shaped_pelvis_position',
             'cloud_source':'segmented_actual_fixed24_returns'}
+
+
+def require_nonempty_splits(dataset):
+    """Enforce explicitly required usable partitions without rejecting empty sources."""
+    counts = {}
+    for name in dataset.get("required_nonempty_splits", []):
+        split = dataset.get("suggested_session_splits", {}).get(name)
+        if split is None:
+            raise ValueError("Missing required training partition: " + name)
+        counts[name] = sum(dataset["exports"][sid]["accepted"] for sid in split["sessions"])
+        if counts[name] < 1:
+            raise ValueError("No accepted body samples in required split: " + name)
+    return counts

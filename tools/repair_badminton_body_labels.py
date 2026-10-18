@@ -250,7 +250,12 @@ def main():
             write_json(root/f'repair_receipt_{args.source[0]}.json',dict(state='partition_complete',windows=len(completed),source=args.source[0],training_published=False))
             print(f'Partition complete: {len(completed)} windows; full aggregate deferred',flush=True)
             return
-        result = pipeline.aggregate(sorted({sid for sid, _ in jobs}))
+        aggregate_sources = sorted({sid for sid, _ in jobs})
+        if fresh_sources:
+            # Keep declared zero-rally sources as empty tensors, never fabricate
+            # samples or silently drop them from the exhaustive session split.
+            aggregate_sources = sorted({sid for ids in read_json(args.union)["session_splits"].values() for sid in ids})
+        result = pipeline.aggregate(aggregate_sources)
         if fresh_sources:
             from hmr4d.lidar_mocap.rally_pipeline import validate_session_splits
             splits = validate_session_splits(read_json(args.union)["session_splits"], result["exports"])
@@ -261,6 +266,9 @@ def main():
             result["source_registry_sha256"] = file_sha(root / "source_registry.json")
             result["body_policy"] = "native_dual_pose_ray_filter_shared_shape_v2_before_leg_postpass"
             result["training_published"] = False
+            result["required_nonempty_splits"] = ["train", "val", "test"]
+            from hmr4d.lidar_mocap.export import require_nonempty_splits
+            require_nonempty_splits(result)
             write_json(root / "datasets/dataset_manifest.json", result)
         write_json(
             root / "repair_receipt.json",
