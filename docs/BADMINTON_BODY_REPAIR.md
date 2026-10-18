@@ -124,3 +124,6 @@ HTTP 与离线浏览器检查均覆盖十段全部 50 帧、原生 RGB、同步 
 已删除早期 case / pilot 拟合、重复关联缓存、旧 tracking 候选、旧静态报告、
 临时脚部优化及调试脚本。`maintenance_receipt.json` 记录本次清理类别与最终收据检查。
 有效代码保留在 `hmr4d/lidar_mocap/`，正式命令保留在 `tools/`；`.local/` 不作为运行输入。
+
+修复候选的正式双机准入、固定 62,414 训练视图、序列索引和双机投影契约见
+[修复版训练发布](BADMINTON_REPAIRED_RELEASE.md)。
