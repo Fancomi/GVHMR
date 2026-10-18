@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -172,6 +173,44 @@ class CalibrationTests(unittest.TestCase):
     def tearDown(self):
         self.workspace_patch.stop()
         self.temp.cleanup()
+
+    def test_explicit_independent_bundle_preserves_default_and_rejects_escape(self):
+        f = self.fixture
+        alternate = f.project / "config/calibration/badminton-20261015"
+        shutil.copytree(f.base, alternate)
+        first = f.freeze()
+        separate = CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace / "independent",
+                                              calibration_dir=alternate)
+        self.assertEqual(first.data["configuration_files_sha256"], separate.data["configuration_files_sha256"])
+        self.assertEqual(separate.data["artifacts"]["evidence/calibration.json"]["source_path"],
+                         str(alternate / "calibration.json"))
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace / "bad",
+                                       calibration_dir=f.workspace)
+
+    def test_explicit_index_freeze_uses_imported_pairs_without_canonical_sessions(self):
+        from hmr4d.lidar_mocap import source_index as source_module
+        f = self.fixture
+        def binding(path):
+            return dict(file=str(path.relative_to(f.sessions)), sha256=sha(path.read_bytes()))
+        session = SessionIndex.load(f.session)
+        hashes = {name: sha((f.base / name).read_bytes()) for name in module._CONFIG_FILES}
+        session.source_index = dict(
+            accepted_calibration_sha256=hashes["calibration.json"], accepted_bundle_sha256=hashes,
+            source_manifest=binding(f.manifest_path), common_clock=binding(f.clock_path),
+            canonical_video_sidecars={cam: binding(f.video / (cam + ".frames.jsonl")) for cam in ("cam1", "cam2")})
+        index = f.sessions / "index.json"
+        index.write_text("{}")
+        with patch.object(source_module.SourceIndexedSession, "load_source_index", return_value=session):
+            result = CalibrationSnapshot.freeze(
+                f.project, f.sessions / "missing-layout", f.output, calibration_dir=f.base,
+                source_indexes={f.sid: binding(index)}, data_root=f.sessions)
+        self.assertEqual(result.data["sessions"][f.sid]["frame_count"], len(session.pairs()))
+        session.source_index["accepted_calibration_sha256"] = "0" * 64
+        with patch.object(source_module.SourceIndexedSession, "load_source_index", return_value=session):
+            with self.assertRaisesRegex(ValueError, "another calibration"):
+                CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace / "wrong-index",
+                    source_indexes={f.sid: binding(index)}, data_root=f.sessions)
 
     def test_canonical_five_files_and_original_source_sha_are_distinct(self):
         snapshot = self.fixture.freeze()

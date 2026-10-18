@@ -64,14 +64,18 @@ def main():
     parser.add_argument("--output-root", type=Path, default=PROJ_ROOT / "outputs/badminton_rallies_v1")
     parser.add_argument("--baseline-root", type=Path, default=PROJ_ROOT / "outputs/badminton_corner_fix_v1_continuity")
     parser.add_argument("--lidar-project-root", type=Path, default=Path("D:/PROJECT/LIDAR/lidar_project"))
+    parser.add_argument("--calibration-dir", type=Path, help="Explicit adopted five-file bundle inside lidar-project-root")
+    parser.add_argument("--session-splits", type=Path, help="JSON train/val/test source lists; required for independent calibration")
     parser.add_argument("--stage", choices=("prepare", "teacher", "fit", "run", "export", "publish"), default="run")
     parser.add_argument("--wait", action="store_true", help="Publish only: wait for the running body build to finish")
     parser.add_argument(
         "--threads", type=int, default=8, help="CPU tensor threads; limits oversubscription during production"
     )
     args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be positive")
     published = args.output_root.with_name(args.output_root.name + "_paired") / "datasets/dataset_manifest.json"
-    if published.exists() and args.stage in ("run", "fit", "teacher", "export"):
+    if published.exists() and args.calibration_dir is None and args.stage in ("run", "fit", "teacher", "export"):
         from hmr4d.lidar_mocap.dual_view import verify_export
 
         print(json.dumps(verify_export(published.parent.parent), indent=2), flush=True)
@@ -94,8 +98,16 @@ def main():
     import cv2
 
     torch.set_num_threads(args.threads)
-    cv2.setNumThreads(2)
-    pipeline = RallyPipeline(args.intake, args.output_root, args.baseline_root, args.lidar_project_root)
+    cv2.setNumThreads(min(2, args.threads))
+    splits = json.loads(args.session_splits.read_text(encoding="utf-8-sig")) if args.session_splits else None
+    pipeline = RallyPipeline(args.intake, args.output_root, args.baseline_root, args.lidar_project_root,
+                             calibration_dir=args.calibration_dir, session_splits=splits)
+    if published.exists() and args.calibration_dir is not None and args.stage in ("run", "fit", "teacher", "export"):
+        pipeline.prepare()  # Reject changed explicit bundle/split before accepting a published cache.
+        from hmr4d.lidar_mocap.dual_view import verify_export
+
+        print(json.dumps(verify_export(published.parent.parent), indent=2), flush=True)
+        return
     if args.stage == "prepare":
         result = pipeline.prepare()
     elif args.stage == "export":

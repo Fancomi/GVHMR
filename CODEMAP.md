@@ -78,6 +78,10 @@ independent of disposable logs. Verified teacher seeds are optional.
 applies guarded corrections with backups, repeats native/body checks and
 regenerates the ten old/new clips before sealing the final receipt.
 
+Independent adopted days use the same rally entry with `--calibration-dir` and
+`--session-splits`; source-only runs freeze admitted source indexes without reading
+old baseline fits. See docs/INSTALL.md for the contract.
+
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw
 recordings, fits bodies with fixed cameras, and never refines camera parameters.

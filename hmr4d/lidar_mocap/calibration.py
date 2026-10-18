@@ -144,7 +144,7 @@ class CalibrationSnapshot:
         self._validate_geometry()
 
     @classmethod
-    def freeze(cls, lidar_project_root, sessions_root, output_dir):
+    def freeze(cls, lidar_project_root, sessions_root, output_dir, *, calibration_dir=None, source_indexes=None, data_root=None):
         source_root = Path(lidar_project_root).resolve()
         sessions_root = Path(sessions_root).resolve()
         output_dir = Path(output_dir).resolve()
@@ -152,7 +152,7 @@ class CalibrationSnapshot:
             raise ValueError("Calibration output_dir must remain inside the GVHMR workspace")
         if output_dir.is_relative_to(source_root) or output_dir.is_relative_to(sessions_root):
             raise ValueError("Calibration snapshots cannot be written into either source root")
-        config_dir = _bounded(source_root, _CONFIG_RELATIVE)
+        config_dir = _bounded(source_root, calibration_dir if calibration_dir is not None else _CONFIG_RELATIVE)
         inputs = {_bounded(config_dir, name): _checked_blob(_bounded(config_dir, name)) for name in _CONFIG_FILES}
         blobs = {f"evidence/{name}": inputs[_bounded(config_dir, name)] for name in _CONFIG_FILES}
         hashes = {name: _sha(blobs[f"evidence/{name}"]) for name in _CONFIG_FILES}
@@ -209,15 +209,33 @@ class CalibrationSnapshot:
             sid = entry["source_id"]
             if not isinstance(sid, str) or Path(sid).name != sid or sid in (".", ".."):
                 raise ValueError("Invalid canonical source identity")
-            session_dir = _bounded(sessions_root, sid)
-            manifest_path = _bounded(session_dir, Path("output-lidar") / f"lidar_{sid}" / "manifest.json")
-            clock_path = _bounded(session_dir, Path("meta") / sid / f"{sid}_common_clock.json")
-            sidecars = {name: _bounded(session_dir, Path("output-zcam") / f"zcam_{sid}" / f"{name}.frames.jsonl")
-                        for name in ("cam1", "cam2")}
+            if source_indexes is not None:
+                from .source_index import SourceIndexedSession, _bound_file, video_sidecar_contract
+                if data_root is None or set(source_indexes) != set(ids):
+                    raise ValueError("Explicit source indexes must cover the calibration source identities")
+                index_entry = source_indexes[sid]
+                index_path = _bound_file(Path(data_root).resolve(), index_entry)
+                session = SourceIndexedSession.load_source_index(
+                    index_path, data_root, expected_sha256=index_entry["sha256"])
+                index = session.source_index
+                if (index.get("accepted_calibration_sha256") != hashes["calibration.json"]
+                        or index.get("accepted_bundle_sha256") != hashes):
+                    raise ValueError("Explicit source index is bound to another calibration")
+                manifest_path = _bound_file(Path(data_root).resolve(), index["source_manifest"])
+                clock_path = _bound_file(Path(data_root).resolve(), index["common_clock"])
+                _, bindings = video_sidecar_contract(index)
+                sidecars = {name: _bound_file(Path(data_root).resolve(), bindings[name]) for name in ("cam1", "cam2")}
+                inputs[index_path] = _checked_blob(index_path, index_entry["sha256"])
+            else:
+                session_dir = _bounded(sessions_root, sid)
+                manifest_path = _bounded(session_dir, Path("output-lidar") / f"lidar_{sid}" / "manifest.json")
+                clock_path = _bounded(session_dir, Path("meta") / sid / f"{sid}_common_clock.json")
+                sidecars = {name: _bounded(session_dir, Path("output-zcam") / f"zcam_{sid}" / f"{name}.frames.jsonl")
+                            for name in ("cam1", "cam2")}
+                session = SessionIndex.load(session_dir)
             raw_paths = [manifest_path, clock_path, *sidecars.values()]
             for path in raw_paths:
                 inputs[path] = _checked_blob(path)
-            session = SessionIndex.load(session_dir)
             if not np.array_equal(session.Q, q):
                 raise ValueError("Canonical calibration and actual source M disagree")
             rows = []

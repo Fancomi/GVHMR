@@ -687,3 +687,48 @@ inputs/
 ├── EMDB/hmr4d_support/
 └── RICH/hmr4d_support/
 ```
+
+
+### Independent adopted calibration and source-only rally runs
+
+Use the existing rally entry with an explicit five-file bundle inside the LiDAR
+project and an exhaustive whole-source split. Never overwrite 1012 or reuse
+body labels fitted with another camera:
+
+```powershell
+uv run --no-sync python tools/build_badminton_rallies.py --intake outputs/upstream_1015_v2/verification.json --output-root outputs/badminton_1015_v2 --calibration-dir D:/PROJECT/LIDAR/lidar_project/config/calibration/badminton-20261015 --session-splits outputs/upstream_1015_v2/session_splits.json --threads 1 --stage prepare
+```
+
+The split JSON has nonempty train/val/test source-ID lists, each intake source
+exactly once. A chronological six-source split uses train 153618/155040/155844/161256,
+validation 162740, test 164748 (prefix each with 20261015_). These recordings were
+reviewed for calibration; this is not a blind calibration test or a guarantee of
+independent physical people. The selected lists freeze in session_splits.json;
+changed splits require a new output root.
+
+When every inventory source has baseline:false, preparation never reads or copies
+old baseline fits. Admitted source indexes provide raw fixed24 members, original
+device clocks and selected camera rows, including verified dataset-only contracts.
+No canonical sessions layout or copied media is required. Source indexes and their
+applicability certificates bind the actual five-file bundle hashes. The sources.json
+frame-map hashes bind compact serialization of these selected pairs; camera
+selection is not recomputed. Original canonical loading and seven-source defaults
+remain supported. Acquisition/inventory schemas and prepare_badminton_rallies.py
+remain unchanged.
+
+This adapter establishes source/calibration intake only. The existing --stage run
+and --stage fit still execute the original rally body fitter; they do not enable
+the validated body-repair v2 policy automatically. Do not publish new 1015 labels
+through those stages as if they used the repaired policy. The v2 recipe in
+BADMINTON_BODY_REPAIR.md additionally requires native dual-camera observations,
+reviewed identity decisions, contradictory-ray filtering, shared shape, distal
+pose weight 0.03, lower-limb weight 2 and guarded continuous leg refinement.
+Its current repair entry consumes already published source windows, so a new-source
+orchestration adapter remains necessary before six-source body production.
+
+--threads 1 limits Torch/OpenCV CPU threads. This intake adapter changes no body
+fitting algorithm and does not launch production during prepare. The existing
+serve_badminton_rallies.py --output-root argument selects the new run; use its
+bbox-bound --display-crop when applicable. The baseline viewer argument is unused
+for source-only intakes. GPU stages require bounded per-window execution and no
+concurrent heavy jobs.

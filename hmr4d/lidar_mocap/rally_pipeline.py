@@ -70,14 +70,29 @@ def select_window_pairs(pairs, eligible, seconds=60):
     ]
 
 
+def validate_session_splits(splits, sources):
+    """Require explicit disjoint, exhaustive whole-source splits for new intakes."""
+    if not isinstance(splits, dict) or set(splits) != {"train", "val", "test"}:
+        raise ValueError("Session splits require train, val and test")
+    if any(not isinstance(v, list) or not v for v in splits.values()):
+        raise ValueError("Each session split must be a nonempty list")
+    flattened = [sid for values in splits.values() for sid in values]
+    if any(not isinstance(sid, str) for sid in flattened):
+        raise ValueError("Session split identities must be strings")
+    if len(flattened) != len(set(flattened)) or set(flattened) != set(sources):
+        raise ValueError("Session splits must cover each source exactly once")
+    return {name: list(splits[name]) for name in ("train", "val", "test")}
+
+
 class RallyPipeline(BadmintonPipeline):
-    def __init__(self, intake, output_root, baseline_root, lidar_project_root):
+    def __init__(self, intake, output_root, baseline_root, lidar_project_root, *, calibration_dir=None, session_splits=None):
         self.intake_path = Path(intake).resolve()
         self.intake = read_json(self.intake_path)
         if self.intake.get("schema") != "badminton-rally-intake-verification-v1":
             raise ValueError("A verified sealed rally intake is required")
         self.data_root = Path(self.intake["data_root"]).resolve()
-        self.baseline_root = Path(baseline_root).resolve()
+        self.baseline_root = Path(baseline_root).resolve() if baseline_root is not None else None
+        self.calibration_dir = calibration_dir
         ranges = self.intake["prepared_ranges"]
         if file_sha(ranges["path"]) != ranges["sha256"]:
             raise ValueError("Prepared rally range hash changed")
@@ -97,6 +112,16 @@ class RallyPipeline(BadmintonPipeline):
             raise ValueError("Sealed rally inventory changed")
         self.inventory = read_json(inventory_path)
         self.source_entries = {s["source_id"]: s for s in self.inventory["sources"]}
+        self.reuse_baseline = any(entry["baseline"] for entry in self.source_entries.values())
+        if self.reuse_baseline and self.baseline_root is None:
+            raise ValueError("Baseline sources require an explicit baseline root")
+        if session_splits is None:
+            if calibration_dir is not None:
+                raise ValueError("Independent calibration requires explicit whole-source session splits")
+            session_splits = dict(
+                train=[sid for sid in self.source_entries if sid not in ("20261012_161544", "20261012_154726")],
+                val=["20261012_161544"], test=["20261012_154726"])
+        self.session_splits = validate_session_splits(session_splits, self.source_entries)
         super().__init__(
             self.data_root / "sessions", lidar_project_root, output_root, preproc_precision="float16", roi_margin_px=20
         )
@@ -104,14 +129,23 @@ class RallyPipeline(BadmintonPipeline):
 
     def prepare(self):
         destination = self.output_root / "calibration"
-        if not (destination / "calibration_snapshot.json").exists():
+        if self.reuse_baseline and not (destination / "calibration_snapshot.json").exists():
             shutil.copytree(self.baseline_root / "calibration", destination, dirs_exist_ok=True)
         # This validates current canonical inputs against the preserved legacy
         # snapshot's numerical/source equivalence; it never rewrites old bytes.
-        self.calibration = CalibrationSnapshot.freeze(self.lidar_project_root, self.sessions_root, destination)
-        baseline = read_json(self.baseline_root / "datasets/dataset_manifest.json")
-        if baseline["calibration_digest"] != self.calibration.data["snapshot_digest"]:
-            raise ValueError("Baseline fit calibration differs from the frozen run")
+        self.calibration = CalibrationSnapshot.freeze(
+            self.lidar_project_root, self.sessions_root, destination, calibration_dir=self.calibration_dir,
+            source_indexes=({sid: entry["source_index"] for sid, entry in self.source_entries.items()}
+                            if self.calibration_dir is not None and not self.reuse_baseline else None),
+            data_root=self.data_root)
+        if self.reuse_baseline:
+            baseline = read_json(self.baseline_root / "datasets/dataset_manifest.json")
+            if baseline["calibration_digest"] != self.calibration.data["snapshot_digest"]:
+                raise ValueError("Baseline fit calibration differs from the frozen run")
+        split_path = self.output_root / "session_splits.json"
+        if split_path.exists() and read_json(split_path) != self.session_splits:
+            raise ValueError("Run session split changed; use a new output root")
+        write_json(split_path, self.session_splits)
         registry = dict(
             schema="badminton-rally-run-source-registry-v1",
             data_root=str(self.data_root),
@@ -179,6 +213,11 @@ class RallyPipeline(BadmintonPipeline):
                     raise ValueError("Baseline source/calibration binding differs from the sealed rally source")
             else:
                 index = session.source_index
+                if self.calibration_dir is not None:
+                    expected = self.calibration.data["configuration_files_sha256"]
+                    if (index.get("accepted_calibration_sha256") != expected["calibration.json"]
+                            or index.get("accepted_bundle_sha256") != expected):
+                        raise ValueError("Source index calibration differs from the independent frozen bundle")
                 for name in ("source_manifest", "common_clock", "frame_map"):
                     if index[name]["sha256"] != entry[name + "_sha256"]:
                         raise ValueError("Source index/inventory mismatch")
@@ -240,7 +279,7 @@ class RallyPipeline(BadmintonPipeline):
     def aggregate(self, session_ids=None):
         import joblib
 
-        baseline = read_json(self.baseline_root / "datasets/dataset_manifest.json")
+        baseline = read_json(self.baseline_root / "datasets/dataset_manifest.json") if self.reuse_baseline else {}
         exports = {}
         selected_windows = {}
         window_roots = {}
@@ -319,13 +358,7 @@ class RallyPipeline(BadmintonPipeline):
                 accepted=len(samples),
                 excluded=len(all_rows) - len(samples),
             )
-        # User explicitly switched old163452 to train and old154726 to test.
-        # This is a new split; old results and the old dataset remain intact.
-        split_sessions = dict(
-            train=[sid for sid in exports if sid not in ("20261012_161544", "20261012_154726")],
-            val=["20261012_161544"],
-            test=["20261012_154726"],
-        )
+        split_sessions = self.session_splits
         result = dict(
             schema="badminton-ptv3-dataset-v1",
             exports=exports,
@@ -336,7 +369,7 @@ class RallyPipeline(BadmintonPipeline):
             selected_windows=selected_windows,
             window_roots=window_roots,
             baseline_reuse_bindings=bindings,
-            fit_roots=[str(self.output_root / "sessions"), str(self.baseline_root / "sessions")],
+            fit_roots=[str(self.output_root / "sessions")] + ([str(self.baseline_root / "sessions")] if self.reuse_baseline else []),
             source_registry=str(self.output_root / "source_registry.json"),
             source_registry_sha256=file_sha(self.output_root / "source_registry.json"),
             calibration_digest=self.calibration.data["snapshot_digest"],
@@ -345,7 +378,7 @@ class RallyPipeline(BadmintonPipeline):
             shape_basis="SMPL fitted; never copied from SMPL-X",
             point_count=256,
             coordinate_space="lidar_viewer_xyz_m",
-            scope="sealed_seven_source_rally_subset",
+            scope="sealed_seven_source_rally_subset" if self.calibration_dir is None else "sealed_multi_source_rally_subset",
         )
         write_json(self.output_root / "datasets/dataset_manifest.json", result)
         state.update(state="body_labels_complete", body_qa_accepted=result["accepted"])
