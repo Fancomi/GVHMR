@@ -88,6 +88,12 @@ lineage indexes. Consumer manifest and native projection contract:
 `tools/audit_badminton_native_pixels.py` checks every test native pixel digest,
 reruns bilateral full-person association for affected scans and permits an
 independent, hash-bound pixel supplement only when all admissions stay unchanged.
+`tools/assemble_badminton_expansion.py` / `expanded_dataset.py` assembles a
+provisional complete-old-plus-new union against the consumer's frozen contract.
+It preserves all old role rows as exact tensor and metadata-byte prefixes,
+keeps every source's own calibration and includes declared zero-sample sources.
+Only `assembly_manifest.json` is written: final native pixel and browser
+acceptance are still required before consumer publication.
 
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading
