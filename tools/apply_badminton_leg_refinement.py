@@ -106,7 +106,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--prepare-only", action="store_true")
+    p.add_argument("--threads", type=int, default=2)
     args = p.parse_args()
+    if args.threads < 1:
+        p.error("--threads must be positive")
     root = args.root.resolve()
     labels = root / "final_labels"
     plan = read_json(labels / "repair_plan.json")
@@ -127,14 +130,18 @@ def main():
     ):
         raise ValueError("Sealed leg policy changed")
     cal = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
-    torch.set_num_threads(2)
+    torch.set_num_threads(args.threads)
     device = "cuda"
-    import base64
-
-    viewer = read_json(PROJ_ROOT / "outputs/badminton_rallies_v1/viewer/manifest.json")
-    faces = torch.as_tensor(
-        np.frombuffer(base64.b64decode(viewer["faces"]), dtype="<u2").astype(np.int64), device=device
-    ).reshape(-1, 3)
+    if read_json(plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
+        import smplx
+        topology = smplx.create(PROJ_ROOT / "inputs/checkpoints/body_models", model_type="smpl", gender="neutral")
+        faces = torch.as_tensor(topology.faces.astype(np.int64), device=device)
+    else:
+        import base64
+        viewer = read_json(PROJ_ROOT / "outputs/badminton_rallies_v1/viewer/manifest.json")
+        faces = torch.as_tensor(
+            np.frombuffer(base64.b64decode(viewer["faces"]), dtype="<u2").astype(np.int64), device=device
+        ).reshape(-1, 3)
     reg = torch.load(
         PROJ_ROOT / "hmr4d/utils/body_model/smpl_coco17_J_regressor.pt", map_location=device, weights_only=False
     )

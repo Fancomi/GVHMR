@@ -48,7 +48,17 @@ def main():
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--threads", type=int, default=4)
     args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be positive")
     torch.set_num_threads(args.threads)
+    import cv2
+    cv2.setNumThreads(args.threads)
+    fresh_sources = read_json(args.union).get("schema") == "badminton-new-source-repair-input-v1"
+    if fresh_sources:
+        prepared = read_json(args.union)
+        if (args.source_root.resolve() != Path(prepared["source_root"]).resolve()
+                or file_sha(args.source_root / "source_registry.json") != prepared["source_registry_sha256"]):
+            raise ValueError("New-source source-root/registry differs from its prepared input")
     root = args.output_root.resolve()
     if (root/'post_refinement.json').exists():
         raise ValueError('This candidate root contains sealed postprocessed labels; use a fresh output root for baseline fitting')
@@ -81,7 +91,16 @@ def main():
         lower_limb_reprojection_weight=args.lower_limb_reprojection_weight,
     )
     provider = RayFilteredPoseProvider if args.joint_ray_filter else NativePoseProvider
-    poses = provider(args.native_poses_root, calibration) if args.native_poses_root else None
+    poses = provider(args.native_poses_root, calibration) if args.native_poses_root and args.stage != "prepare" else None
+    if fresh_sources and args.stage not in ("prepare", "teacher"):
+        if not args.joint_ray_filter or not args.native_poses_root or not args.identity_decisions:
+            raise ValueError("New-source fitting requires native dual poses, ray filtering and reviewed identity evidence")
+        identity = read_json(args.identity_decisions)
+        if identity.get("review_status") != "reviewed" or not identity.get("evidence_files"):
+            raise ValueError("New-source identity evidence remains pending")
+        required = {sid + ":" + window.name for sid, window in jobs}
+        if not required <= set(identity.get("windows", {})):
+            raise ValueError("Some selected new-source identity windows remain pending")
     plan = dict(
         schema="badminton-body-repair-plan-v1",
         source_union=str(args.union.resolve()),
@@ -101,6 +120,8 @@ def main():
         if full['source_union_sha256']!=plan['source_union_sha256'] or not {(j['source_id'],j['source_window']) for j in plan['jobs']} <= {(j['source_id'],j['source_window']) for j in full['jobs']}:
             raise ValueError('Partition is not part of the frozen full plan')
     else:
+        if fresh_sources and (root / "repair_plan.json").exists() and read_json(root / "repair_plan.json") != plan:
+            raise ValueError("New-source repair inputs/settings changed; use a new root")
         write_json(root / "repair_plan.json", plan)
     if args.stage == "prepare":
         print(f"Prepared {len(jobs)} frozen windows; no inference or training publication", flush=True)
@@ -131,7 +152,7 @@ def main():
         manifest = read_json(original / "teacher/manifest.json")
         if _jsonable(calibration.camera(pipeline.settings["camera"])) != manifest["provenance"]["camera"]:
             raise ValueError("Original teacher camera differs from the frozen repair camera")
-        if read_json(original / "fit_report.json")["teacher_provenance_hash"] != manifest["provenance_hash"]:
+        if not fresh_sources and read_json(original / "fit_report.json")["teacher_provenance_hash"] != manifest["provenance_hash"]:
             raise ValueError("Original fit and teacher provenance differ")
         options = dict(manifest["provenance"]["options"], max_track_gap_frames=6)
         decision = decisions["windows"].get(sid + ":" + original.name) if decisions else None
@@ -194,7 +215,7 @@ def main():
         )
         started = time.perf_counter()
         fitter = SMPLFitter(device=args.device, config=cfg)
-        segments = None if args.no_segment_cache else FrozenSegmentCache(original, pairs, plan["calibration_digest"])
+        segments = None if args.no_segment_cache or fresh_sources else FrozenSegmentCache(original, pairs, plan["calibration_digest"])
         report = pipeline._fit_window(
             session, pairs, teacher, output, fitter, segment_cache=segments, pose_provider=poses
         )
@@ -230,6 +251,17 @@ def main():
             print(f'Partition complete: {len(completed)} windows; full aggregate deferred',flush=True)
             return
         result = pipeline.aggregate(sorted({sid for sid, _ in jobs}))
+        if fresh_sources:
+            from hmr4d.lidar_mocap.rally_pipeline import validate_session_splits
+            splits = validate_session_splits(read_json(args.union)["session_splits"], result["exports"])
+            result["suggested_session_splits"] = {
+                name: dict(sessions=sids, accepted=sum(result["exports"][sid]["accepted"] for sid in sids))
+                for name, sids in splits.items()}
+            result["source_registry"] = str(root / "source_registry.json")
+            result["source_registry_sha256"] = file_sha(root / "source_registry.json")
+            result["body_policy"] = "native_dual_pose_ray_filter_shared_shape_v2_before_leg_postpass"
+            result["training_published"] = False
+            write_json(root / "datasets/dataset_manifest.json", result)
         write_json(
             root / "repair_receipt.json",
             dict(

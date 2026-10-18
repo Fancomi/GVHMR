@@ -17,10 +17,13 @@ def main():
     parser.add_argument('--output-root',type=Path,default=Path('outputs/badminton'))
     parser.add_argument('--samples-per-session',type=int,default=16)
     parser.add_argument('--report',type=Path,help='Write verification here when inspecting an immutable historical run')
+    parser.add_argument("--threads", type=int, default=4)
     args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be positive")
     if args.samples_per_session<1:
         parser.error('samples-per-session must be positive')
-    torch.set_num_threads(4)
+    torch.set_num_threads(args.threads)
     calibration = CalibrationSnapshot.load(args.output_root/'calibration/calibration_snapshot.json')
     manifest = json.loads((args.output_root/'datasets/dataset_manifest.json').read_text(encoding='utf-8'))
     model = smplx.create(PROJ_ROOT/'inputs/checkpoints/body_models',model_type='smpl',gender='neutral').eval()

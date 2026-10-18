@@ -43,13 +43,17 @@ def main():
     p.add_argument("--source", action="append")
     p.add_argument("--precision", choices=("float32", "float16"), default="float16")
     p.add_argument("--reuse-poses-root", type=Path)
+    p.add_argument("--threads", type=int, default=4)
     args = p.parse_args()
-    torch.set_num_threads(4)
+    if args.threads < 1:
+        p.error("--threads must be positive")
+    torch.set_num_threads(args.threads)
+    cv2.setNumThreads(args.threads)
     cal = CalibrationSnapshot.load(args.source_root / "calibration/calibration_snapshot.json")
     plan = read_json(args.root / "case_plan.json")
     if file_sha(plan["source_union"]) != plan["source_union_sha256"]:
         raise ValueError("Frozen union changed")
-    checker = RGBKeypointChecker(cal, camera_name="cam1", device=args.device, threads=4, pose_batch_size=4)
+    checker = RGBKeypointChecker(cal, camera_name="cam1", device=args.device, threads=args.threads, pose_batch_size=4)
     config = dict(
         calibration_digest=cal.data["snapshot_digest"],
         models=checker.models,
@@ -210,7 +214,7 @@ def main():
     write_json(
         args.root / "pose_receipt.json",
         dict(
-            state="complete",
+            state="complete" if not args.source or set(args.source) >= set(plan["selected_scans"]) else "partial",
             config=config,
             config_digest=config_digest,
             computed=total,

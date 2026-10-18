@@ -147,16 +147,21 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--wait", action="store_true")
+    p.add_argument("--threads", type=int, default=2)
     args = p.parse_args()
+    if args.threads < 1:
+        p.error("--threads must be positive")
     root = args.root
     labels = root / "final_labels"
-    torch.set_num_threads(2)
+    torch.set_num_threads(args.threads)
     plan = read_json(labels / "repair_plan.json")
     decisions = read_json(root / "identity_evidence/identity_decisions.json")
     if file_sha(plan["source_union"]) != plan["source_union_sha256"]:
         raise ValueError("Original published union changed")
-    replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
-    maps = {(w["source_id"], w["window_id"]): w["mapping"] for w in replay["windows"]}
+    fresh_sources = read_json(plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1"
+    if not fresh_sources:
+        replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
+        maps = {(w["source_id"], w["window_id"]): w["mapping"] for w in replay["windows"]}
     cal = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
     model = smplx.create(PROJ_ROOT / "inputs/checkpoints/body_models", model_type="smpl", gender="neutral").eval()
     out = labels / "native_verification.json"
@@ -168,6 +173,26 @@ def main():
             result["windows"].pop(key)
     if len(result["windows"]) < len(plan["jobs"]):
         result.update(passed=False, state="partial")
+    if fresh_sources:
+        # Resume only when all teacher inputs that native verification actually
+        # reads still match. Fit-report existence alone does not bind these files.
+        fingerprints = {}
+        for job in plan["jobs"]:
+            sid, source = job["source_id"], Path(job["source_window"])
+            target = labels / "sessions" / sid / "windows" / source.name
+            paths = [labels / "repair_plan.json", root / "identity_evidence/identity_decisions.json", Path(__file__)]
+            for folder in (source, target):
+                manifest_path = folder / "teacher/manifest.json"
+                if not manifest_path.exists():
+                    continue
+                manifest = read_json(manifest_path)
+                paths.append(manifest_path)
+                paths += [folder / "teacher" / entry["path"] for entry in manifest["tracks"]]
+            paths.append(source / "teacher/detections.pt")
+            key = sid + ":" + source.name
+            fingerprints[key] = {str(path): file_sha(path) for path in paths}
+            if key in result["windows"] and result["windows"][key].get("teacher_inputs_sha256") != fingerprints[key]:
+                result["windows"].pop(key)
     sessions = {}
     started = time.perf_counter()
     while len(result["windows"]) < len(plan["jobs"]):
@@ -183,11 +208,16 @@ def main():
                 continue
             if sid not in sessions:
                 sessions[sid] = load_run_session(labels, cal, sid)
-            teacher = verify_teacher(
-                source, window, decisions["windows"].get(key), np.load(maps[sid, source.name])["observations"]
-            )
+            if fresh_sources:
+                from hmr4d.lidar_mocap.new_source_repair import native_teacher_mapping
+                mapping = native_teacher_mapping(source)
+            else:
+                mapping = np.load(maps[sid, source.name])["observations"]
+            teacher = verify_teacher(source, window, decisions["windows"].get(key), mapping)
             body = verify_body(window, sessions[sid], model, cal.data["snapshot_digest"])
             result["windows"][key] = dict(teacher=teacher, body=body)
+            if fresh_sources:
+                result["windows"][key]["teacher_inputs_sha256"] = fingerprints[key]
             changed = True
             result.update(
                 verified_windows=len(result["windows"]),

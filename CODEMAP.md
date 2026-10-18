@@ -80,7 +80,13 @@ regenerates the ten old/new clips before sealing the final receipt.
 
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading
-old baseline fits. See docs/INSTALL.md for the contract.
+old baseline fits. `prepare_badminton_new_source_repair.py` freezes their exact
+windows and runs bounded initial teachers without legacy fitted labels. Existing
+native-observation, body-repair, isolated-window and finish commands then reuse
+validated v2 components; `new_source_repair.py` and `new_source_completion.py`
+provide the source-only adapters. Completion uses absolute QA and the same v2
+pre/post leg comparison, full native verification and standard bilateral export.
+See docs/INSTALL.md for input, identity evidence, resume and playback boundaries.
 
 LiDAR owns camera intrinsics/extrinsics, court registration and their joint
 projection evaluation. GVHMR consumes declared calibration results and raw

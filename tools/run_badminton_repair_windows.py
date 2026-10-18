@@ -16,7 +16,12 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--seed-teacher-root", type=Path, help="Optional verified teacher cache; no historical run is required")
+    p.add_argument("--union", type=Path, help="Explicit new-source repair input or historical published union")
+    p.add_argument("--source-root", type=Path, help="Prepared source run with frozen calibration and registry")
+    p.add_argument("--threads", type=int, default=1)
     args = p.parse_args()
+    if args.threads < 1:
+        p.error("--threads must be positive")
     root = args.root.resolve()
     labels = root / "final_labels"
     if (labels / "post_refinement.json").exists():
@@ -39,9 +44,21 @@ def main():
         "--identity-decisions",
         str(root / "identity_evidence/identity_decisions.json"),
     ]
+    command += ["--threads", str(args.threads)]
+    if args.union:
+        if str(args.union.resolve()) != str(Path(plan["source_union"]).resolve()):
+            raise ValueError("Worker union differs from the prepared repair plan")
+        command += ["--union", str(args.union.resolve())]
+    elif read_json(plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
+        raise ValueError("New-source execution requires explicit --union and --source-root")
+    if args.source_root:
+        command += ["--source-root", str(args.source_root.resolve())]
+    elif read_json(plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
+        raise ValueError("New-source execution requires explicit --source-root")
     if args.seed_teacher_root:
         command += ["--seed-teacher-root", str(args.seed_teacher_root.resolve())]
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", PYTHONFAULTHANDLER="1")
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS=str(args.threads),
+               MKL_NUM_THREADS=str(args.threads), PYTHONFAULTHANDLER="1")
     for cursor, job in enumerate(plan["jobs"], 1):
         sid = job["source_id"]
         window = Path(job["source_window"]).name

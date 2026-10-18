@@ -723,8 +723,8 @@ through those stages as if they used the repaired policy. The v2 recipe in
 BADMINTON_BODY_REPAIR.md additionally requires native dual-camera observations,
 reviewed identity decisions, contradictory-ray filtering, shared shape, distal
 pose weight 0.03, lower-limb weight 2 and guarded continuous leg refinement.
-Its current repair entry consumes already published source windows, so a new-source
-orchestration adapter remains necessary before six-source body production.
+The fresh-source adapter described below supplies prepared teacher windows to
+these same repair components without manufacturing legacy fitted labels.
 
 --threads 1 limits Torch/OpenCV CPU threads. This intake adapter changes no body
 fitting algorithm and does not launch production during prepare. The existing
@@ -732,3 +732,45 @@ serve_badminton_rallies.py --output-root argument selects the new run; use its
 bbox-bound --display-crop when applicable. The baseline viewer argument is unused
 for source-only intakes. GPU stages require bounded per-window execution and no
 concurrent heavy jobs.
+
+
+### Fresh-source native v2 body production
+
+After the independent rally prepare above, keep the same fixed cameras and run
+`prepare_badminton_new_source_repair.py --source-root <prepared-rally-run> --root <repair-run>`.
+This CPU stage freezes exact source windows, source split, native-pose case plan
+and initial teacher locations. It creates no legacy fitted bodies. Initial teacher
+inference is explicit and bounded to one window:
+`prepare_badminton_new_source_repair.py --source-root <prepared-rally-run> --root <repair-run> --stage teacher --source <id> --window <window> --threads 1`.
+Run independent dual-camera observations with
+`observe_badminton_repair_poses.py --source-root <prepared-rally-run> --root <repair-run> --threads 1`.
+Source-filtered observation calls remain partial until a complete cache validation pass.
+
+Identity starts pending. Detection/dual-camera evidence must resolve each selected
+window, preserving hashes and source teacher bindings; reviewed may be algorithmic
+or visual evidence and does not require per-frame user approval. Do not import the
+old seven-source manual exceptions. The identity decision file must bind the new
+input as source_union_sha256, the frozen camera digest, evidence_files and every
+selected window. A reviewed status does not substitute for those actual evidence
+files. Unresolved windows remain pending.
+
+Prepare the existing repair command with
+`repair_badminton_body_labels.py --stage prepare --union <repair-run>/new_source_input.json --source-root <prepared-rally-run> --output-root <repair-run>/final_labels --native-poses-root <repair-run> --joint-ray-filter --distal-pose-weight 0.03 --lower-limb-reprojection-weight 2 --identity-decisions <repair-run>/identity_evidence/identity_decisions.json --threads 1`.
+Then `run_badminton_repair_windows.py --root <repair-run> --union <repair-run>/new_source_input.json --source-root <prepared-rally-run> --threads 1` runs one native process per window, retaining v2 settings and validating cached receipts. No original fitted labels are required. New-source source-root and source-index registry are bound to the preparation, and changed repair configuration requires a new root.
+
+`finish_badminton_body_repair.py --root <repair-run> --threads 1 --observer-max-new-frames 500`
+uses the same native-member/SMPL verifier, bounded leg proposals, continuous selection,
+unchanged candidate and absolute body QA gates, application backups and standard
+bilateral detector publication. It records the actual v2 body baseline before leg
+changes and compares the same person-scans after; it does not fabricate an old fitted
+version. Native detector lineage is reproduced from the actual initial detection
+cache instead of the old seven-source replay. The final detector observation stage
+is bounded and resumable; rerun the command until publication completes.
+
+The fresh completion receipt is `new_source_completion_receipt.json`, with state
+`labels_published_viewer_prepared`. It binds final native verification, leg receipt,
+actual pre/post metrics and the independent paired dataset. The standard native
+viewer is prepared under final_labels/viewer and served by the existing rally viewer.
+Actual browser playback still requires separate verification; the completion receipt
+explicitly keeps browser_playback_verified=false. Old-source finish behavior and
+its ten-clip comparison remain unchanged.

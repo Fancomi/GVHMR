@@ -27,9 +27,18 @@ def active_baseline():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
+    p.add_argument("--threads", type=int, default=1)
+    p.add_argument("--observer-max-new-frames", type=int, default=500)
     args = p.parse_args()
+    if args.threads < 1 or args.observer_max_new_frames < 1:
+        p.error("Thread and observer limits must be positive")
     root = args.root.resolve()
     labels = root / "final_labels"
+    input_plan = read_json(labels / "repair_plan.json")
+    if read_json(input_plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
+        from hmr4d.lidar_mocap.new_source_completion import finish_new_sources
+        finish_new_sources(root, threads=args.threads, observer_max_new_frames=args.observer_max_new_frames)
+        return
     expected = len(read_json(labels / "repair_plan.json")["jobs"])
     while True:
         paths = [

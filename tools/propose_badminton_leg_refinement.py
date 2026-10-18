@@ -21,10 +21,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--wait", action="store_true")
+    p.add_argument("--threads", type=int, default=2)
     args = p.parse_args()
+    if args.threads < 1:
+        p.error("--threads must be positive")
     root = args.root.resolve()
     labels = root / "final_labels"
-    torch.set_num_threads(2)
+    torch.set_num_threads(args.threads)
     plan = read_json(labels / "repair_plan.json")
     out = root / "leg_refinement_proposals"
     out.mkdir(exist_ok=True)
