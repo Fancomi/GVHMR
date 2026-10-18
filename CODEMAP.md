@@ -78,6 +78,14 @@ independent of disposable logs. Verified teacher seeds are optional.
 applies guarded corrections with backups, repeats native/body checks and
 regenerates the ten old/new clips before sealing the final receipt.
 
+`tools/publish_badminton_repaired_pairs.py` reassociates immutable native
+detections to the repaired meshes (`repaired_pairing.py`), then uses the shared
+bilateral audit/export verifier. `tools/seal_badminton_repaired_release.py`
+proves every aggregate tensor against native-verified windows, seals the unique
+62,414-sample training view and exports gap-aware sequence and identity/point/SMPL
+lineage indexes. Consumer manifest and native projection contract:
+[docs/BADMINTON_REPAIRED_RELEASE.md](docs/BADMINTON_REPAIRED_RELEASE.md).
+
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading
 old baseline fits. `prepare_badminton_new_source_repair.py` freezes their exact
