@@ -4,10 +4,30 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from hmr4d.lidar_mocap.repair_execution import record_execution, repair_efficiency
+from hmr4d.lidar_mocap.repair_execution import record_execution, repair_efficiency, require_gpu_lease
 
 
 class RepairExecutionTests(unittest.TestCase):
+    def test_foreign_gpu_lease_owner_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "lease.json"
+            path.write_text(json.dumps(dict(status="held", owner="Sonata")), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not held by GVHMR"):
+                require_gpu_lease(path)
+
+    def test_released_gpu_lease_cannot_start_a_worker(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "lease.json"
+            path.write_text(json.dumps(dict(status="released", owner="GVHMR")), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                require_gpu_lease(path)
+
+    def test_held_production_gpu_lease_is_accepted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "lease.json"
+            path.write_text(json.dumps(dict(status="held", owner="GVHMR")), encoding="utf-8")
+            require_gpu_lease(path)
+
     def test_resume_preserves_original_launch_and_baseline_completion(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

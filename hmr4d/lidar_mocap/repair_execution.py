@@ -5,6 +5,13 @@ from pathlib import Path
 import time
 
 
+def require_gpu_lease(path, owner="GVHMR"):
+    if path is not None:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if data.get("status") != "held" or data.get("owner") != owner:
+            raise ValueError("The shared GPU lease is not held by " + owner)
+
+
 def record_execution(root: Path, *, baseline_finished: bool = False):
     path = root / "execution_timing.json"
     data = (

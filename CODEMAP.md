@@ -92,8 +92,13 @@ independent, hash-bound pixel supplement only when all admissions stay unchanged
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading
 old baseline fits. `prepare_badminton_new_source_repair.py` freezes their exact
-windows and runs bounded initial teachers without legacy fitted labels. Existing
-native-observation, body-repair, isolated-window and finish commands then reuse
+windows and runs bounded initial teachers without legacy fitted labels.
+`tools/run_badminton_initial_teachers.py` executes those frozen windows serially
+in isolated processes under an explicit GPU lease. The separate
+`tools/advance_badminton_new_source.py` supervisor waits for all teacher receipts,
+runs native pose observations and stops at a pending identity inventory for
+real review; progress and controlled failures stay in the production run.
+Existing native-observation, body-repair, isolated-window and finish commands then reuse
 validated v2 components; `new_source_repair.py` and `new_source_completion.py`
 provide the source-only adapters. Completion uses absolute QA and the same v2
 pre/post leg comparison, full native verification and standard bilateral export.
