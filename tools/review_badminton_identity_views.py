@@ -89,10 +89,15 @@ def main():
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--partial", action="store_true")
     args = p.parse_args()
-    cal = CalibrationSnapshot.load(PROJ_ROOT / "outputs/badminton_rallies_v1/calibration/calibration_snapshot.json")
+    source_plan = read_json(args.root / "case_plan.json")
+    source_input = read_json(source_plan["source_union"])
+    fresh_sources = source_input.get("schema") == "badminton-new-source-repair-input-v1"
+    source_root = Path(source_input["source_root"]) if fresh_sources else PROJ_ROOT / "outputs/badminton_rallies_v1"
+    cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
     cases = read_json(args.root / "identity_evidence/boundaries.json")
-    replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
-    windows = {(w["source_id"], w["window_id"]): w for w in replay["windows"]}
+    if not fresh_sources:
+        replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
+        windows = {(w["source_id"], w["window_id"]): w for w in replay["windows"]}
     sessions = {}
     loaded = {}
     results = []
@@ -104,14 +109,18 @@ def main():
         source = Path(case["source_window"])
         key = (sid, source.name)
         if sid not in sessions:
-            sessions[sid] = load_run_session(PROJ_ROOT / "outputs/badminton_rallies_v1", cal, sid)
+            sessions[sid] = load_run_session(source_root, cal, sid)
         session = sessions[sid]
         if key not in loaded:
             manifest = read_json(source / "teacher/manifest.json")
             rows = manifest["provenance"]["frame_rows"]
             record_to_pos = {r["record_index"]: i for i, r in enumerate(rows)}
             observations = defaultdict(list)
-            mapping = np.load(windows[key]["mapping"])["observations"]
+            if fresh_sources:
+                from hmr4d.lidar_mocap.new_source_repair import native_teacher_mapping
+                mapping = native_teacher_mapping(source)
+            else:
+                mapping = np.load(windows[key]["mapping"])["observations"]
             detections = torch.load(source / "teacher/detections.pt", map_location="cpu", weights_only=False)[
                 "detections"
             ]

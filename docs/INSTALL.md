@@ -774,3 +774,39 @@ viewer is prepared under final_labels/viewer and served by the existing rally vi
 Actual browser playback still requires separate verification; the completion receipt
 explicitly keeps browser_playback_verified=false. Old-source finish behavior and
 its ten-clip comparison remain unchanged.
+
+
+Fresh-source identity evidence uses the existing command names with a source-bound
+inventory, without the historical 64-case assumptions or manual exceptions:
+
+```powershell
+uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair
+uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair --render-endpoints --endpoint-offset 0 --endpoint-limit 20
+```
+
+The first command reads completed initial teachers and writes only
+`identity_evidence/boundary_inventory.pending.json`: real original tracklet IDs,
+positions and native timestamp endpoints, no inferred identity approval. The second
+writes bounded paired native RGB evidence and an HTML page at
+`identity_evidence/endpoint_previews/index-0.html`. Images use the exact adopted
+K-preserved undistortion; the primary detector box is drawn in its declared pixel
+space, with both original frame records/raw-image SHAs retained in the JSON receipt.
+Use offsets 20, 40, etc. to inspect further endpoints. This does not change labels.
+
+After native evidence establishes the boundary inventory, provide a separate JSON
+with schema `badminton-new-source-identity-inventory-v1`, `review_status: reviewed`,
+the exact `source_union_sha256`, nonempty hash-bound `evidence_files`, and `cases`.
+Each case names `source_id`, `window`, and its two `original_track_ids`. Inventory
+review concerns which real boundaries require assessment, not per-frame user approval.
+No association thresholds are added. Then:
+
+```powershell
+uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair --boundary-inventory outputs/badminton_1015_v2_repair/identity_evidence/boundary_inventory.reviewed.json
+uv run --no-sync python tools/observe_badminton_repair_poses.py --root outputs/badminton_1015_v2_repair/identity_evidence --source-root outputs/badminton_1015_v2 --threads 1
+uv run --no-sync python tools/review_badminton_identity_views.py --root outputs/badminton_1015_v2_repair
+uv run --no-sync python tools/build_badminton_identity_decisions.py --root outputs/badminton_1015_v2_repair
+```
+
+The geometric review keeps its existing support/uniqueness/coexistence criteria.
+Uncertain cases remain `review_status: pending` and cannot become reviewed body
+inputs. New-source sealing never applies the seven-source scene-specific overrides.

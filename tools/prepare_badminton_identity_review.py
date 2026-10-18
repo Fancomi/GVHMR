@@ -14,8 +14,21 @@ from hmr4d.lidar_mocap.rally_pipeline import read_json
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
+    p.add_argument("--boundary-inventory", type=Path, help="Explicit reviewed fresh-source boundary scope; omitted writes pending endpoints")
+    p.add_argument("--render-endpoints", action="store_true", help="Fresh source only: bounded native RGB endpoint evidence")
+    p.add_argument("--endpoint-offset", type=int, default=0)
+    p.add_argument("--endpoint-limit", type=int, default=20)
     args = p.parse_args()
+    if args.endpoint_offset < 0 or args.endpoint_limit < 1:
+        p.error("Endpoint offset/limit must be nonnegative/positive")
     original = read_json(args.root / "case_plan.json")
+    if read_json(original["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
+        from hmr4d.lidar_mocap.new_source_identity import prepare_identity, render_endpoints
+        if args.render_endpoints:
+            print(render_endpoints(args.root, offset=args.endpoint_offset, limit=args.endpoint_limit))
+        else:
+            print(prepare_identity(args.root, args.boundary_inventory))
+        return
     replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
     windows = {(sid, path.name): path for sid, path in published_windows(original["source_union"])}
     cases = []
