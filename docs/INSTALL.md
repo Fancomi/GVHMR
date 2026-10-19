@@ -896,3 +896,15 @@ source calibrations, verifies independent archived copies, and appends the
 catalog without changing its default. Existing formal files cannot be replaced.
 Release the GPU separately only after formal consumer CPU acceptance; the
 completed run records this later action in `gpu_handoff.json`.
+
+Sonata data-scale prediction review: `http://127.0.0.1:8780/comparisons/sonata/`,
+also linked from the fixed dashboard. The consumer repository's
+`scripts/compare_sonata_releases.py` compares the validation-selected 62,414 and
+98,011 training runs on identical 25,343 test person-frames, with source-specific
+native cameras and calibration. Both models use the same frozen test features;
+references enter only evaluation/rendering. The independent offline directory is
+`.local/gvhmr_sonata_62414_vs_98011_20261019`; retain its complete directory when
+moving the HTML. `scripts/verify_sonata_comparison.py` checks ten continuous Chrome
+clips, exact native RGB identity, synchronized full meshes, file/HTTP playback
+and backward compatibility. Validation populations differ between training runs;
+the review reports matched test means separately for old and new test sources.
