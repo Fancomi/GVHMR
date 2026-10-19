@@ -201,9 +201,17 @@ def prepare_viewer(run_root, baseline_root, display_crop=None):
     intake = read_json(registry["intake"]["path"])
     rallies = read_rows(intake["prepared_ranges"]["path"])
     sources = {}
+    empty_sources = {}
     sessions = {}
     media = {}
+    body_path = root / "datasets/dataset_manifest.json"
+    body = read_json(body_path) if root == baseline and body_path.exists() else {}
+    if body and body.get("calibration_digest") != calibration.data["snapshot_digest"]:
+        raise ValueError("Viewer body labels and source calibration disagree")
     for sid, entry in registry["sources"].items():
+        if not any(r["source_id"] == sid for r in rallies) and intake["sources"][sid]["paired_unique_png_frames"] == 0:
+            empty_sources[sid] = dict(reason="no_selected_paired_scans", paired_scans=0, fitted_person_frames=0)
+            continue
         session = load_run_session(root, calibration, sid)
         sessions[sid] = session
         known = {
@@ -239,7 +247,7 @@ def prepare_viewer(run_root, baseline_root, display_crop=None):
             if r["source_id"] == sid
         ]
         sources[sid] = dict(
-            baseline=entry["baseline"],
+            baseline=bool(entry["baseline"] or body.get("exports", {}).get(sid, {}).get("accepted", 0)),
             common_origin_us=begin,
             duration=(end - begin) / 1e6,
             cameras=cameras,
@@ -249,6 +257,8 @@ def prepare_viewer(run_root, baseline_root, display_crop=None):
     manifest = dict(
         schema="badminton-native-rally-viewer-v1",
         source_count=len(sources),
+        declared_source_count=len(registry["sources"]),
+        empty_sources=empty_sources,
         rally_count=len(rallies),
         rally_window_minutes=intake["effective_window_minutes"],
         unique_paired_input_scans=sum(s["paired_unique_png_frames"] for s in intake["sources"].values()),

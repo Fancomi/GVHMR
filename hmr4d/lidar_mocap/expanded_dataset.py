@@ -210,7 +210,18 @@ def assemble(old_path, new_path, contract_path, output_root):
         if calibration.data["snapshot_digest"] != manifest["calibration_digest"]:
             raise ValueError("Publication and source calibration disagree")
         # This verifier reads source publications without rewriting verification.json.
-        verification[tag] = _verify_export_data(manifest)
+        revision = manifest.get("canonical_identity_revision")
+        if revision:
+            if tag != "new":
+                raise ValueError("The complete old publication remains immutable")
+            from .canonical_tracks import verify_canonical_publication
+
+            for name in ("source_publication", "reviewed_boundaries", "verification"):
+                check_binding(revision[name])
+                dependencies.append(revision[name])
+            verification[tag] = verify_canonical_publication(manifest)
+        else:
+            verification[tag] = _verify_export_data(manifest)
         for sid, export in manifest["exports"].items():
             source_registry[sid] = dict(
                 role=roles[sid],
@@ -224,13 +235,22 @@ def assemble(old_path, new_path, contract_path, output_root):
                 body_dataset_manifest=binding(source_path),
             )
     repair = Path(contract["new_repair_root"]).resolve()
-    if new_path.resolve() != repair.with_name(repair.name + "_paired") / "datasets/dataset_manifest.json":
-        raise ValueError("New publication does not belong to the agreed new repair run")
+    expected_new = repair.with_name(repair.name + "_paired") / "datasets/dataset_manifest.json"
+    revision = new.get("canonical_identity_revision")
+    if revision:
+        parent_publication = revision["source_publication"]
+        if Path(parent_publication["path"]).resolve() != expected_new or not new_path.resolve().is_relative_to(repair):
+            raise ValueError("Canonical identity revision must derive from this fresh repair publication")
+    else:
+        if new_path.resolve() != expected_new:
+            raise ValueError("New publication does not belong to the agreed new repair run")
+        parent_publication = binding(new_path)
     completion_path = repair / "new_source_completion_receipt.json"
     dependencies.append(binding(completion_path))
     completion = read_json(completion_path)
-    if not completion.get("training_published") or completion["evidence"].get(str(new_path.resolve())) != file_sha(
-        new_path
+    if (
+        not completion.get("training_published")
+        or completion["evidence"].get(parent_publication["path"]) != parent_publication["sha256"]
     ):
         raise ValueError("New source completion does not seal this dataset")
     digests = {sid: e["calibration_digest"] for sid, e in source_registry.items()}

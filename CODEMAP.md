@@ -94,6 +94,19 @@ It preserves all old role rows as exact tensor and metadata-byte prefixes,
 keeps every source's own calibration and includes declared zero-sample sources.
 Only `assembly_manifest.json` is written: final native pixel and browser
 acceptance are still required before consumer publication.
+`tools/audit_badminton_fresh_continuity.py` checks all native-verified candidates;
+`tools/render_badminton_continuity_cases.py` retains exact dual-camera witnesses.
+Reviewed cross-person cuts feed `tools/publish_badminton_canonical_tracks.py` /
+`canonical_tracks.py`: only identity keys change, with bit-exact numeric values
+and unchanged bilateral membership. `tools/serve_badminton_canonical_tracks.py`
+serves the admitted derived view; `tools/verify_badminton_fresh_playback.py`
+checks ten real Chrome clips and reviewed native identity boundaries.
+`tools/recheck_badminton_expanded_pixels.py` freezes exact native-PNG witnesses
+and reruns unchanged full-person admission for affected scans in both cameras.
+`tools/seal_badminton_expansion.py` requires all acceptance bindings, archives
+independent copies under the canonical data root, verifies them and publishes
+formal producer entries pointing to the archive. Existing releases stay frozen;
+GPU release is a separate action after the consumer CPU receipt.
 
 Independent adopted days use the same rally entry with `--calibration-dir` and
 `--session-splits`; source-only runs freeze admitted source indexes without reading

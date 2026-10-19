@@ -852,3 +852,47 @@ role prefixes, each source's own calibration and real zero-sample sources.
 source-specific run/calibration and accepts historical hash corrections only with
 unchanged component metadata and admission-preserving evidence. Actual browser and
 final publication acceptance remain mandatory; assembly is not training publication.
+
+Daily production and notification dashboard: `http://127.0.0.1:8780/`. It refreshes
+every three seconds, showing real fitting/native/bilateral progress, formal
+publication status, relay/watchdog health, task execution receipts and links to
+the existing training curves/queue. Fitted QA candidates are separate from formal
+training samples; failed reads and stale page updates are explicitly flagged.
+The consumer repository's existing relay watchdog maintains this local HTTP entry
+with the verified GUI Python launcher. No extra scheduled task or GPU work is used.
+Runtime source and recovery/browser receipts are under that repository's `.local/`
+and `.local/gvhmr_expanded_1015_20261018/`; the command status helper remains optional
+for diagnostics.
+
+The completed 1015 expansion is documented in
+`docs/BADMINTON_REPAIRED_RELEASE.md`. Formal producer entry:
+`outputs/badminton_expanded_v1/training_manifest.json`; actual data:
+`D:/PROJECT/LABEL/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`.
+The fixed dashboard links to admitted canonical playback on port 8774 and the
+existing training curves. Port 8773 was the superseded pre-correction preview.
+
+For a future independent expansion, audit the completed native fits with
+`audit_badminton_fresh_continuity.py` and render flagged dual-camera witnesses with
+`render_badminton_continuity_cases.py`. Reviewed cross-person boundaries are
+published through `publish_badminton_canonical_tracks.py --source-manifest <json>
+--reviewed-boundaries <json> --output-root <new-root>`; identity keys change only
+after native evidence checks, while numeric tensors and admission remain exact.
+The derived view is served by `serve_badminton_canonical_tracks.py --manifest
+<derived-manifest> --port 8774`. Real browser acceptance uses
+`verify_badminton_fresh_playback.py --root <repair-root> --url <viewer-url>
+--canonical-manifest <derived-manifest> --output-root <new-acceptance-root>`.
+
+If native pixel hashes differ, `recheck_badminton_expanded_pixels.py` retains
+lossless native-PTS PNG captures and binds their source video, address and pixel
+digests. It rechecks all candidates in both cameras using unchanged admission
+rules. Consumers verify and replay those exact retained captures; this does not
+claim future live video decoding is bit-reproducible.
+
+Final sealing uses `seal_badminton_expansion.py --assembly <json> --browser <json>
+--continuity <json> --pixels <json> --sequence-report <json> --data-root <root>
+--release-id <new-id>`. It requires actual accepted browser/continuity/pixel
+receipts and the consumer's real sequence indexes, preserves old samples and
+source calibrations, verifies independent archived copies, and appends the
+catalog without changing its default. Existing formal files cannot be replaced.
+Release the GPU separately only after formal consumer CPU acceptance; the
+completed run records this later action in `gpu_handoff.json`.
