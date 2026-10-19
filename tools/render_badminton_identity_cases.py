@@ -25,9 +25,22 @@ def render(root, indices):
     output.mkdir(parents=True, exist_ok=True)
     rows = []
     for index in indices:
+        existing = output / f"case{index:04d}.json"
+        if existing.exists():
+            receipt = read_json(existing)
+            if (
+                receipt["source_input_sha256"] != file_sha(root / "new_source_input.json")
+                or file_sha(receipt["image"]) != receipt["image_sha256"]
+            ):
+                raise ValueError("Existing immutable native case evidence changed")
+            rows.append(receipt)
+            print(dict(case=index, state="existing_evidence_verified"), flush=True)
+            continue
         case = cases[index]
         sid = case["event"]["source_id"]
         report_path = root / "identity_evidence/source_reviews" / (sid + ".json")
+        if not report_path.exists():
+            report_path = root / "identity_evidence/native_identity_review.json"
         if sid not in reports:
             reports[sid] = read_json(report_path)
             sessions[sid] = load_run_session(source, cal, sid)
