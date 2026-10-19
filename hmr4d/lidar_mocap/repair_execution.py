@@ -5,6 +5,19 @@ from pathlib import Path
 import time
 
 
+def write_progress_json(path, value, *, attempts=10):
+    """Retry transient Windows reader locks without changing atomic JSON content."""
+    from .pipeline import write_json
+
+    for attempt in range(attempts):
+        try:
+            return write_json(path, value)
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(min(0.025 * 2**attempt, 0.25))
+
+
 def require_gpu_lease(path, owner="GVHMR"):
     if path is not None:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

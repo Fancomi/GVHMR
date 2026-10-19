@@ -816,5 +816,39 @@ uv run --no-sync python tools/build_badminton_identity_decisions.py --root outpu
 ```
 
 The geometric review keeps its existing support/uniqueness/coexistence criteria.
-Uncertain cases remain `review_status: pending` and cannot become reviewed body
-inputs. New-source sealing never applies the seven-source scene-specific overrides.
+By default uncertain cases remain `review_status: pending` and cannot become reviewed
+body inputs. `screen_badminton_new_identity.py` inventories all actual endpoints and
+proposes nearby short-gap candidates; it approves no person identities. For native
+RGB witnesses of explicit cases, use `render_badminton_identity_cases.py --root <run>
+--case <index>`. Producer snapshots and actual raw-image hashes stay with the evidence.
+
+An optional `build_badminton_identity_decisions.py --abstention-policy <json>` makes
+an explicit conservative processing choice: reset previous raw-tracklet joins, join
+only geometrically confirmed same-person pairs, retain witnessed different-person
+constraints and keep unproven tracklets separate. The policy must have schema
+`badminton-new-source-identity-abstention-v1`, action
+`keep_unproven_original_tracklets_separate`, reviewed status, exact input/inventory
+hashes and nonempty hash-bound evidence. Unknown relationships are still unknown;
+their indices are retained as `abstained_relationship_cases`. This completes a safe
+processing decision without assigning fabricated same/different-person verdicts.
+Graph contradictions fail sealing. New-source sealing never applies historical
+scene-specific overrides, and no body or bilateral admission threshold is relaxed.
+
+`review_badminton_identity_views.py --source <id>` can review each fully observed new
+source while the GPU observes later sources. The final full review reuses a source
+result only after checking complete case coverage and all native/teacher input hashes.
+`advance_badminton_identity_review.py` supervises dense observations, full geometric
+review and sealing. `advance_badminton_body_production.py --abstention-policy <json>`
+waits for complete review, applies the explicit policy, freezes execution inputs and
+runs isolated body fits plus full native/leg/bilateral QA. Both require explicit
+`--root`, `--source-root` and `--gpu-lease`; failures are visible in
+`production_stage.json`. Body completion stops at
+`awaiting_browser_playback_verification`, retaining the lease for real acceptance.
+
+Expansion assembly uses the complete old qualified dataset, preserving exact old
+role prefixes, each source's own calibration and real zero-sample sources.
+`assemble_badminton_expansion.py` writes only a provisional `assembly_manifest.json`.
+`audit_badminton_expanded_pixels.py` audits every held-out native image through its
+source-specific run/calibration and accepts historical hash corrections only with
+unchanged component metadata and admission-preserving evidence. Actual browser and
+final publication acceptance remain mandatory; assembly is not training publication.

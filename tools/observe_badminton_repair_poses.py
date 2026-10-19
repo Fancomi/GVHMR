@@ -20,7 +20,7 @@ import torch
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.dual_view import file_sha
-from hmr4d.lidar_mocap.pipeline import write_json
+from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
 from hmr4d.lidar_mocap.rgb_observations import RGBKeypointChecker
 from hmr4d.lidar_mocap.segmentation import court_polygon

@@ -4,10 +4,41 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from hmr4d.lidar_mocap.repair_execution import record_execution, repair_efficiency, require_gpu_lease
+from hmr4d.lidar_mocap.repair_execution import (
+    record_execution,
+    repair_efficiency,
+    require_gpu_lease,
+    write_progress_json,
+)
 
 
 class RepairExecutionTests(unittest.TestCase):
+    def test_transient_windows_progress_lock_retries_identical_atomic_payload(self):
+        payload = dict(state="running", computed=1825)
+        with (
+            patch(
+                "hmr4d.lidar_mocap.pipeline.write_json", side_effect=[PermissionError(), PermissionError(), None]
+            ) as writer,
+            patch("hmr4d.lidar_mocap.repair_execution.time.sleep") as sleep,
+        ):
+            write_progress_json("progress.json", payload)
+            self.assertEqual(writer.call_count, 3)
+            self.assertTrue(all(call.args == ("progress.json", payload) for call in writer.call_args_list))
+            self.assertEqual(sleep.call_count, 2)
+
+    def test_persistent_lock_and_other_io_errors_are_not_hidden(self):
+        with (
+            patch("hmr4d.lidar_mocap.pipeline.write_json", side_effect=PermissionError()) as writer,
+            patch("hmr4d.lidar_mocap.repair_execution.time.sleep"),
+        ):
+            with self.assertRaises(PermissionError):
+                write_progress_json("progress.json", {}, attempts=3)
+            self.assertEqual(writer.call_count, 3)
+        with patch("hmr4d.lidar_mocap.pipeline.write_json", side_effect=OSError("disk full")) as writer:
+            with self.assertRaisesRegex(OSError, "disk full"):
+                write_progress_json("progress.json", {})
+            self.assertEqual(writer.call_count, 1)
+
     def test_foreign_gpu_lease_owner_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "lease.json"

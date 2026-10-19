@@ -10,8 +10,9 @@ from scipy.optimize import linear_sum_assignment
 
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
+from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.multiview import associate_poses
-from hmr4d.lidar_mocap.pipeline import write_json
+from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
 from hmr4d.lidar_mocap.teacher import load_teacher_track
 
@@ -88,13 +89,57 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--partial", action="store_true")
+    p.add_argument("--source", action="append", help="Review complete cases for explicit fresh sources only")
     args = p.parse_args()
     source_plan = read_json(args.root / "case_plan.json")
     source_input = read_json(source_plan["source_union"])
     fresh_sources = source_input.get("schema") == "badminton-new-source-repair-input-v1"
     source_root = Path(source_input["source_root"]) if fresh_sources else PROJ_ROOT / "outputs/badminton_rallies_v1"
     cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
-    cases = read_json(args.root / "identity_evidence/boundaries.json")
+    boundary_path = args.root / "identity_evidence/boundaries.json"
+    cases = read_json(boundary_path)
+    if args.source:
+        if not fresh_sources or not set(args.source).issubset({c["event"]["source_id"] for c in cases}):
+            raise ValueError("Select existing fresh-source case IDs")
+        cases = [case for case in cases if case["event"]["source_id"] in args.source]
+    input_hashes = {}
+
+    def record_input(path):
+        if fresh_sources:
+            name = str(Path(path).resolve())
+            if name not in input_hashes:
+                input_hashes[name] = file_sha(path)
+
+    for path in (boundary_path, Path(source_plan["source_union"]), Path(__file__)):
+        record_input(path)
+    cached = {}
+    if fresh_sources and not args.source:
+        for sid in {case["event"]["source_id"] for case in cases}:
+            path = args.root / "identity_evidence/source_reviews" / (sid + ".json")
+            if not path.exists():
+                continue
+            report = read_json(path)
+            expected = {case["index"]: case for case in cases if case["event"]["source_id"] == sid}
+            actual = {case["index"]: case for case in report["cases"]}
+            if (
+                report.get("selected_sources") != [sid]
+                or set(expected) != set(actual)
+                or not report.get("inputs")
+                or any(file_sha(name) != sha for name, sha in report["inputs"].items())
+                or any(case["missing_native_context"] for case in actual.values())
+            ):
+                raise ValueError("Source identity review cache has incomplete or changed native evidence: " + sid)
+            if any(
+                any(
+                    actual[i].get(key) != expected[i][key]
+                    for key in ("source_window", "event", "positions", "context_positions")
+                )
+                for i in expected
+            ):
+                raise ValueError("Source identity review refers to different cases")
+            cached.update(actual)
+            input_hashes.update(report["inputs"])
+            record_input(path)
     if not fresh_sources:
         replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
         windows = {(w["source_id"], w["window_id"]): w for w in replay["windows"]}
@@ -105,6 +150,11 @@ def main():
     origin = np.asarray(cal.reference_plane["origin_viewer_m"])
     normal = np.asarray(cal.reference_plane["normal_viewer"])
     for case in cases:
+        if case["index"] in cached:
+            result = cached[case["index"]]
+            results.append(result)
+            counts[result["status"]] += 1
+            continue
         sid = case["event"]["source_id"]
         source = Path(case["source_window"])
         key = (sid, source.name)
@@ -112,12 +162,15 @@ def main():
             sessions[sid] = load_run_session(source_root, cal, sid)
         session = sessions[sid]
         if key not in loaded:
+            record_input(source / "teacher/manifest.json")
+            record_input(source / "teacher/detections.pt")
             manifest = read_json(source / "teacher/manifest.json")
             rows = manifest["provenance"]["frame_rows"]
             record_to_pos = {r["record_index"]: i for i, r in enumerate(rows)}
             observations = defaultdict(list)
             if fresh_sources:
                 from hmr4d.lidar_mocap.new_source_repair import native_teacher_mapping
+
                 mapping = native_teacher_mapping(source)
             else:
                 mapping = np.load(windows[key]["mapping"])["observations"]
@@ -127,6 +180,7 @@ def main():
             old_ids = {(int(r[0]), int(r[1])): int(r[2]) for r in mapping}
             kp = {}
             for info in manifest["tracks"]:
+                record_input(source / "teacher" / info["path"])
                 track = load_teacher_track(source / "teacher" / info["path"])
                 for record, box, points in zip(track["record_index"], track["bbx_xyxy"], track["kp2d"]):
                     kp[record_to_pos[int(record)], np.asarray(box, np.float32).tobytes()] = np.asarray(points)
@@ -160,6 +214,8 @@ def main():
             if not all(path.exists() for path in paths):
                 missing += 1
                 continue
+            for path in paths:
+                record_input(path)
             a, b = map(read_json, paths)
             pa = np.asarray(a["keypoints"]).reshape(-1, 17, 3)
             pb = np.asarray(b["keypoints"]).reshape(-1, 17, 3)
@@ -284,12 +340,19 @@ def main():
             args.root / "identity_evidence/review_progress.json", dict(counts=dict(counts), completed=len(results))
         )
         print(dict(index=case["index"], source=sid, status=status, votes=summaries), flush=True)
+    output = args.root / "identity_evidence/native_identity_review.json"
+    if args.source:
+        if len(args.source) != 1:
+            raise ValueError("One source per resumable review process")
+        output = args.root / "identity_evidence/source_reviews" / (args.source[0] + ".json")
     write_json(
-        args.root / "identity_evidence/native_identity_review.json",
+        output,
         dict(
             counts=dict(counts),
             cases=results,
-            partial=args.partial,
+            partial=args.partial or bool(args.source),
+            selected_sources=args.source,
+            inputs=input_hashes,
             limits=["Fixed native pose rays and opposite-camera continuity, not manual identity ground truth."],
         ),
     )

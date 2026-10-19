@@ -12,13 +12,16 @@ from hmr4d.lidar_mocap.rally_pipeline import read_json
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
+    p.add_argument("--abstention-policy", type=Path, help="Fresh sources only: explicit evidence-bound policy to keep uncertain raw tracklets separate")
     args = p.parse_args()
     evidence = args.root / "identity_evidence"
     source_plan = read_json(args.root / "case_plan.json")
     if read_json(source_plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
         from hmr4d.lidar_mocap.new_source_identity import seal_identity
-        print(seal_identity(args.root))
+        print(seal_identity(args.root, args.abstention_policy))
         return
+    if args.abstention_policy:
+        raise ValueError("Fresh-source abstention policies cannot change historical identity decisions")
     review = read_json(evidence / "native_identity_review.json")
     plan = read_json(args.root / "case_plan.json")
     if review.get('partial') or len(review['cases'])!=64 or read_json(evidence/'pose_receipt.json')['state']!='complete':

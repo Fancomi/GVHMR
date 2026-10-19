@@ -104,6 +104,13 @@ in isolated processes under an explicit GPU lease. The separate
 `tools/advance_badminton_new_source.py` supervisor waits for all teacher receipts,
 runs native pose observations and stops at a pending identity inventory for
 real review; progress and controlled failures stay in the production run.
+`screen_badminton_new_identity.py` proposes scope from every actual native endpoint;
+`render_badminton_identity_cases.py` renders explicit original RGB witnesses.
+Source-filtered geometric reviews reuse only hash-verified complete evidence.
+`advance_badminton_identity_review.py` supervises that review; the explicit
+abstention policy may preserve unknown raw tracklets separately. The following
+`advance_badminton_body_production.py` controller freezes reviewed identity inputs,
+fits all windows and runs full QA, then stops for real browser acceptance.
 Existing native-observation, body-repair, isolated-window and finish commands then reuse
 validated v2 components; `new_source_repair.py` and `new_source_completion.py`
 provide the source-only adapters. Completion uses absolute QA and the same v2
