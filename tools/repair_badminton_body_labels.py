@@ -54,6 +54,7 @@ def main():
     import cv2
     cv2.setNumThreads(args.threads)
     fresh_sources = read_json(args.union).get("schema") == "badminton-new-source-repair-input-v1"
+    pilot_review = fresh_sources and read_json(args.union).get('review_only') is True
     if fresh_sources:
         prepared = read_json(args.union)
         if (args.source_root.resolve() != Path(prepared["source_root"]).resolve()
@@ -113,6 +114,8 @@ def main():
             for sid, window in jobs
         ],
     )
+    if pilot_review:
+        plan.update(review_only=True,purpose='short_native_rally_review')
     if args.partition_worker:
         if not args.source or len(args.source)!=1 or not (root/'repair_plan.json').exists():
             raise ValueError('A partition worker requires one explicit source and an existing full plan')
@@ -255,10 +258,14 @@ def main():
             # Keep declared zero-rally sources as empty tensors, never fabricate
             # samples or silently drop them from the exhaustive session split.
             aggregate_sources = sorted({sid for ids in read_json(args.union)["session_splits"].values() for sid in ids})
-        result = pipeline.aggregate(aggregate_sources)
+        result = pipeline.aggregate(aggregate_sources,review_only=pilot_review)
         if fresh_sources:
             from hmr4d.lidar_mocap.rally_pipeline import validate_session_splits
-            splits = validate_session_splits(read_json(args.union)["session_splits"], result["exports"])
+            if pilot_review:
+                from hmr4d.lidar_mocap.pilot import require_review_group
+                splits = require_review_group(read_json(args.union)['session_splits'],result['exports'])
+            else:
+                splits = validate_session_splits(read_json(args.union)["session_splits"], result["exports"])
             result["suggested_session_splits"] = {
                 name: dict(sessions=sids, accepted=sum(result["exports"][sid]["accepted"] for sid in sids))
                 for name, sids in splits.items()}
@@ -266,7 +273,7 @@ def main():
             result["source_registry_sha256"] = file_sha(root / "source_registry.json")
             result["body_policy"] = "native_dual_pose_ray_filter_shared_shape_v2_before_leg_postpass"
             result["training_published"] = False
-            result["required_nonempty_splits"] = ["train", "val", "test"]
+            result["required_nonempty_splits"] = [] if pilot_review else ["train", "val", "test"]
             from hmr4d.lidar_mocap.export import require_nonempty_splits
             require_nonempty_splits(result)
             write_json(root / "datasets/dataset_manifest.json", result)

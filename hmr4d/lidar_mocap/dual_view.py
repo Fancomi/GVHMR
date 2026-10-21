@@ -366,6 +366,11 @@ def render_candidate_crops(source_root, output_root):
 
 
 def export_reviewed(source_root, output_root, review_path=None, *, detection_only=None, full_observation_manifest=None):
+    pilot_source=Path(source_root).resolve()
+    snapshot=pilot_source/'calibration/calibration_snapshot.json'
+    if (_read(pilot_source/'datasets/dataset_manifest.json').get('review_only')
+            or (snapshot.exists() and _read(snapshot).get('review_only'))):
+        raise ValueError('Review-only pilot cannot be published as training data')
     source, output = _bound_output(source_root, output_root)
     _require_unpublished(output)
     audit = _read(output/'audit.json')

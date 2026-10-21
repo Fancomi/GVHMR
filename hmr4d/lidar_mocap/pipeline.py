@@ -389,7 +389,7 @@ class BadmintonPipeline:
             write_json(output/'fit_report.json',report)
         return report
 
-    def aggregate(self, session_ids=None):
+    def aggregate(self, session_ids=None, *, review_only=False):
         """Keep whole sessions separate; prefer full windows over contained smoke runs."""
         self._load()
         sessions = session_ids or sorted(self.calibration.data['sessions'])
@@ -423,11 +423,16 @@ class BadmintonPipeline:
             selected_windows[sid] = [c['window_id'] for c in sorted(chosen,key=lambda c:c['left_us'])]
         split_names = ['train','val','test']
         splits = {split_names[i]:{'sessions':[sid],**exports[sid]} for i,sid in enumerate(sessions[:3])}
+        if review_only:
+            splits={'review':dict(sessions=list(sessions),accepted=sum(e['accepted'] for e in exports.values()))}
         result = {'schema':'badminton-ptv3-dataset-v1','exports':exports,'suggested_session_splits':splits,
                   'selected_windows':selected_windows,'calibration_digest':self.calibration.data['snapshot_digest'],
                   'accepted':sum(e['accepted'] for e in exports.values()),
                   'split_limit':'Whole sessions separated; athlete identity overlap between sessions has not been verified',
                   'target_body_model':'neutral_smpl_24_joints','shape_basis':'SMPL fitted; never directly copied from SMPL-X',
                   'point_count':256,'coordinate_space':'lidar_viewer_xyz_m'}
+        if review_only:
+            result.update(schema='badminton-review-only-body-labels-v1',review_only=True,status='review_only',
+                          training_published=False,required_nonempty_splits=[])
         write_json(self.output_root/'datasets/dataset_manifest.json',result)
         return result

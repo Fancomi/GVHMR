@@ -212,6 +212,88 @@ class CalibrationTests(unittest.TestCase):
                 CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace / "wrong-index",
                     source_indexes={f.sid: binding(index)}, data_root=f.sessions)
 
+    def test_review_subset_freezes_only_bound_ready_source_without_admitting_production(self):
+        from hmr4d.lidar_mocap import source_index as source_module
+        f=self.fixture
+        f.config['valid_source_ids']=[f.sid,'not-yet-exported']
+        f.sources['valid_source_ids']=[f.sid,'not-yet-exported']
+        f.sources['frame_maps'].append(dict(source_id='not-yet-exported',rows=4,sha256='f'*64))
+        write_json(f.base/'calibration.json',f.config)
+        write_json(f.base/'sources.json',f.sources)
+        hashes={name:sha((f.base/name).read_bytes()) for name in module._CONFIG_FILES}
+        def binding(path):
+            return dict(file=str(path.relative_to(f.sessions)),sha256=sha(path.read_bytes()))
+        session=SessionIndex.load(f.session)
+        session.source_index=dict(candidate_bundle_sha256=hashes,crop_binding=dict(bbox_sha256=hashes['bbox.json']),
+            camera_calibration_admitted=False,source_manifest=binding(f.manifest_path),common_clock=binding(f.clock_path),
+            canonical_video_sidecars={cam:binding(f.video/(cam+'.frames.jsonl')) for cam in ('cam1','cam2')})
+        index=f.sessions/'index.json'
+        index.write_text('{}')
+        with patch.object(source_module.SourceIndexedSession,'load_source_index',return_value=session) as load:
+            result=CalibrationSnapshot.freeze(f.project,f.sessions,f.output,calibration_dir=f.base,
+                source_indexes={f.sid:binding(index)},data_root=f.sessions,review_source_ids=[f.sid])
+        self.assertEqual(set(result.data['sessions']),{f.sid})
+        self.assertTrue(result.data['review_only'])
+        self.assertFalse(result.data['production_admitted'])
+        self.assertFalse(load.call_args.kwargs['require_admitted'])
+        self.assertFalse(session.source_index['camera_calibration_admitted'])
+        self.assertEqual(result.data['configuration_files_sha256'],hashes)
+        with patch.object(source_module.SourceIndexedSession,'load_source_index',return_value=session):
+            with self.assertRaisesRegex(ValueError,'cover the calibration'):
+                CalibrationSnapshot.freeze(f.project,f.sessions,f.workspace/'formal',calibration_dir=f.base,
+                    source_indexes={f.sid:binding(index)},data_root=f.sessions)
+
+    def test_portable_review_bundle_uses_real_parent_and_authorization_without_accepted_fields(self):
+        from hmr4d.lidar_mocap import source_index as source_module
+        f = self.fixture
+        def binding(path):
+            return dict(file=str(path.relative_to(f.sessions)), sha256=sha(path.read_bytes()))
+        parent = f.sessions / "original-index.json"
+        parent.write_text('{"original":true}')
+        identity = binding(parent)
+        f.config.pop("valid_source_ids")
+        write_json(f.base / "calibration.json", f.config)
+        sources = dict(schema="badminton-calibration-sources-v1", usage="review_only",
+            valid_source_ids=[f.sid], sources=[dict(source_id=f.sid, source_index=identity['file'],
+            source_index_sha256=identity['sha256'])], production_admitted=False,
+            camera_calibration_admitted=False, body_labels_production_admitted=False)
+        write_json(f.base / "sources.json", sources)
+        hashes = {name: sha((f.base / name).read_bytes()) for name in module._CONFIG_FILES}
+        auth = f.base / "review-status.json"
+        write_json(auth, dict(schema="badminton-calibration-review-status-v1", usage="review_only",
+            camera_pilot_authorized=True, body_labels_production_admitted=False, training_published=False,
+            result_files=hashes, user_confirmation="Review these actual short rallies"))
+        authority = dict(path=str(auth), sha256=sha(auth.read_bytes()))
+        session = SessionIndex.load(f.session)
+        session.source_index = dict(candidate_bundle_sha256=hashes, crop_binding=dict(bbox_sha256=hashes['bbox.json']),
+            parent_source_index_identity=identity, frame_count=3, frame_map=dict(rows=3),
+            source_manifest=binding(f.manifest_path), common_clock=binding(f.clock_path),
+            canonical_video_sidecars={cam:binding(f.video/(cam+'.frames.jsonl')) for cam in ('cam1','cam2')})
+        index = f.sessions / "derived-index.json"
+        index.write_text('{}')
+        def freeze(name, **extra):
+            return CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace/name, calibration_dir=f.base,
+                source_indexes={f.sid:binding(index)}, data_root=f.sessions, **extra)
+        with patch.object(source_module.SourceIndexedSession, 'load_source_index', return_value=session):
+            result = freeze('portable', review_source_ids=[f.sid], review_authorization=authority)
+            self.assertEqual(result.data['configuration_files_sha256'], hashes)
+            self.assertEqual(result.data['provenance'], sources)
+            self.assertNotIn('accepted_source_calibration_sha256', result.data['provenance'])
+            self.assertIn('evidence/review-authorization.json', result.data['artifacts'])
+            self.assertEqual(result.frame_map_path(f.sid).read_bytes(), f.expected_map)
+            self.assertFalse(result.data['production_admitted'])
+            with self.assertRaisesRegex(ValueError, 'accepted_bbox_sha256'):
+                freeze('formal')
+            with self.assertRaisesRegex(ValueError, 'authorization'):
+                freeze('no-authority', review_source_ids=[f.sid])
+            session.source_index['parent_source_index_identity'] = dict(identity,sha256='f'*64)
+            with self.assertRaisesRegex(ValueError, 'parent differs'):
+                freeze('wrong-parent', review_source_ids=[f.sid], review_authorization=authority)
+            session.source_index['parent_source_index_identity'] = identity
+            auth.write_bytes(auth.read_bytes()+b' ')
+            with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+                freeze('changed-authority', review_source_ids=[f.sid], review_authorization=authority)
+
     def test_canonical_five_files_and_original_source_sha_are_distinct(self):
         snapshot = self.fixture.freeze()
         self.assertEqual(snapshot.data["schema"], module._CANONICAL_SCHEMA)

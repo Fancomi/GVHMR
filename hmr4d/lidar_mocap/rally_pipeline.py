@@ -44,8 +44,25 @@ def load_run_session(root, calibration, sid):
         registry = read_json(registry_path)
         entry = registry["sources"][sid]
         if entry.get("source_index"):
+            review=registry.get('review_only') is True
+            if review:
+                declared=registry.get('pilot_manifest',{})
+                if (calibration.data.get('review_only') is not True or not declared.get('path')
+                        or file_sha(declared['path'])!=declared.get('sha256')):
+                    raise ValueError('Review source loader requires its original frozen pilot manifest and camera scope')
+                pilot=read_json(declared['path'])
+                from .pilot import validate_camera_review
+                validate_camera_review(pilot)
+                expected=pilot.get('source_indexes',{}).get(sid,{})
+                if (pilot.get('schema')!='badminton-review-pilot-v1' or pilot.get('review_only') is not True
+                        or pilot.get('training_published') is not False
+                        or pilot.get('bundle_sha256')!=calibration.data['configuration_files_sha256']
+                        or expected.get('sha256')!=entry['source_index']['sha256']
+                        or Path(pilot['data_root']).resolve()!=Path(registry['data_root']).resolve()):
+                    raise ValueError('Review source registry differs from its explicit pilot input')
             return SourceIndexedSession.load_source_index(
-                entry["source_index"]["path"], registry["data_root"], expected_sha256=entry["source_index"]["sha256"]
+                entry["source_index"]["path"], registry["data_root"], expected_sha256=entry["source_index"]["sha256"],
+                require_admitted=not review
             )
     return SessionIndex.load(Path(calibration.data["sessions_root"]) / sid, calibration.frame_map_path(sid))
 

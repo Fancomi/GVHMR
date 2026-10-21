@@ -44,7 +44,11 @@ def prepare_new_sources(source_root, root):
         session = load_run_session(source_root, cal, sid)
         eligible = {i for row in ranges if row["source_id"] == sid for i in row["eligible_paired_png_indices"]}
         selected[sid] = sorted(eligible)
-        for name, left, right, pairs in select_window_pairs(session.pairs(), eligible):
+        windows=select_window_pairs(session.pairs(), eligible)
+        if registry.get('review_only'):
+            from .pilot import review_rally_windows
+            windows=review_rally_windows(session.pairs(),[row for row in ranges if row['source_id']==sid])
+        for name, left, right, pairs in windows:
             window = initial / "sessions" / sid / "windows" / name
             config = dict(schema="badminton-window-v1", session_id=sid, window_id=name,
                           left_us=left, right_us=right, calibration_digest=cal.data["snapshot_digest"],
@@ -58,6 +62,12 @@ def prepare_new_sources(source_root, root):
                 session_splits=read_json(source_root / "session_splits.json"),
                 suggested_session_splits={name: dict(sessions=ids) for name, ids in read_json(source_root / "session_splits.json").items()},
                 identity_status="pending_native_detection_evidence", training_published=False)
+    if registry.get('review_only'):
+        from .pilot import require_review_group
+        require_review_group(plan['session_splits'],registry['sources'])
+        if intake.get('review_only') is not True or cal.data.get('review_only') is not True:
+            raise ValueError('Review pilot requires matching intake and camera snapshot scope')
+        plan.update(review_only=True,purpose='short_native_rally_review',required_nonempty_splits=[])
     input_path = root / "new_source_input.json"
     write_frozen(input_path, plan)
     endpoints = root / "unresolved_native_endpoints.json"
@@ -69,7 +79,7 @@ def prepare_new_sources(source_root, root):
     return plan
 
 
-def initial_teacher_window(root, source, window_name):
+def initial_teacher_window(root, source, window_name, camera=None):
     """Run only one explicit teacher window; creates no fitted or published labels."""
     from .teacher import run_teacher
     from .segmentation import court_polygon
@@ -89,10 +99,14 @@ def initial_teacher_window(root, source, window_name):
     session = load_run_session(source_root, cal, sid)
     config = read_json(window / "window.json")
     settings = config["settings"]
-    camera = settings["camera"]
+    camera = camera or settings["camera"]
+    if camera not in ('cam1','cam2'):
+        raise ValueError('Select one of the two frozen native cameras')
+    target = (window/'teacher' if camera==settings['camera'] else
+              root/'secondary_teachers'/camera/'sessions'/sid/'windows'/window.name/'teacher')
     rows = session.teacher_rows(camera, settings["teacher_stride"], config["left_us"]-1000000,
                                 config["right_us"]+1000000)
-    return run_teacher(session.video_paths[camera], rows, cal.camera(camera), window / "teacher",
+    return run_teacher(session.video_paths[camera], rows, cal.camera(camera), target,
                        batch_size=settings["batch_size"], resume=True,
                        roi_polygon=court_polygon(cal, camera), roi_margin_px=settings.get("roi_margin_px", 40),
                        preproc_precision=settings.get("preproc_precision", "float32"))

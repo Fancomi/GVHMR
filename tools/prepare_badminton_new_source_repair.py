@@ -11,6 +11,7 @@ def main():
     p.add_argument("--stage", choices=("prepare", "teacher"), default="prepare")
     p.add_argument("--source")
     p.add_argument("--window")
+    p.add_argument('--camera',choices=('cam1','cam2'),help='Independent secondary camera teacher; native primary stays unchanged')
     p.add_argument("--threads", type=int, default=1)
     a = p.parse_args()
     if a.threads < 1:
@@ -25,7 +26,7 @@ def main():
         import cv2
         torch.set_num_threads(a.threads)
         cv2.setNumThreads(a.threads)
-        result = initial_teacher_window(a.root, a.source, a.window)
+        result = initial_teacher_window(a.root, a.source, a.window,camera=a.camera)
         print(dict(tracks=len(result["tracks"]), training_published=False))
 
 

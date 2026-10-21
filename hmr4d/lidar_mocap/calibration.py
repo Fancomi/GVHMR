@@ -90,6 +90,9 @@ def _same_inputs(old, current):
     """Reusing an immutable legacy bundle requires the same physical inputs."""
     if old.get("sessions_root") != current["sessions_root"]:
         return False
+    if (bool(old.get('review_only')) != bool(current.get('review_only'))
+            or old.get('review_source_ids') != current.get('review_source_ids')):
+        return False
     if old.get("schema") == _CANONICAL_SCHEMA:
         if old.get("configuration_sha256") != current["configuration_sha256"]:
             return False
@@ -144,7 +147,8 @@ class CalibrationSnapshot:
         self._validate_geometry()
 
     @classmethod
-    def freeze(cls, lidar_project_root, sessions_root, output_dir, *, calibration_dir=None, source_indexes=None, data_root=None):
+    def freeze(cls, lidar_project_root, sessions_root, output_dir, *, calibration_dir=None, source_indexes=None, data_root=None,
+               review_source_ids=None, review_authorization=None):
         source_root = Path(lidar_project_root).resolve()
         sessions_root = Path(sessions_root).resolve()
         output_dir = Path(output_dir).resolve()
@@ -170,13 +174,36 @@ class CalibrationSnapshot:
         result_files = sources.get("result_files")
         if result_files is not None and result_files != {name: hashes[name] for name in _CONFIG_FILES if name != "sources.json"}:
             raise ValueError("Canonical result file SHA256 mismatch")
-        for key, actual in (("accepted_bbox_sha256", hashes["bbox.json"]),
-                            ("sync_policy_sha256", hashes["sync-policy.json"])):
-            if sources.get(key) != actual:
-                raise ValueError(f"Canonical source SHA256 mismatch: {key}")
+        portable_review = review_source_ids is not None and sources.get("usage") == "review_only" and "frame_maps" not in sources
+        if portable_review:
+            if (not isinstance(review_authorization, dict)
+                    or calibration.get("production_admitted") is not False
+                    or any(sources.get(key) is not False for key in
+                           ("camera_calibration_admitted", "body_labels_production_admitted", "production_admitted"))):
+                raise ValueError("Portable review sources require explicit camera-pilot authorization and pending admission")
+            authorization_path = Path(review_authorization["path"]).resolve()
+            authorization_blob = _checked_blob(authorization_path, review_authorization["sha256"])
+            authorization = _json(authorization_blob)
+            if (authorization.get("schema") != "badminton-calibration-review-status-v1"
+                    or authorization.get("usage") != "review_only"
+                    or authorization.get("camera_pilot_authorized") is not True
+                    or authorization.get("body_labels_production_admitted") is not False
+                    or authorization.get("training_published") is not False
+                    or authorization.get("result_files") != hashes
+                    or not authorization.get("user_confirmation")):
+                raise ValueError("Portable review authorization differs from the actual five-file camera bundle")
+            inputs[authorization_path] = authorization_blob
+            relative = "evidence/review-authorization.json"
+            blobs[relative] = authorization_blob
+            artifacts[relative] = dict(path=relative, source_path=str(authorization_path), sha256=_sha(authorization_blob))
+        else:
+            for key, actual in (("accepted_bbox_sha256", hashes["bbox.json"]),
+                                ("sync_policy_sha256", hashes["sync-policy.json"])):
+                if sources.get(key) != actual:
+                    raise ValueError(f"Canonical source SHA256 mismatch: {key}")
         # This is original calibration provenance, not the portable JSON's SHA.
         provenance_sha = sources.get("accepted_source_calibration_sha256", "")
-        if (not isinstance(provenance_sha, str) or len(provenance_sha) != 64
+        if not portable_review and (not isinstance(provenance_sha, str) or len(provenance_sha) != 64
                 or any(c not in "0123456789abcdef" for c in provenance_sha)):
             raise ValueError("Canonical sources lacks the original accepted calibration SHA256")
         if calibration.get("production_admitted") is not sources.get("production_admitted"):
@@ -199,27 +226,50 @@ class CalibrationSnapshot:
         roi_q = _matrix([float(x) for x in roi.get("lidar_rotation", "").split(",")], "ROI source M", (9,)).reshape(3, 3)
         if not np.array_equal(roi_q, q) or roi.get("bbox_json") != "bbox.json":
             raise ValueError("Canonical ROI, bbox path and source M disagree")
-        ids = calibration.get("valid_source_ids", [])
-        entries = sources.get("frame_maps", [])
+        ids = sources.get("valid_source_ids", []) if portable_review else calibration.get("valid_source_ids", [])
+        entries = sources.get("sources", []) if portable_review else sources.get("frame_maps", [])
         if (not ids or len(set(ids)) != len(ids) or set(ids) != set(sources.get("valid_source_ids", []))
                 or len(entries) != len(ids) or {e["source_id"] for e in entries} != set(ids)):
             raise ValueError("Canonical calibration and frame-map source identities disagree")
+        selected_ids=set(ids)
+        if review_source_ids is not None:
+            if (not isinstance(review_source_ids,list) or not review_source_ids
+                    or any(not isinstance(sid,str) for sid in review_source_ids)
+                    or len(set(review_source_ids))!=len(review_source_ids)
+                    or not set(review_source_ids)<=set(ids) or source_indexes is None or data_root is None):
+                raise ValueError('Review subset requires explicit unique calibrated source IDs and their bound indexes')
+            selected_ids=set(review_source_ids)
         sessions = {}
         for entry in entries:
+            declared_parent_path = None
             sid = entry["source_id"]
             if not isinstance(sid, str) or Path(sid).name != sid or sid in (".", ".."):
                 raise ValueError("Invalid canonical source identity")
+            if sid not in selected_ids:
+                continue
             if source_indexes is not None:
                 from .source_index import SourceIndexedSession, _bound_file, video_sidecar_contract
-                if data_root is None or set(source_indexes) != set(ids):
+                if data_root is None or set(source_indexes) != selected_ids:
                     raise ValueError("Explicit source indexes must cover the calibration source identities")
                 index_entry = source_indexes[sid]
                 index_path = _bound_file(Path(data_root).resolve(), index_entry)
                 session = SourceIndexedSession.load_source_index(
-                    index_path, data_root, expected_sha256=index_entry["sha256"])
+                    index_path, data_root, expected_sha256=index_entry["sha256"],
+                    require_admitted=review_source_ids is None)
                 index = session.source_index
-                if (index.get("accepted_calibration_sha256") != hashes["calibration.json"]
-                        or index.get("accepted_bundle_sha256") != hashes):
+                if review_source_ids is not None:
+                    if (index.get('candidate_bundle_sha256') != hashes
+                            or index.get('crop_binding',{}).get('bbox_sha256') != hashes['bbox.json']):
+                        raise ValueError('Review source crop/candidate bundle differs from the frozen pilot camera')
+                    if portable_review:
+                        identity = index.get("parent_source_index_identity", {})
+                        if (identity.get("file") != entry.get("source_index")
+                                or identity.get("sha256") != entry.get("source_index_sha256")):
+                            raise ValueError("Review crop parent differs from the declared original source index")
+                        declared_parent_path = _bound_file(Path(data_root).resolve(), identity)
+                        inputs[declared_parent_path] = _checked_blob(declared_parent_path, identity["sha256"])
+                elif (index.get("accepted_calibration_sha256") != hashes["calibration.json"]
+                      or index.get("accepted_bundle_sha256") != hashes):
                     raise ValueError("Explicit source index is bound to another calibration")
                 manifest_path = _bound_file(Path(data_root).resolve(), index["source_manifest"])
                 clock_path = _bound_file(Path(data_root).resolve(), index["common_clock"])
@@ -234,6 +284,8 @@ class CalibrationSnapshot:
                             for name in ("cam1", "cam2")}
                 session = SessionIndex.load(session_dir)
             raw_paths = [manifest_path, clock_path, *sidecars.values()]
+            if declared_parent_path is not None:
+                raw_paths.append(declared_parent_path)
             for path in raw_paths:
                 inputs[path] = _checked_blob(path)
             if not np.array_equal(session.Q, q):
@@ -250,7 +302,10 @@ class CalibrationSnapshot:
                 rows.append(dict(lidar_frame=pair["lidar_index"], device_first_us=pair["scan_start_us"],
                                  device_last_us=pair["scan_end_us"], scan_mid_us=pair["scan_mid_us"], cameras=cameras))
             map_blob = b"".join(json.dumps(row, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n" for row in rows)
-            if len(rows) != entry.get("rows") or _sha(map_blob) != entry.get("sha256"):
+            if portable_review:
+                if len(rows) != index.get("frame_count") or len(rows) != index["frame_map"].get("rows"):
+                    raise ValueError(f"Rebuilt review frame-map row count differs from the bound source index: {sid}")
+            elif len(rows) != entry.get("rows") or _sha(map_blob) != entry.get("sha256"):
                 raise ValueError(f"Rebuilt frame-map source rows/SHA256 mismatch: {sid}")
             relative = f"frame_maps/{sid}.jsonl"
             blobs[relative] = map_blob
@@ -310,6 +365,10 @@ class CalibrationSnapshot:
                     Q_rounding=dict(max_orthogonality_error=float(np.max(np.abs(q.T @ q - np.eye(3)))),
                                     determinant=float(np.linalg.det(q)), point_inverse="exact matrix inverse",
                                     orientation_inverse="nearest proper SO(3) of Q @ R_raw.T"))
+        if review_source_ids is not None:
+            data.update(review_only=True,review_source_ids=sorted(selected_ids),
+                        declared_calibration_source_ids=list(ids),production_admitted=False,
+                        training_published=False)
         snapshot_path = output_dir / "calibration_snapshot.json"
         cls(data, snapshot_path)  # Geometry validation precedes output creation.
         for path, blob in inputs.items():

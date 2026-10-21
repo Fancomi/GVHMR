@@ -27,6 +27,11 @@ whole-body/pose diagnostics do not add training admission gates.
 `tools/prepare_badminton_source.py` / `source_index.py` inspect an explicitly
 provided upstream source index on CPU. Candidate calibration applicability
 does not admit fitting; default session loading remains unchanged.
+`tools/run_badminton_pilot.py` / `pilot.py` consume an explicitly authorized,
+hash-bound review-only camera bundle and native-confirmed short rally ranges.
+The separate output freezes actual new crop indexes, runs both camera teachers,
+then reuses native pose, identity, v2 fitting, member/SMPL verification and the
+existing viewer. Its sole `review` group cannot enter formal training export.
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a
 derived crop's exact encoded-cell members when its cloud is read. Completion,

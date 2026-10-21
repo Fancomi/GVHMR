@@ -23,6 +23,9 @@ from .rally_pipeline import window_directory, load_run_session
 def source_selection(source):
     dataset_path = source/'datasets/dataset_manifest.json'
     dataset = _read(dataset_path)
+    snapshot=source/'calibration/calibration_snapshot.json'
+    if dataset.get('review_only') or (snapshot.exists() and _read(snapshot).get('review_only')):
+        raise ValueError('Review-only pilot cannot be used as a training export source')
     sources = dict(dataset_manifest=dict(path=str(dataset_path), sha256=file_sha(dataset_path)),
                    calibration=file_sha(source/'calibration/calibration_snapshot.json'), files=[])
     if dataset.get('source_registry'):
