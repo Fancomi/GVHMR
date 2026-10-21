@@ -106,9 +106,8 @@ function commonTime(camera=1){return paired()&&lastData?.native?clock(lastData.n
 function clearOverlay(){projectionRenderers.forEach(r=>r.clear());}
 function stopPlayback(){playToken++;playing=false;preparing=false;videos.forEach(v=>v.pause());$('play').textContent='播放';
  if(bufferWaitStart!=null){bufferWaits.push(performance.now()-bufferWaitStart);bufferWaitStart=null;}}
-async function pause(){const desired=reviewTime;stopPlayback();
+async function pause(){stopPlayback();
  while(frameBusy)await new Promise(resolve=>setTimeout(resolve,10));
- if(paired()&&lastData?.frame&&Math.abs(lastData.frame.offset_s-desired)>.15)await frameAt(desired);
  if(paired()&&lastData?.frame)reviewTime=lastData.frame.offset_s;
  timeline(reviewTime);feedback('已暂停 · 空格继续播放');
 }
@@ -175,7 +174,12 @@ async function pairedFrame(){const t=commonTime();stopPlayback();$('mode').value
 function update(now){
  try{
  if(source&&!loading){
-  if(playing&&paired())reviewTime+=Math.max(0,now-lastTick)/1000*+$('speed').value;
+  if(playing&&paired()){
+   const target=reviewTime+Math.max(0,now-lastTick)/1000*+$('speed').value;
+   const next=source.scan_times[(lastData?.lidar_index??0)+1]??lastData?.frame?.offset_s??reviewTime;
+   let available=next;for(const b of readyFrames.values())available=Math.max(available,b.data.frame.offset_s);
+   reviewTime=Math.min(target,available);
+  }
   const t=paired()?reviewTime:commonTime();if(!paired())reviewTime=t;timeline(paired()&&lastData?.frame?lastData.frame.offset_s:t);
   if(playing){
    if(paired()){
@@ -194,7 +198,9 @@ function update(now){
     if(Math.abs(t2-t)>.045)videos[1].currentTime=clock(t,'cam2');
     else videos[1].playbackRate=rate*Math.max(.98,Math.min(1.02,1+(t-t2)*.4));lastSync=now;}
    const end=$('loop').checked&&clip?Math.min(source.duration-.03,clip.end):source.duration-.03;
-   if(t>=end){if($('loop').checked)action(()=>seek(Math.max(0,clip.begin)).then(play));else action(pause);}
+   const shown=paired()&&lastData?.frame?lastData.frame.offset_s:t;
+   const finish=paired()?Math.min(end,source.scan_times.at(-1)):end;
+   if(shown>=finish-(paired()?.03:0)){if($('loop').checked)action(()=>seek(Math.max(0,clip.begin)).then(play));else action(pause);}
   }
  }
  }catch(e){stopPlayback();$('error').textContent=e.message;feedback('播放已暂停，可重试');}

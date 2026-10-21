@@ -14,6 +14,7 @@ SHA256 c5e86b2ba0cbb297b41e9d765997bceee1df3da46c942496b57a367fbc89119b
 该清单将旧 `upstream` 和指定 `device-time-sources` 文件逐项映射到同一
 source ID 的 `sessions` 文件，并绑定目标字节数和 SHA256。每条命令加载一次
 固定映射；命中映射后只读取对应目标，失败即报错，不搜索其他文件，也不回退旧目录。
+后续扩充映射使用新文件名及新 SHA，保留已被封存输入绑定的原清单。
 来源 index、clock、已发布训练清单及 SMPL 数值不改写；clock 中相对 raw-index
 仍按原逻辑父目录解析，再应用映射。
 

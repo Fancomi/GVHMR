@@ -1,6 +1,6 @@
 """Review-only fit quality on native observations, with measured stage wall times."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 import time
 
@@ -28,6 +28,45 @@ def statistics(values):
         if len(data)
         else dict(count=0)
     )
+
+
+def outlier_review(rows):
+    """Screen real timed pelvis steps; candidates never change fit admission."""
+    tracks = defaultdict(list)
+    ground = []
+    for row in rows:
+        tracks[row["motion_id"]].append(row)
+        value = row["qa"].get("max_ground_penetration_m", 0) * 1000
+        if np.isfinite(value) and value > 20:
+            ground.append(dict(source_id=row["source_id"], scan=row["scan"], motion=row["motion_id"],
+                ground_mm=value, surface_mm=row["qa"].get("surface_mean_m", 0) * 1000,
+                projection=row["qa"].get("reprojection_by_camera_px", {}),
+                raw_camera=row["raw_camera"], accepted=row["accepted"],
+                url=f"?source={row['source_id']}&scan={row['scan']}"))
+    steps = []
+    for motion, track in tracks.items():
+        track.sort(key=lambda row: (row["scan_mid_us"], row["scan"]))
+        for before, after in zip(track, track[1:]):
+            seconds = (after["scan_mid_us"] - before["scan_mid_us"]) / 1e6
+            if after["scan"] != before["scan"] + 1 or seconds <= 0:
+                continue
+            displacement = float(np.linalg.norm(np.asarray(after["pelvis"]) - before["pelvis"]))
+            if not np.isfinite(displacement):
+                continue
+            steps.append(dict(source_id=after["source_id"], motion_id=motion,
+                before=before["scan"], after=after["scan"], seconds=seconds,
+                displacement_m=displacement, speed_m_s=displacement / seconds,
+                both_qa_accepted=before["accepted"] and after["accepted"]))
+    steps.sort(key=lambda step: step["speed_m_s"], reverse=True)
+    candidates = [step for step in steps if step["speed_m_s"] > 5 or step["displacement_m"] > 0.5]
+    return dict(schema="badminton-review-pilot-outliers-v1", review_only=True, training_published=False,
+        ground_over_20mm=len(ground), ground_over_50mm=sum(c["ground_mm"] > 50 for c in ground),
+        ground_cases=sorted(ground, key=lambda case: case["ground_mm"], reverse=True),
+        pelvis_steps=dict(count=len(steps), worst=steps[:20],
+            median_speed_m_s=float(np.median([s["speed_m_s"] for s in steps])) if steps else None,
+            candidate_count=len(candidates), candidates=candidates,
+            candidate_screen="Displacement >0.5m or speed >5m/s; review only, no automatic rejection or identity decision"),
+        interpretation="All fitted rows; actual common-clock elapsed time; only consecutive scan ordinals within the same motion ID. Fast physical movement may trigger the screen. Endpoints and kinematics cannot certify identity through every interior occlusion.")
 
 
 def report_pilot(root):
@@ -62,6 +101,7 @@ def report_pilot(root):
             pose = row.get("native_pose_evidence") or {}
             with np.load(row["fit_path"]) as fitted:
                 joints = regressor @ fitted["vertices"]
+                pelvis = np.asarray(fitted["joints"][0], dtype=float).copy()
             for cam in ("cam1", "cam2"):
                 info, detection = pose.get("files", {}).get(cam), pose.get(cam + "_detection")
                 if info is None or detection is None:
@@ -84,6 +124,8 @@ def report_pilot(root):
                 )
             rows.append(
                 dict(
+                    source_id=row["session_id"], motion_id=row["motion_id"], scan=row["lidar_index"],
+                    scan_mid_us=row["scan_mid_us"], pelvis=pelvis,
                     accepted=row["accepted"],
                     qa=row["qa"],
                     raw_camera=raw_errors,
@@ -133,6 +175,12 @@ def report_pilot(root):
     if len(accepted) != dataset["accepted"]:
         raise ValueError("Pilot report and aggregate counts differ")
     timings = read_json(root / "stage_timings.json")
+    outliers = outlier_review(rows)
+    outliers["dataset"] = dict(path=str(dataset_path), sha256=file_sha(dataset_path))
+    outliers["native_verification"] = dict(path=str(labels / "native_verification.json"),
+                                          sha256=file_sha(labels / "native_verification.json"))
+    outlier_path = root / "outlier_review.json"
+    write_json(outlier_path, outliers)
     result = dict(
         schema="badminton-review-pilot-quality-v1",
         review_only=True,
@@ -143,6 +191,7 @@ def report_pilot(root):
         cohorts=dict(all_fitted=cohort(rows), accepted=cohort(accepted)),
         rejections=dict(Counter(reason for row in rows for reason in row["rejection_reasons"])),
         source_fit_reports_sha256=source_files,
+        outlier_review=dict(path=str(outlier_path), sha256=file_sha(outlier_path)),
         measured_stage_timings=timings,
         metric_scope=dict(
             surface="One-sided observed points to full SMPL triangles; equal person-scan weighting. QA uses at most 4096 returns per person-scan.",
