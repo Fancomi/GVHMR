@@ -174,8 +174,12 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
     ):
         raise ValueError("Fullraw original PTP evidence does not bind the complete original clock")
     raw_indexes = []
+    # Frozen crops retain the original clock bytes, including raw_index paths
+    # relative to its original directory. Resolve that directory through the
+    # already-bound parent index, never through the relocated clock snapshot.
+    raw_clock_path = _bound_file(data_root, original["common_clock"]) if derived else clock_path
     for track in clock["tracks"]:
-        raw = (clock_path.parent / track["raw_index"]).resolve()
+        raw = (raw_clock_path.parent / track["raw_index"]).resolve()
         entry = dict(file=str(raw.relative_to(data_root)), sha256=track["raw_index_sha256"])
         _bound_file(data_root, entry)
         raw_indexes.append(entry)
@@ -185,6 +189,7 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
         decode_evidence=index["fullraw_decode_evidence"],
         original_ptp_validation=index["original_ptp_validation"],
         original_manifest=manifest_entry,
+        original_clock_for_raw_indices=(original["common_clock"] if derived else index["common_clock"]),
         raw_timestamp_indices=raw_indexes,
         derived=derived,
     )

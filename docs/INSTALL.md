@@ -213,6 +213,28 @@ media/camera publication. These two new sources extend an existing release with
 its old evaluation sources retained; this adapter does not invent a third source
 or relax the complete-release train/val/test gates.
 
+Subsequent actual frozen-v2 inspection is sealed separately at
+`outputs/badminton_1019_frozen_cpu_v2/final/verification.json`. Both frozen crop
+indexes passed real CPU preparation and six child/parent PNG/member-map samples
+each; the 7,538 emitted clouds and 7,540 original clock rows remain intact.
+Nonempty timed pairs are 1,122 and 6,345. Their reduction from the parent counts
+is exactly the 48 and 14 crop-empty clouds, which remain explicit frames.
+The measured prepare functions took 1.838 s / 7.397 s, with process wall times
+3.334 s / 9.150 s on already-read local data. All 103 CPU regressions pass.
+The current cam1 correction is still pending: camera/body admissions stay false,
+no GPU ran, and these source counts are not qualified training-label counts.
+
+A frozen clock snapshot intentionally preserves the original JSON bytes.
+Its `raw_index` values remain relative to the original clock directory. Derived
+inspection therefore follows the verified parent source index's original
+`common_clock` file/SHA, checks those bytes against the frozen copy, and resolves
+all raw timestamp files only from that bound directory. It does not search for
+same-name files next to the relocated snapshot or edit the clock to repair paths.
+The report retains `original_clock_for_raw_indices`; a missing/changed original
+clock or changed raw timestamp file still fails validation. Original parent PNGs
+and clock evidence must remain available within the explicit data root for these
+source/member audits.
+
 Receive a sealed native rally collection with:
 
 ```powershell

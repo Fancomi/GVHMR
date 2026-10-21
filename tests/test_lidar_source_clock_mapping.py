@@ -176,6 +176,7 @@ def evidence(tmp_path):
         unexported_packet_clock_rows=index["unexported_packet_clock_rows"],
     )
     index.update(
+        common_clock=clock_ref,
         source_manifest=manifest,
         original_ptp_validation=ptp,
         fullraw_decode_evidence=reference(tmp_path / "proof.json", proof),
@@ -539,3 +540,37 @@ def test_derived_fullraw_parent_lineage_cannot_be_rebound(tmp_path, change):
         child["frames"][0]["member_mapping"]["child_valid_points"] = 2
     with pytest.raises(ValueError):
         verify_fullraw_evidence(child, tmp_path, tmp_path / "clock.json", clock)
+
+
+def relocated_clock_fixture(root):
+    child, clock = derived_evidence_fixture(root)
+    snapshot = root / "relocated"
+    snapshot.mkdir()
+    frozen = bytes_reference(snapshot / "common-clock.json", (root / "clock.json").read_bytes(), root)
+    child["common_clock"] = frozen
+    # A same-name file next to the relocated clock is not its historical raw
+    # timestamp evidence and must never override the bound parent's directory.
+    for track in clock["tracks"]:
+        (snapshot / track["raw_index"]).write_bytes(b"wrong relocated neighbour")
+    return child, clock, snapshot / "common-clock.json"
+
+
+def test_frozen_clock_raw_paths_use_the_bound_original_parent_directory(tmp_path):
+    child, clock, snapshot = relocated_clock_fixture(tmp_path)
+    result = verify_fullraw_evidence(child, tmp_path, snapshot, clock)
+    assert result["original_clock_for_raw_indices"]["file"] == "clock.json"
+    assert result["original_clock_for_raw_indices"]["sha256"] == child["common_clock"]["sha256"]
+    assert all(not item["file"].startswith("relocated") for item in result["raw_timestamp_indices"])
+
+
+@pytest.mark.parametrize("change", ["missing_clock", "changed_clock", "changed_raw"])
+def test_frozen_clock_cannot_bypass_original_clock_or_raw_timestamp_bindings(tmp_path, change):
+    child, clock, snapshot = relocated_clock_fixture(tmp_path)
+    if change == "missing_clock":
+        (tmp_path / "clock.json").unlink()
+    if change == "changed_clock":
+        (tmp_path / "clock.json").write_text("changed historical original")
+    if change == "changed_raw":
+        (tmp_path / clock["tracks"][0]["raw_index"]).write_text("changed timestamp index")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        verify_fullraw_evidence(child, tmp_path, snapshot, clock)
