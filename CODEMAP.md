@@ -36,6 +36,8 @@ then reuses native pose, identity, v2 fitting, member/SMPL verification and the
 existing viewer. Its sole `review` group cannot enter formal training export.
 Pilot scope, measured quality/timing and explicit GPU handoff:
 [docs/BADMINTON_REVIEW_PILOT.md](docs/BADMINTON_REVIEW_PILOT.md).
+`tools/serve_badminton_pilot_review.py` combines verified pilot services into ten
+native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chrome playback.
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a
 derived crop's exact encoded-cell members when its cloud is read. Completion,

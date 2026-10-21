@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -22,7 +23,18 @@ def main():
     args = p.parse_args()
     started = datetime.now(timezone.utc).isoformat()
     root = args.root.resolve()
-    if read_json(root / "pilot_input.json").get("review_only") is not True:
+    combined = not (root / "pilot_input.json").is_file()
+    if combined:
+        frozen = read_json(root / "viewer/manifest.json")
+        if (frozen.get("schema") != "badminton-multi-pilot-native-review-v1"
+                or frozen.get("review_only") is not True or frozen.get("training_published") is not False):
+            raise ValueError("Select a verified multi-pilot review")
+        for source in frozen["review_inputs"]:
+            for name in ("quality_report", "native_verification", "dataset"):
+                item = source[name]
+                if hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest() != item["sha256"]:
+                    raise ValueError("Combined pilot review input changed")
+    elif read_json(root / "pilot_input.json").get("review_only") is not True:
         raise ValueError("Select an explicitly review-only pilot")
     output = args.output.resolve() if args.output else root / "browser_checks"
     if not output.is_relative_to(root):
@@ -53,7 +65,7 @@ def main():
             raise ValueError("Selected original rally numbers must exist in the served manifest")
         for sid, source in manifest["sources"].items():
             for _, rally in [(s, r) for s, r in selected if s == sid]:
-                if rally["end"] - rally["begin"] < 5.3:
+                if rally["end"] - rally["begin"] < (4.99 if combined else 5.3):
                     raise ValueError("Pilot rally is too short for an actual five-second check")
                 # Fresh default canvases keep each exact RGBA check on the same
                 # rendering backend rather than triggering repeated-readback migration.
@@ -62,7 +74,7 @@ def main():
                 page.goto(args.url + f"?source={sid}&rally={rally['index']}")
                 page.wait_for_function("window.viewerReady===true", timeout=90000)
                 page.evaluate("async(i)=>{await viewer.selectRally(i);return true}", rally["index"])
-                page.evaluate("async(t)=>{await viewer.seek(t);return true}", rally["begin"] + 0.1)
+                page.evaluate("async(t)=>{await viewer.seek(t);return true}", rally["begin"] + (0 if combined else 0.1))
                 page.wait_for_function("!frameBusy && lastPairedFrame.athletes.length===2", timeout=45000)
                 before_rgb = visible_rgb_checks(page)
                 assert all(r["visible"] and r["different_rgba_components"] == 0 for r in before_rgb), before_rgb
@@ -102,7 +114,7 @@ def main():
                      bottom:document.querySelector('footer').getBoundingClientRect().bottom})"""
                 )
                 assert layout["bottom"] <= layout["height"] + 1, layout
-                page.screenshot(path=str(output / f"rally{rally['index']}.png"))
+                page.screenshot(path=str(output / f"{sid}_rally{rally['index']}.png"))
                 result = dict(
                     source_id=sid,
                     rally=rally["index"],
@@ -128,7 +140,8 @@ def main():
             outlier_scan = 443 if args.outlier_scan is None else args.outlier_scan
             outlier_source = manifest["sources"][outlier_sid]
             outlier_time = outlier_source["scan_times"][outlier_scan]
-            outlier_rally = next(r for r in outlier_source["rallies"] if r["begin"] <= outlier_time <= r["end"])
+            outlier_rally = next((r for r in outlier_source["rallies"] if r["begin"] <= outlier_time <= r["end"]),
+                                 outlier_source["rallies"][0])
             worst = browser.new_page(viewport=dict(width=1366, height=768))
             worst.goto(args.url + f"?source={outlier_sid}&rally={outlier_rally['index']}&scan={outlier_scan}")
             worst.wait_for_function("window.viewerReady===true && !frameBusy", timeout=90000)

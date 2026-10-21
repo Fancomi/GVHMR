@@ -7,7 +7,7 @@
 | 来源 | 范围 | 输出根目录 | 当前已完成阶段 |
 | --- | --- | --- | --- |
 | 20261019_152542 | 5 回合，525 扫描，52.333915 秒 | `outputs/badminton_1019_r11_pilot_v1` | 双机独立 teacher、原生 pose、人工 identity、拟合、成员/SMPL 验证及播放器 |
-| 20261019_152750 | 9 回合，1,260 扫描，125.701709 秒 | `outputs/badminton_1019_r11_pilot_second_v1` | CPU 准备，36.21 秒 CLI wall；GPU 等待新的安全交接 |
+| 20261019_152750 | 9 回合，1,260 扫描，125.701709 秒 | `outputs/badminton_1019_r11_pilot_second_v1` | 双机独立 teacher、原生 pose、人工 identity、拟合及成员/SMPL 验证完成；独立播放器 8782 |
 
 两段合计 178.035624 秒。第二段用独立输出，不修改第一段封存输入。
 第二段 CPU 收据是 `cpu_prepare_receipt.json`，SHA256
@@ -46,6 +46,36 @@ uv run --no-sync python tools/run_badminton_pilot.py `
 ```
 
 只有 Sports360 交出已保存的完整 epoch/CAL、实际 CUDA worker 退出，并把新的
-独立 lease 记录为 held 后才能运行该命令。旧第一段 lease 已 released，不能复用。
-后续阶段为 poses → identity 库存及人工原生评审 → fit → verify → viewer。
-第二段 viewer 使用 8782，避免覆盖第一段服务。
+独立 lease 记录为 held 后才能运行该命令。两次 lease 现在均已 released，不能复用。
+第二段于 2026-10-21 20:32:06 UTC 归还 GPU；实际 CUDA worker 及拟合进程树
+全部退出，Sports360 随后已从保存的 epoch 3 恢复。后续验证和播放器只做 CPU 数据处理。
+
+第二段实测 cam2 teacher 1,045.99 秒、cam1 合计 828.24 秒，双机原生 pose
+332.73 秒、原生 v2 拟合 910.99 秒、成员/SMPL 验证 151.94 秒。CPU 准备 CLI
+36.21 秒。它们是实际阶段 wall time，包含 CPU、GPU、IO，不是纯 kernel 时间。
+
+`coverage_audit.json` 及 SHA 绑定的 `coverage_by_scan_track.jsonl` 逐一记录
+18 条保留轨迹和 2,520 个参考 track-scan 单元。实际拟合 2,503、QA 通过 2,502、
+QA 拒收 1、未拟合 17。这个参考分母来自每窗两条保留轨迹，不能当作独立人工
+占场真值；2,520 张原生 pose 图像则来自 1,260 扫描乘两台相机，是另一种计数。
+17 个未拟合单元都在原回合 32 的棕发 raw track 2、scan 5278–5294；最近原生
+teacher 时间超过既有 18 ms 采样门限，不外推补标签。
+全部 34 张双机原生画面已实际评审：棕发运动员在 cam2 里仍然可见，cam1 后段才
+逐步离开视野。因此缺口不等于无人或视频缺帧；现有冻结记录不足以进一步区分
+primary teacher 的 ROI 排除和检测置信遗漏。证据见 `coverage_native_review/`。
+
+第二段全部已拟合人帧的表面残差均值为 23.96 mm，原始高置信度观测重投影均值
+cam1 / cam2 为 8.15 / 4.49 px。62 / 2,503 行地面穿透超过 20 mm，14 行超过
+50 mm；scan 1198 穿透 170.37 mm，被既有 QA 拒收。QA 通过的 scan 5277 仍有
+98.41 mm 穿透，原始 cam1 / cam2 重投影 41.01 / 23.52 px，是明确坏例，不能用
+整体均值掩盖。scan 2576→2577 的骨盆位移为 0.599 m / 99.984 ms，触发评审筛选；
+原生双机证据保留在 `interior_review/`。评审不改写原 QA，也不构成人体真值认证。
+
+合并入口 `http://127.0.0.1:8783/` 展示十段各五秒的原生连续评审。
+`tools/serve_badminton_pilot_review.py` 核对两段五件相机原文件、拓扑、显式路径映射和
+已验证的数据集绑定，复用 8781 / 8782 原生几何，直接读取校验过的原始 MP4。
+它不复制人体标签。两段 snapshot digest 各自保留，不能拿第一段 digest 代表第二段。
+真实 Chrome 十段均通过：每段实际超过 5 秒、51–52 个扫描，双机严格 RGBA 零差异、
+完整 6,890 顶点/人及三维/投影同扫描提交。另有四种屏幕尺寸的真实控件回归，
+以及拒收/大位移/QA 通过坏例的原生图与完整网格检查。收据位于
+`outputs/badminton_1019_r11_review/`。这些候选未进入正式训练集。
