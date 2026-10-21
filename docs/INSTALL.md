@@ -941,7 +941,13 @@ for diagnostics.
 The completed 1015 expansion is documented in
 `docs/BADMINTON_REPAIRED_RELEASE.md`. Formal producer entry:
 `outputs/badminton_expanded_v1/training_manifest.json`; actual data:
-`D:/PROJECT/LABEL/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`.
+`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`.
+The canonical archive root is `D:/PROJECT/LIDAR/datas/lidar2smpl_badminton`;
+`seal_badminton_expansion.py --data-root` defaults to that directory for future
+releases. The former `D:/PROJECT/LABEL/datas/lidar2smpl_badminton` location is a
+compatibility junction for immutable published manifests and receipts. Their
+historical path strings and SHA bindings are retained; migration does not rewrite
+released tensors or publication evidence.
 The fixed dashboard links to admitted canonical playback on port 8774 and the
 existing training curves. Port 8773 was the superseded pre-correction preview.
 

@@ -449,8 +449,14 @@ def seal(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("assembly", "browser", "continuity", "pixels", "sequence-report", "data-root"):
+    for name in ("assembly", "browser", "continuity", "pixels", "sequence-report"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("D:/PROJECT/LIDAR/datas/lidar2smpl_badminton"),
+        help="Canonical release archive root (default: %(default)s)",
+    )
     parser.add_argument("--release-id", required=True)
     args = parser.parse_args()
     if not args.assembly.resolve().is_relative_to(PROJ_ROOT / "outputs"):

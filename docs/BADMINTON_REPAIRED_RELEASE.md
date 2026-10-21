@@ -130,8 +130,12 @@ schema 为 `native-pixel-corrections/v1`。它绑定原 `training_manifest`、te
 
 正式入口为 `outputs/badminton_expanded_v1/training_manifest.json`，
 SHA256 `559ba09126f57a41b433b91adfbc21261247a9d3b5a61838a657e3545aa5d61f`。
-该清单各 split 的张量和 metadata 实际指向统一目录：
-`D:/PROJECT/LABEL/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`。
+该清单各 split 的张量和 metadata 统一存放在：
+`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`。
+2026-10-21 按用户要求迁移至 `D:/PROJECT/LIDAR/datas/lidar2smpl_badminton`；
+后续发布的 `seal_badminton_expansion.py --data-root` 默认使用该根目录。
+旧 `D:/PROJECT/LABEL/datas/lidar2smpl_badminton` 仅保留兼容 Junction，
+供已冻结清单、收据中的旧绝对路径继续读取同一份数据；不改写历史清单、SHA 绑定或张量。
 归档入口 `manifest.json` SHA256 为
 `62b12c725b1a42a6501bce4b2593d6e250f616b3590431acaae3d9322e673c1f`。
 归档使用独立字节副本；公共校验器与消费侧均通过实际全量验收。
