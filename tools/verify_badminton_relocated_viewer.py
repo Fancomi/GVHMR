@@ -1,6 +1,7 @@
 """Check relocated canonical source reads through the actual running browser."""
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--without-canonical-publication", action="store_true")
     args = parser.parse_args()
+    started = datetime.now(timezone.utc).isoformat()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with urlopen(args.url + "api/manifest", timeout=20) as response:
         manifest = json.load(response)
@@ -71,6 +73,7 @@ def main():
         browser.close()
     assert not errors, errors
     result = dict(passed=True, url=args.url, data_relocations=manifest["data_relocations"],
+                  started_utc=started, completed_utc=datetime.now(timezone.utc).isoformat(),
                   runtime_relocations=manifest["runtime_relocations"], canonical_publication=publication,
                   declared_sources=manifest.get("declared_source_count", manifest["source_count"]),
                   empty_sources=manifest.get("empty_sources", {}),

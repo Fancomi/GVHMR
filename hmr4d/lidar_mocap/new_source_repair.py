@@ -8,6 +8,7 @@ from .calibration import CalibrationSnapshot
 from .dual_view import file_sha
 from .pipeline import BadmintonPipeline, write_json
 from .rally_pipeline import load_run_session, read_json, read_rows, select_window_pairs
+from .relocations import load_pilot_run_relocations, validate_run_relocations
 
 
 def write_frozen(path, value):
@@ -16,12 +17,15 @@ def write_frozen(path, value):
     write_json(path, value)
 
 
-def prepare_new_sources(source_root, root):
+def prepare_new_sources(source_root, root, *, relocations=None):
     source_root, root = Path(source_root).resolve(), Path(root).resolve()
     if not root.is_relative_to(PROJ_ROOT / "outputs") or root == source_root:
         raise ValueError("Use a separate GVHMR outputs root")
     cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
     registry = read_json(source_root / "source_registry.json")
+    if relocations is None:
+        relocations = load_pilot_run_relocations(source_root, cal.data)
+    validate_run_relocations(registry, cal.data, relocations)
     intake = read_json(registry["intake"]["path"])
     if file_sha(registry["intake"]["path"]) != registry["intake"]["sha256"]:
         raise ValueError("Source intake changed")
@@ -41,7 +45,7 @@ def prepare_new_sources(source_root, root):
     for sid, entry in registry["sources"].items():
         if entry["baseline"]:
             raise ValueError("New-source repair preparation does not reuse old body labels")
-        session = load_run_session(source_root, cal, sid)
+        session = load_run_session(source_root, cal, sid, relocations=relocations)
         eligible = {i for row in ranges if row["source_id"] == sid for i in row["eligible_paired_png_indices"]}
         selected[sid] = sorted(eligible)
         windows=select_window_pairs(session.pairs(), eligible)
@@ -62,6 +66,8 @@ def prepare_new_sources(source_root, root):
                 session_splits=read_json(source_root / "session_splits.json"),
                 suggested_session_splits={name: dict(sessions=ids) for name, ids in read_json(source_root / "session_splits.json").items()},
                 identity_status="pending_native_detection_evidence", training_published=False)
+    if relocations is not None:
+        plan["data_relocations"] = dict(relocations.binding)
     if registry.get('review_only'):
         from .pilot import require_review_group
         require_review_group(plan['session_splits'],registry['sources'])
@@ -96,7 +102,10 @@ def initial_teacher_window(root, source, window_name, camera=None):
     cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
     if cal.data["snapshot_digest"] != plan["calibration_digest"]:
         raise ValueError("New-source calibration changed")
-    session = load_run_session(source_root, cal, sid)
+    relocations = load_pilot_run_relocations(source_root, cal.data)
+    if plan.get("data_relocations") != (dict(relocations.binding) if relocations is not None else None):
+        raise ValueError("Teacher source plan changed its relocation binding")
+    session = load_run_session(source_root, cal, sid, relocations=relocations)
     config = read_json(window / "window.json")
     settings = config["settings"]
     camera = camera or settings["camera"]

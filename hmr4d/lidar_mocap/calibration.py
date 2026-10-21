@@ -90,6 +90,8 @@ def _same_inputs(old, current):
     """Reusing an immutable legacy bundle requires the same physical inputs."""
     if old.get("sessions_root") != current["sessions_root"]:
         return False
+    if old.get("data_relocations") != current.get("data_relocations"):
+        return False
     if (bool(old.get('review_only')) != bool(current.get('review_only'))
             or old.get('review_source_ids') != current.get('review_source_ids')):
         return False
@@ -148,10 +150,16 @@ class CalibrationSnapshot:
 
     @classmethod
     def freeze(cls, lidar_project_root, sessions_root, output_dir, *, calibration_dir=None, source_indexes=None, data_root=None,
-               review_source_ids=None, review_authorization=None):
+               review_source_ids=None, review_authorization=None, relocations=None):
         source_root = Path(lidar_project_root).resolve()
         sessions_root = Path(sessions_root).resolve()
         output_dir = Path(output_dir).resolve()
+        if relocations is not None:
+            from .relocations import require_relocation_root
+            if data_root is None or source_indexes is None:
+                raise ValueError("Relocated calibration freeze requires explicit DATA root and source indexes")
+            require_relocation_root(data_root, relocations)
+            require_relocation_root(sessions_root.parent, relocations)
         if not output_dir.is_relative_to(_WORKSPACE_ROOT.resolve()):
             raise ValueError("Calibration output_dir must remain inside the GVHMR workspace")
         if output_dir.is_relative_to(source_root) or output_dir.is_relative_to(sessions_root):
@@ -162,6 +170,15 @@ class CalibrationSnapshot:
         hashes = {name: _sha(blobs[f"evidence/{name}"]) for name in _CONFIG_FILES}
         artifacts = {f"evidence/{name}": dict(path=f"evidence/{name}", source_path=str(config_dir / name),
                                              sha256=hashes[name]) for name in _CONFIG_FILES}
+        if relocations is not None:
+            table = relocations.root / relocations.binding["file"]
+            blob = _checked_blob(table, relocations.binding["sha256"])
+            if len(blob) != relocations.binding["bytes"]:
+                raise ValueError("Relocation manifest changed during calibration freeze")
+            inputs[table] = blob
+            blobs["evidence/data-relocations.json"] = blob
+            artifacts["evidence/data-relocations.json"] = dict(
+                path="evidence/data-relocations.json", source_path=str(table), sha256=relocations.binding["sha256"])
         calibration = _json(blobs["evidence/calibration.json"])
         sources = _json(blobs["evidence/sources.json"])
         policy = _json(blobs["evidence/sync-policy.json"])
@@ -252,10 +269,10 @@ class CalibrationSnapshot:
                 if data_root is None or set(source_indexes) != selected_ids:
                     raise ValueError("Explicit source indexes must cover the calibration source identities")
                 index_entry = source_indexes[sid]
-                index_path = _bound_file(Path(data_root).resolve(), index_entry)
+                index_path = _bound_file(Path(data_root).resolve(), index_entry, relocations=relocations)
                 session = SourceIndexedSession.load_source_index(
                     index_path, data_root, expected_sha256=index_entry["sha256"],
-                    require_admitted=review_source_ids is None)
+                    require_admitted=review_source_ids is None, relocations=relocations)
                 index = session.source_index
                 if review_source_ids is not None:
                     if (index.get('candidate_bundle_sha256') != hashes
@@ -266,15 +283,16 @@ class CalibrationSnapshot:
                         if (identity.get("file") != entry.get("source_index")
                                 or identity.get("sha256") != entry.get("source_index_sha256")):
                             raise ValueError("Review crop parent differs from the declared original source index")
-                        declared_parent_path = _bound_file(Path(data_root).resolve(), identity)
+                        declared_parent_path = _bound_file(Path(data_root).resolve(), identity, relocations=relocations)
                         inputs[declared_parent_path] = _checked_blob(declared_parent_path, identity["sha256"])
                 elif (index.get("accepted_calibration_sha256") != hashes["calibration.json"]
                       or index.get("accepted_bundle_sha256") != hashes):
                     raise ValueError("Explicit source index is bound to another calibration")
-                manifest_path = _bound_file(Path(data_root).resolve(), index["source_manifest"])
-                clock_path = _bound_file(Path(data_root).resolve(), index["common_clock"])
+                manifest_path = _bound_file(Path(data_root).resolve(), index["source_manifest"], relocations=relocations)
+                clock_path = _bound_file(Path(data_root).resolve(), index["common_clock"], relocations=relocations)
                 _, bindings = video_sidecar_contract(index)
-                sidecars = {name: _bound_file(Path(data_root).resolve(), bindings[name]) for name in ("cam1", "cam2")}
+                sidecars = {name: _bound_file(Path(data_root).resolve(), bindings[name], relocations=relocations)
+                            for name in ("cam1", "cam2")}
                 inputs[index_path] = _checked_blob(index_path, index_entry["sha256"])
             else:
                 session_dir = _bounded(sessions_root, sid)
@@ -369,6 +387,8 @@ class CalibrationSnapshot:
             data.update(review_only=True,review_source_ids=sorted(selected_ids),
                         declared_calibration_source_ids=list(ids),production_admitted=False,
                         training_published=False)
+        if relocations is not None:
+            data["data_relocations"] = dict(relocations.binding)
         snapshot_path = output_dir / "calibration_snapshot.json"
         cls(data, snapshot_path)  # Geometry validation precedes output creation.
         for path, blob in inputs.items():

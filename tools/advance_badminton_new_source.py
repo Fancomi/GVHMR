@@ -59,6 +59,31 @@ def execute(args):
     )
     state_path = root / "production_stage.json"
     write_json(state_path, state)
+    if plan.get("review_only") is True:
+        from hmr4d.lidar_mocap.pilot import run_pilot_stage
+        pilot = root.parent
+        state.update(stage="waiting_independent_camera_teachers", review_only=True)
+        write_json(state_path, state)
+        while True:
+            require_gpu_lease(args.gpu_lease)
+            if file_sha(plan_path) != state["source_input_sha256"]:
+                raise ValueError("Frozen pilot input changed")
+            progress = read_json(pilot / "pilot_progress.json")
+            if progress["stage"] == "failed":
+                raise RuntimeError("Pilot teacher failed; see its recorded failed_stage and log")
+            if progress["stage"] == "teacher_complete":
+                break
+            if progress["stage"] != "teacher_running":
+                raise ValueError("Pilot continuation requires its actual active or complete dual-camera teachers")
+            time.sleep(5)
+        for stage in ("poses", "identity"):
+            state.update(stage=stage, updated_utc=datetime.now(timezone.utc).isoformat())
+            write_json(state_path, state)
+            run_pilot_stage(pilot, stage, gpu_lease=args.gpu_lease, threads=args.threads)
+        state.update(stage="awaiting_identity_inventory_review", review_only=True,
+                     updated_utc=datetime.now(timezone.utc).isoformat())
+        write_json(state_path, state)
+        return
     while True:
         require_gpu_lease(args.gpu_lease)
         progress_path = root / "initial_teacher_progress.json"

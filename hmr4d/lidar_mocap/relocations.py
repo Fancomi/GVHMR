@@ -188,3 +188,55 @@ def validate_run_relocations(registry, calibration_data, relocations):
     require_relocation_root(Path(calibration_data["sessions_root"]).parent, relocations)
     if any(binding is not None and binding != dict(relocations.binding) for binding in declared):
         raise ValueError("Runtime data relocation binding differs from the frozen run")
+
+
+def load_manifest_relocations(spec):
+    """Activate only the exact relocation binding explicitly written in this input."""
+    entry = spec.get("data_relocations")
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or set(entry) != {"file", "sha256", "bytes"}:
+        raise ValueError("Pilot relocation binding must specify exact file/SHA256/bytes")
+    root = Path(spec["data_root"]).resolve()
+    path = root / logical_path(entry["file"])
+    resolver = load_relocations(root, path, entry["sha256"])
+    if dict(resolver.binding) != entry:
+        raise ValueError("Pilot relocation manifest byte binding differs")
+    return resolver
+
+
+def load_pilot_run_relocations(run_root, calibration_data=None):
+    """Explicit command adapter for a new run's hash-bound pilot configuration.
+
+    Call once at a command entry and pass the returned object to every reader.
+    This does not change load_run_session's strict default or discover a table.
+    """
+    root = Path(run_root)
+    registry = json.loads((root / "source_registry.json").read_text(encoding="utf-8-sig"))
+    entry = registry.get("pilot_manifest")
+    if registry.get("review_only") is not True or not isinstance(entry, dict):
+        if registry.get("data_relocations") is not None:
+            raise ValueError("Manifest-driven relocation requires an explicit frozen review pilot")
+        return None
+    path = Path(entry["path"])
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != entry["sha256"]:
+        raise ValueError("Original pilot manifest changed")
+    spec = json.loads(payload)
+    if (
+        spec.get("schema") != "badminton-review-pilot-v1"
+        or spec.get("review_only") is not True
+        or spec.get("training_published") is not False
+        or spec.get("data_relocations") != registry.get("data_relocations")
+        or Path(spec["data_root"]).resolve() != Path(registry["data_root"]).resolve()
+    ):
+        raise ValueError("Frozen pilot registry and original relocation input differ")
+    resolver = load_manifest_relocations(spec)
+    if calibration_data is None:
+        from .calibration import CalibrationSnapshot
+
+        calibration_data = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json").data
+    validate_run_relocations(registry, calibration_data, resolver)
+    if resolver is not None and calibration_data.get("data_relocations") != dict(resolver.binding):
+        raise ValueError("New pilot camera snapshot lacks its exact frozen relocation binding")
+    return resolver

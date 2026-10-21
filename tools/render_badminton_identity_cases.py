@@ -11,6 +11,7 @@ from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.teacher import _undistorter
 
 
@@ -19,6 +20,7 @@ def render(root, indices):
     plan = read_json(root / "new_source_input.json")
     source = Path(plan["source_root"])
     cal = CalibrationSnapshot.load(source / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(source, cal.data)
     cases = {c["index"]: c for c in read_json(root / "identity_evidence/boundaries.json")}
     sessions, reports = {}, {}
     output = root / "identity_evidence/case_previews"
@@ -43,7 +45,7 @@ def render(root, indices):
             report_path = root / "identity_evidence/native_identity_review.json"
         if sid not in reports:
             reports[sid] = read_json(report_path)
-            sessions[sid] = load_run_session(source, cal, sid)
+            sessions[sid] = load_run_session(source, cal, sid, relocations=relocations)
         review = next(c for c in reports[sid]["cases"] if c["index"] == index)
         session, tiles, records = sessions[sid], [], []
         for side, position, vote in zip(("before", "after"), case["positions"], review["votes"]):

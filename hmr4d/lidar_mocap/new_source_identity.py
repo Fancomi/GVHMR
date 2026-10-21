@@ -247,6 +247,7 @@ def render_endpoints(root, *, offset=0, limit=20):
     import torch
     from .calibration import CalibrationSnapshot
     from .rally_pipeline import load_run_session
+    from .relocations import load_pilot_run_relocations
     from .teacher import _undistorter
 
     root = Path(root)
@@ -257,6 +258,7 @@ def render_endpoints(root, *, offset=0, limit=20):
         raise ValueError("Endpoint inventory belongs to another input")
     source_root = Path(plan["source_root"])
     cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(source_root, cal.data)
     sessions, detectors = {}, {}
     entries = []
     directory = root / "identity_evidence/endpoint_previews"
@@ -265,7 +267,7 @@ def render_endpoints(root, *, offset=0, limit=20):
     for ordinal, entry in enumerate(inventory["tracklets"][offset : offset + limit], offset):
         sid = entry["source_id"]
         if sid not in sessions:
-            sessions[sid] = load_run_session(source_root, cal, sid)
+            sessions[sid] = load_run_session(source_root, cal, sid, relocations=relocations)
         session = sessions[sid]
         window = Path(entry["source_window"])
         if str(window) not in detectors:

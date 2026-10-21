@@ -20,6 +20,7 @@ from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.fitting import FittingConfig, SMPLFitter
 from hmr4d.lidar_mocap.pipeline import BadmintonPipeline, write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.teacher import _jsonable, run_teacher
 from hmr4d.lidar_mocap.pose_provider import NativePoseProvider
 from hmr4d.lidar_mocap.segment_cache import FrozenSegmentCache
@@ -84,6 +85,7 @@ def main():
     if not (root / "source_registry.json").exists():
         shutil.copyfile(args.source_root / "source_registry.json", root / "source_registry.json")
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(root, calibration.data)
     source_calibration = CalibrationSnapshot.load(args.source_root / "calibration/calibration_snapshot.json")
     if calibration.data["snapshot_digest"] != source_calibration.data["snapshot_digest"]:
         raise ValueError("Body repair cannot change cameras/calibration")
@@ -202,7 +204,7 @@ def main():
             print(f"[validated resume] {sid}/{original.name}", flush=True)
             continue
         if sid not in sessions:
-            sessions[sid] = load_run_session(root, calibration, sid)
+            sessions[sid] = load_run_session(root, calibration, sid, relocations=relocations)
         session = sessions[sid]
         selected = set(config["source_pairs"])
         pairs = [p for p in session.pairs() if p["lidar_index"] in selected]

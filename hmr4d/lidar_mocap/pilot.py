@@ -16,6 +16,7 @@ from .new_source_repair import prepare_new_sources, write_frozen
 from .pipeline import write_json
 from .rally_pipeline import load_run_session, read_json
 from .repair_execution import require_gpu_lease
+from .relocations import load_manifest_relocations, load_pilot_run_relocations
 from .source_index import _bound_file
 
 
@@ -139,6 +140,7 @@ def prepare_pilot(manifest_path, output_root):
         raise ValueError("Use a separate explicit outputs/ pilot root")
     spec = read_json(manifest_path)
     scope = validate_pilot_spec(spec)
+    relocations = load_manifest_relocations(spec)
     validate_camera_review(spec)
     original = binding(manifest_path)
     data_root = Path(spec["data_root"]).resolve()
@@ -160,6 +162,7 @@ def prepare_pilot(manifest_path, output_root):
         data_root=data_root,
         review_source_ids=scope["sources"],
         review_authorization=spec["review_authorization"],
+        relocations=relocations,
     )
     if frozen.data["configuration_files_sha256"] != spec["bundle_sha256"]:
         raise ValueError("Pilot snapshot and declared camera bundle differ")
@@ -172,8 +175,10 @@ def prepare_pilot(manifest_path, output_root):
         data_root=str(data_root),
         sources={},
     )
+    if relocations is not None:
+        registry["data_relocations"] = dict(relocations.binding)
     for sid, entry in indexes.items():
-        path = _bound_file(data_root, entry)
+        path = _bound_file(data_root, entry, relocations=relocations)
         index = read_json(path)
         if (
             index.get("source_kind") != "derived_native_roi_fixed24"
@@ -197,6 +202,7 @@ def prepare_pilot(manifest_path, output_root):
             data_root,
             expected_sha256=entry["source_index"]["sha256"],
             require_admitted=False,
+            relocations=relocations,
         )
     for number, clip in enumerate(spec["clips"]):
         sid = clip["source_id"]
@@ -241,19 +247,19 @@ def prepare_pilot(manifest_path, output_root):
         for sid in scope["sources"]
     }
     intake_path = source / "pilot_intake.json"
-    write_frozen(
-        intake_path,
-        dict(
-            schema="badminton-review-rally-intake-v1",
-            review_only=True,
-            training_published=False,
-            pilot_manifest=original,
-            prepared_ranges=binding(ranges_path),
-            sources=sources,
-            rallies=len(rows),
-            effective_window_minutes=scope["selected_seconds"] / 60,
-        ),
+    intake = dict(
+        schema="badminton-review-rally-intake-v1",
+        review_only=True,
+        training_published=False,
+        pilot_manifest=original,
+        prepared_ranges=binding(ranges_path),
+        sources=sources,
+        rallies=len(rows),
+        effective_window_minutes=scope["selected_seconds"] / 60,
     )
+    if relocations is not None:
+        intake["data_relocations"] = dict(relocations.binding)
+    write_frozen(intake_path, intake)
     registry["intake"] = binding(intake_path)
     write_frozen(source / "source_registry.json", registry)
     write_frozen(source / "session_splits.json", dict(review=scope["sources"]))
@@ -269,8 +275,10 @@ def prepare_pilot(manifest_path, output_root):
         selection=scope,
         prepare_seconds=time.perf_counter() - started,
     )
+    if relocations is not None:
+        state["data_relocations"] = dict(relocations.binding)
     write_frozen(root / "pilot_input.json", dict(state, prepare_seconds=None, stage="frozen_input"))
-    plan = prepare_new_sources(source, root / "repair")
+    plan = prepare_new_sources(source, root / "repair", relocations=relocations)
     state["windows"] = len(plan["jobs"])
     for sid in scope["sources"]:
         state[sid] = dict(state="prepared_review_only", baseline=False)
@@ -323,6 +331,11 @@ def run_pilot_stage(root, stage, *, gpu_lease=None, threads=1):
     check_binding(frozen["manifest"])
     source, repair = root / "source", root / "repair"
     plan = read_json(repair / "new_source_input.json")
+    relocations = load_pilot_run_relocations(source)
+    if frozen.get("data_relocations") != (dict(relocations.binding) if relocations is not None else None):
+        raise ValueError("Frozen pilot input changed its explicit relocation binding")
+    if plan.get("data_relocations") != (dict(relocations.binding) if relocations is not None else None):
+        raise ValueError("Prepared pilot plan changed its explicit relocation binding")
     if plan.get("review_only") is not True:
         raise ValueError("Selected run is not a review-only pilot")
     labels = repair / "final_labels"
@@ -424,6 +437,12 @@ def run_pilot_stage(root, stage, *, gpu_lease=None, threads=1):
                 ],
             )
         )
+        commands.append(
+            (
+                "native_quality_report",
+                python + [str(PROJ_ROOT / "tools/report_badminton_pilot.py"), "--root", str(root)],
+            )
+        )
     else:
         raise ValueError("Unknown bounded pilot stage")
     logs = root / "logs"
@@ -487,7 +506,7 @@ def run_pilot_stage(root, stage, *, gpu_lease=None, threads=1):
     return progress
 
 
-def serve_pilot(root, port):
+def serve_pilot(root, port, *, relocations=None, viewer_output=None):
     from .rally_viewer import prepare_viewer, serve_viewer
 
     root = Path(root).resolve()
@@ -497,7 +516,7 @@ def serve_pilot(root, port):
     dataset = read_json(labels / "datasets/dataset_manifest.json")
     if dataset.get("review_only") is not True:
         raise ValueError("Pilot viewer requires explicitly review-only fitted bodies")
-    data = prepare_viewer(labels, labels)
+    data = prepare_viewer(labels, labels, relocations=relocations, viewer_output=viewer_output)
     for sid, entry in data.manifest["sources"].items():
         entry["baseline"] = True
     write_json(
@@ -506,23 +525,55 @@ def serve_pilot(root, port):
             state="review_only",
             review_only=True,
             training_published=False,
+            body_qa_accepted=dataset["accepted"],
             sources={
-                sid: dict(baseline=True, state="pilot_fitted_candidate", accepted=dataset["exports"][sid]["accepted"])
-                for sid in data.manifest["sources"]
+                sid: dict(
+                    baseline=True,
+                    state="fitted",
+                    accepted=dataset["exports"][sid]["accepted"],
+                    fitted=sum(
+                        read_json(p)["fitted"]
+                        for p in (labels / "sessions" / sid / "windows").glob("*/fit_report.json")
+                    ),
+                    rallies=len(entry["rallies"]),
+                    rally_unique_paired_scans=sum(r["source_frame_count"] for r in entry["rallies"]),
+                )
+                for sid, entry in data.manifest["sources"].items()
             },
         ),
     )
     data.manifest.update(
         review_only=True, training_published=False, camera_label=read_json(root / "pilot_input.json")["camera_label"]
     )
-    write_json(labels / "viewer/manifest.json", data.manifest)
-    page = labels / "viewer/index.html"
+    write_json(data.viewer_output / "manifest.json", data.manifest)
+    page = data.viewer_output / "index.html"
     html = page.read_text(encoding="utf-8")
-    page.write_text(
-        html.replace(
-            "<body>",
-            '<body><div style="padding:8px 20px;background:#fff2dd">R11 短片试跑评审 · 仅所选回合 · 未发布训练数据</div>',
-        ),
-        encoding="utf-8",
+    html = html.replace("羽毛球 · 双机 / SMPL 检查", "R11 · 双机 / SMPL 评审")
+    html = html.replace(
+        "7 来源 · 204 回合", f'{data.manifest["source_count"]} 来源 · {data.manifest["rally_count"]} 回合'
     )
+    html = html.replace(
+        "7 来源 / 204 回合", f'{data.manifest["source_count"]} 来源 / {data.manifest["rally_count"]} 回合'
+    )
+    html = html.replace("回合版人帧", "试拟合人帧").replace("回合版数据", "R11 试拟合数据")
+    html = html.replace('<div class="counts">', '<div class="counts"><span>仅所选回合 · 未发布训练</span>')
+    html = html.replace(
+        "本页展示密封回合子集，合格人帧包含旧场次的回合复用和新增场次，不代表所有历史数据累计量。",
+        "本页仅评审冻结 R11 标定下的所选真实回合，候选人体没有发布为训练数据。",
+    )
+    report_path = root / "quality_report.json"
+    if report_path.exists():
+        report = read_json(report_path)
+        if report["dataset"]["sha256"] != file_sha(labels / "datasets/dataset_manifest.json"):
+            raise ValueError("Viewer quality summary belongs to another body dataset")
+        cohort = report["cohorts"]["all_fitted"]
+        surface = cohort["surface_and_ground_mm"]["surface_mean_m"]["mean"]
+        raw = cohort["raw_native_camera_px"]
+        summary = (
+            f'<p class="notice">全部 {cohort["person_scans"]} 人帧：点面均值 {surface:.2f} mm；'
+            f'原始 2D 重投影 CAM1 {raw["cam1"]["mean_px"]["mean"]:.2f} px / '
+            f'CAM2 {raw["cam2"]["mean_px"]["mean"]:.2f} px（未做射线剔除）。</p>'
+        )
+        html = html.replace('<div class="table-scroll">', summary + '<div class="table-scroll">')
+    page.write_text(html, encoding="utf-8")
     serve_viewer(data, port=port)

@@ -34,6 +34,8 @@ hash-bound review-only camera bundle and native-confirmed short rally ranges.
 The separate output freezes actual new crop indexes, runs both camera teachers,
 then reuses native pose, identity, v2 fitting, member/SMPL verification and the
 existing viewer. Its sole `review` group cannot enter formal training export.
+Pilot scope, measured quality/timing and explicit GPU handoff:
+[docs/BADMINTON_REVIEW_PILOT.md](docs/BADMINTON_REVIEW_PILOT.md).
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a
 derived crop's exact encoded-cell members when its cloud is read. Completion,

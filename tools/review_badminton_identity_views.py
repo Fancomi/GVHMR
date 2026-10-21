@@ -14,6 +14,7 @@ from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.multiview import associate_poses
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.teacher import load_teacher_track
 
 
@@ -96,6 +97,7 @@ def main():
     fresh_sources = source_input.get("schema") == "badminton-new-source-repair-input-v1"
     source_root = Path(source_input["source_root"]) if fresh_sources else PROJ_ROOT / "outputs/badminton_rallies_v1"
     cal = CalibrationSnapshot.load(source_root / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(source_root, cal.data)
     boundary_path = args.root / "identity_evidence/boundaries.json"
     cases = read_json(boundary_path)
     if args.source:
@@ -159,7 +161,7 @@ def main():
         source = Path(case["source_window"])
         key = (sid, source.name)
         if sid not in sessions:
-            sessions[sid] = load_run_session(source_root, cal, sid)
+            sessions[sid] = load_run_session(source_root, cal, sid, relocations=relocations)
         session = sessions[sid]
         if key not in loaded:
             record_input(source / "teacher/manifest.json")

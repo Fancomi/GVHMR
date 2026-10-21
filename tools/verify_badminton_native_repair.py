@@ -15,6 +15,7 @@ from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json, read_rows
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.teacher import load_teacher_track
 from hmr4d.utils.body_model.contracts import forward_smpl_at_pelvis
 
@@ -163,6 +164,7 @@ def main():
         replay = read_json(PROJ_ROOT / "outputs/badminton_body_repair_v1/tracking_final/tracking_replay.json")
         maps = {(w["source_id"], w["window_id"]): w["mapping"] for w in replay["windows"]}
     cal = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(labels, cal.data)
     model = smplx.create(PROJ_ROOT / "inputs/checkpoints/body_models", model_type="smpl", gender="neutral").eval()
     out = labels / "native_verification.json"
     result = read_json(out) if out.exists() else dict(windows={}, passed=False, state="partial")
@@ -207,7 +209,7 @@ def main():
             if not (window / "fit_report.json").exists():
                 continue
             if sid not in sessions:
-                sessions[sid] = load_run_session(labels, cal, sid)
+                sessions[sid] = load_run_session(labels, cal, sid, relocations=relocations)
             if fresh_sources:
                 from hmr4d.lidar_mocap.new_source_repair import native_teacher_mapping
                 mapping = native_teacher_mapping(source)

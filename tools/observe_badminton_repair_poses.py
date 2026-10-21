@@ -22,6 +22,7 @@ from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.rgb_observations import RGBKeypointChecker
 from hmr4d.lidar_mocap.segmentation import court_polygon
 
@@ -50,6 +51,7 @@ def main():
     torch.set_num_threads(args.threads)
     cv2.setNumThreads(args.threads)
     cal = CalibrationSnapshot.load(args.source_root / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(args.source_root, cal.data)
     plan = read_json(args.root / "case_plan.json")
     if file_sha(plan["source_union"]) != plan["source_union_sha256"]:
         raise ValueError("Frozen union changed")
@@ -68,7 +70,7 @@ def main():
     for sid, scans in plan["selected_scans"].items():
         if args.source and sid not in args.source:
             continue
-        session = load_run_session(args.source_root, cal, sid)
+        session = load_run_session(args.source_root, cal, sid, relocations=relocations)
         pairs = session.pairs()
         native = {cam: set(pairs[i]["cameras"][cam]["record_index"] for i in scans) for cam in ("cam1", "cam2")}
         rows1, rows2 = session.camera_rows("cam1"), session.camera_rows("cam2")
