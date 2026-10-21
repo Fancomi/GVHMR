@@ -161,6 +161,58 @@ Explicit dataset-only `video_sidecars` require
 the original host receive-axis rejection. Unknown/lost device synchronization,
 synthetic frames and video discontinuities cannot provide valid pair evidence.
 
+Fullraw packet-row compatibility (validated 2026-10-20): a completed exporter
+may have one original final packet row without an emitted cloud. The explicit
+`lidar_common_clock_row_indices` array must contain one ordered unique integer
+per actual PNG. Each frame and corresponding original frame-map record must
+retain its exact `source_common_clock_row_index`, complete
+`source_common_clock_row` object, original frame ID and integer first/last/mid
+times. Reordered/duplicate/interior omissions, changed packet offsets or types,
+and inferred mappings are rejected. Only the exact final raw row may appear in
+`unexported_packet_clock_rows` with reason `unclosed_final_scan_not_emitted`;
+it may lie inside camera coverage. No PNG, member array or training sample is
+created for it. The full original clock remains in session/audit evidence; only
+validated emitted rows enter the existing pair builder in memory. Legacy
+`nonexported_original_clock_rows` still requires its original outside-camera
+coverage proof and cannot conceal fullraw packet omissions.
+
+Original or derived fullraw sources require hash-bound complete export evidence,
+original passing PTP evidence and unchanged raw timestamp indexes. A reconstructed
+export receipt must disclose the historical exit source, no frame limit and actual
+bound completion logs. For a derived crop, this proof binds the original full
+manifest through `parent_inputs`, not the new cropped manifest. Parent identity,
+clock/map hashes, frame counts, parent PNG and member-map counts remain explicit.
+`parent_scope=fullraw_exported_clouds` and `maps_to_full_pcap_returns=false` prevent
+interpreting cropped valid-return indexes as complete PCAP return indexes.
+When reading a derived cloud, `source_membership.py` verifies the member file,
+original PNG, inverse/grid index arrays, crop binding and exact retained RGB8
+coordinate bytes. Empty emitted clouds remain empty. Source preparation checks
+six spread-out clouds; its sampled member receipts are not a claim to have read
+every derived point or to have accepted body labels.
+
+Original fullraw metadata may express image dimensions as `image_width` /
+`image_height` and omit legacy consumer-policy aliases. Only this explicit
+fullraw family receives in-memory compatibility: storage must still declare raw
+XYZ and `M_baked_into_stored_xyz=false`; the consumer applies its declared M once.
+Explicit conflicting aliases, a second application or inconsistent dimensions
+are rejected. Original files are unchanged. A nonempty pending camera-applicability
+object does not block CPU source inspection; any declared camera admission or
+normal fitting load still requires the unchanged verified certificate.
+
+Actual parent-source evidence is sealed at
+`outputs/badminton_1019_source_mapping_cpu/final/verification.json`: 99 CPU tests,
+code snapshots, original input/report hashes and process timing. Source 152542
+has 1,173 emitted clouds / 1,174 clock rows / 1,170 paired; source 152750 has
+6,365 / 6,366 / 6,359. Six original PNGs per source were decoded; six completed
+first-source crop samples also passed exact member checks. The measured parent
+prepare processes took 3.014 s and 7.894 s on the already-read local data; the
+prepare functions took 1.580 s and 6.468 s. These are CPU preparation times, not
+SMPL fitting throughput. Both camera/body admissions remain false and no GPU ran.
+Actual frozen/admitted derived-source preparation must follow upstream crop and
+media/camera publication. These two new sources extend an existing release with
+its old evaluation sources retained; this adapter does not invent a third source
+or relax the complete-release train/val/test gates.
+
 Receive a sealed native rally collection with:
 
 ```powershell

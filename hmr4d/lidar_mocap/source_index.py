@@ -3,10 +3,12 @@
 This adapter does not change default sessions, calibration admission or source
 manifests. Candidate indexes may be inspected, but cannot authorize body fitting.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -14,6 +16,178 @@ from .dual_view import file_sha
 from .sessions import SessionIndex, _integer, _read_json, _read_jsonl
 
 
+def _exact_object(a, b):
+    return json.dumps(a, sort_keys=True, allow_nan=False) == json.dumps(b, sort_keys=True, allow_nan=False)
+
+
+def validate_packet_row_mapping(index, clock_rows, frozen, selected, camera_omitted):
+    """Reconcile emitted clouds against original packet rows, without rewriting either."""
+    indices = index.get("lidar_common_clock_row_indices")
+    packet_omitted = index.get("unexported_packet_clock_rows", [])
+    if indices is None:
+        if "lidar_common_clock_row_indices" in index or packet_omitted:
+            raise ValueError("Packet omissions require explicit cloud-to-original-clock row indices")
+        if any(
+            "source_common_clock_row_index" in row or "source_common_clock_row" in row
+            for row in [*index["frames"], *frozen.values()]
+        ):
+            raise ValueError("Embedded packet rows require explicit cloud-to-original-clock row indices")
+        return [], None
+    if (
+        not isinstance(indices, list)
+        or len(indices) != len(index["frames"])
+        or any(type(i) is not int or not 0 <= i < len(clock_rows) for i in indices)
+        or any(b <= a for a, b in zip(indices, indices[1:]))
+    ):
+        raise ValueError("Explicit packet row indices must be ordered unique integers covering actual clouds")
+    if not isinstance(packet_omitted, list):
+        raise ValueError("Packet omissions must be an explicit list")
+    if camera_omitted and (
+        index.get("source_kind") == "original_fullraw_fixed24"
+        or index.get("parent_source_kind") == "original_fullraw_fixed24"
+    ):
+        raise ValueError("Fullraw emitted-cloud mapping cannot hide packet rows as camera-coverage omissions")
+    for frame, map_index, source_index in zip(index["frames"], selected, indices):
+        row = clock_rows[source_index]
+        if type(frame["original_frame_id"]) is not int or frame["original_frame_id"] != row["frame_id"]:
+            raise ValueError("Mapped cloud original frame ID differs from original packet row")
+        for item in (frame, frozen[map_index]):
+            if (
+                type(item.get("source_common_clock_row_index")) is not int
+                or item["source_common_clock_row_index"] != source_index
+                or not _exact_object(item.get("source_common_clock_row"), row)
+            ):
+                raise ValueError("Mapped cloud/frame-map original packet row object differs")
+            start, end = row["common_time_us"], row["end_common_time_us"]
+            for name, expected in (
+                ("device_first_us", start),
+                ("device_last_us", end),
+                ("scan_mid_us", start + (end - start) // 2),
+            ):
+                if type(item.get(name)) is not int or item[name] != expected:
+                    raise ValueError("Mapped cloud/frame-map packet timing differs")
+    covered = set(indices)
+    camera_ids = {row["original_frame_id"] for row in camera_omitted}
+    camera_indices = {i for i, row in enumerate(clock_rows) if row["frame_id"] in camera_ids}
+    if covered & camera_indices:
+        raise ValueError("Camera-coverage omissions overlap emitted clouds")
+    missing = sorted(set(range(len(clock_rows))) - covered - camera_indices)
+    expected = (
+        [
+            dict(
+                source_common_clock_row_index=missing[0],
+                source_common_clock_row=clock_rows[missing[0]],
+                reason="unclosed_final_scan_not_emitted",
+            )
+        ]
+        if missing == [len(clock_rows) - 1]
+        else []
+    )
+    if (missing and missing != [len(clock_rows) - 1]) or not _exact_object(packet_omitted, expected):
+        raise ValueError("Only an exactly documented final unclosed packet row may lack an emitted cloud")
+    return packet_omitted, indices
+
+
+def verify_fullraw_evidence(index, data_root, clock_path, clock):
+    """Verify export/PTP evidence separately from camera or body admission."""
+    direct = index.get("source_kind") == "original_fullraw_fixed24"
+    derived = index.get("parent_source_kind") == "original_fullraw_fixed24"
+    if not (direct or derived):
+        return None
+    if "lidar_common_clock_row_indices" not in index:
+        raise ValueError("Fullraw sources require explicit original packet row mapping")
+    original = index
+    manifest_entry = index["source_manifest"]
+    if derived:
+        if (
+            index.get("parent_scope") != "fullraw_exported_clouds"
+            or index.get("maps_to_full_pcap_returns") is not False
+        ):
+            raise ValueError("Derived fullraw members refer to emitted-cloud returns, never full PCAP returns")
+        parents = index["parent_inputs"]
+        original = _read_json(_bound_file(data_root, parents["source_index"]))
+        manifest_entry = parents["source_manifest"]
+        if (
+            original.get("source_kind") != "original_fullraw_fixed24"
+            or parents["source_index"]["sha256"] != index["parent_source_index_identity"]["sha256"]
+            or original["source_manifest"]["sha256"] != manifest_entry["sha256"]
+            or original["common_clock"]["sha256"] != index["common_clock"]["sha256"]
+            or original["frame_map"]["sha256"] != index["frame_map"]["sha256"]
+            or original["frame_count"] != index["frame_count"]
+            or len(original["frames"]) != index["frame_count"]
+        ):
+            raise ValueError("Derived fullraw parent index/manifest/clock/map binding differs")
+        for name in ("lidar_common_clock_row_indices", "unexported_packet_clock_rows"):
+            if not _exact_object(original.get(name), index.get(name)):
+                raise ValueError("Derived fullraw original packet mapping changed")
+        for child, parent in zip(index["frames"], original["frames"]):
+            expected = dict(
+                file=parent["file"],
+                sha256=parent["png_sha256"],
+                bytes=parent["png_bytes"],
+                valid_points=parent["point_count"],
+            )
+            mapping = child.get("member_mapping", {})
+            if (
+                child.get("parent_png") != expected
+                or mapping.get("schema") != "badminton-native-roi-member-map-v1"
+                or mapping.get("parent_valid_points") != parent["point_count"]
+                or mapping.get("child_valid_points") != child["point_count"]
+                or not index.get("crop_binding_sha256")
+                or child.get("crop_binding_sha256") != index["crop_binding_sha256"]
+            ):
+                raise ValueError("Derived fullraw parent PNG/member-map lineage differs")
+            _bound_file(data_root, mapping, verify=False)
+    manifest = _read_json(_bound_file(data_root, manifest_entry))
+    if manifest.get("kind") != "full" or manifest.get("frame_count") != index["frame_count"]:
+        raise ValueError("Fullraw proof must refer to the complete emitted-cloud manifest")
+    proof_path = _bound_file(data_root, index["fullraw_decode_evidence"])
+    proof = _read_json(proof_path)
+    if (
+        proof.get("status") not in ("completed", "reconstructed_from_completion_log")
+        or type(proof.get("exit_code")) is not int
+        or proof["exit_code"] != 0
+        or proof.get("complete_pcap_read") is not True
+        or proof.get("frame_count") != index["frame_count"]
+        or proof.get("source_manifest_sha256") != manifest_entry["sha256"]
+        or not _exact_object(
+            proof.get("unexported_packet_clock_rows", []), index.get("unexported_packet_clock_rows", [])
+        )
+    ):
+        raise ValueError("Fullraw completion evidence does not bind the emitted clouds and original packet omission")
+    if proof["status"] == "reconstructed_from_completion_log":
+        if (
+            not proof.get("exit_code_source")
+            or "frame_limit" not in proof
+            or proof["frame_limit"] is not None
+            or not proof.get("completion_logs")
+        ):
+            raise ValueError("Reconstructed fullraw completion requires explicit exit/no-limit/log evidence")
+        for log in proof["completion_logs"]:
+            _bound_file(data_root, log)
+    ptp_path = _bound_file(data_root, index["original_ptp_validation"])
+    ptp = _read_json(ptp_path)
+    if (
+        ptp.get("passed") is not True
+        or ptp.get("evidence_incomplete")
+        or ptp.get("common_index_sha256") != file_sha(clock_path)
+    ):
+        raise ValueError("Fullraw original PTP evidence does not bind the complete original clock")
+    raw_indexes = []
+    for track in clock["tracks"]:
+        raw = (clock_path.parent / track["raw_index"]).resolve()
+        entry = dict(file=str(raw.relative_to(data_root)), sha256=track["raw_index_sha256"])
+        _bound_file(data_root, entry)
+        raw_indexes.append(entry)
+    return dict(
+        parent_scope="fullraw_exported_clouds",
+        maps_to_full_pcap_returns=False,
+        decode_evidence=index["fullraw_decode_evidence"],
+        original_ptp_validation=index["original_ptp_validation"],
+        original_manifest=manifest_entry,
+        raw_timestamp_indices=raw_indexes,
+        derived=derived,
+    )
 def _bound_file(data_root, entry, verify=True):
     path=(data_root/entry['file']).resolve()
     if not path.is_relative_to(data_root):
@@ -28,15 +202,24 @@ def _bound_file(data_root, entry, verify=True):
 
 def validate_coordinate_contract(index):
     grid=index['fixed24'];contract=index['coordinate_contract']
+    fullraw=(index.get('source_kind')=='original_fullraw_fixed24'
+             or index.get('parent_source_kind')=='original_fullraw_fixed24')
+    # Original full exports declare raw storage and M, rather than the legacy
+    # consumer-policy aliases. The single application is enforced below/in
+    # read_cloud; explicit conflicting aliases are still rejected.
+    applications=contract.get('consumer_application_count_required',1 if fullraw else None)
+    applied=contract.get('application_M_applied_by_this_index_builder',False if fullraw else None)
     if (grid['coordinate_encoding']!='fixed24' or grid['stored_xyz_space']!='lidar_sensor_xyz'
             or grid['scale']!=1000 or grid['center']!=256
             or contract['M_baked_into_stored_xyz'] is not False
-            or contract['consumer_application_count_required']!=1
-            or contract['application_M_applied_by_this_index_builder'] is not False):
+            or type(applications) is not int or applications!=1 or applied is not False):
         raise ValueError('Expected raw fixed24 XYZ and exactly one consumer application of explicit M')
     w,h=grid['point_width'],grid['point_height']
+    size=grid.get('image_size',[grid.get('image_width'),grid.get('image_height')] if fullraw else None)
     if (isinstance(w,bool) or isinstance(h,bool) or not isinstance(w,int) or not isinstance(h,int)
-            or min(w,h)<=0 or grid['image_size']!=[w,3*h]):
+            or min(w,h)<=0 or size!=[w,3*h]
+            or ('image_width' in grid and grid['image_width']!=w)
+            or ('image_height' in grid and grid['image_height']!=3*h)):
         raise ValueError('External fixed24 grid/image dimensions disagree')
     matrix=np.asarray(contract['application_raw_to_viewer_M'],dtype=float)
     if (matrix.shape!=(3,3) or not np.isfinite(matrix).all()
@@ -108,8 +291,9 @@ class SourceIndexedSession(SessionIndex):
         if require_admitted:require_camera_applicability(index)
         self=cls();self.source_index=index;self.source_index_path=index_path;self.source_index_sha256=digest
         self.camera_applicability=(verify_camera_applicability(index,data_root)
-                                   if require_admitted or index.get('camera_applicability') else None)
+                                   if require_admitted or index.get('camera_calibration_admitted') is True else None)
         self.session_id=index['source_id'];self.session_dir=data_root/'sessions'/self.session_id
+        self.data_root=data_root
         self.Q=validate_coordinate_contract(index)
         self.lidar_dir=data_root
         _bound_file(data_root,index['source_manifest'])
@@ -156,10 +340,20 @@ class SourceIndexedSession(SessionIndex):
             if any(b<=a for a,b in zip(times,times[1:])):raise ValueError('Non-monotonic external camera clock')
             self._camera_known[name]=known;self._camera_times[name]=times
         self._lidar_clock={}
-        for row in self._tracks.get('lidar1',{}).get('rows',[]):
+        self.original_lidar_clock_rows=self._tracks.get('lidar1',{}).get('rows',[])
+        previous_start=None
+        for row in self.original_lidar_clock_rows:
             frame_id=_integer(row.get('frame_id'),'external clock frame_id')
             if frame_id is None or frame_id in self._lidar_clock:raise ValueError('Missing/duplicate external clock frame_id')
+            if 'lidar_common_clock_row_indices' in index:
+                start=_integer(row.get('common_time_us'),'original packet start')
+                last=_integer(row.get('end_common_time_us'),'original packet end')
+                if start is None or last is None or last<start or (previous_start is not None and start<=previous_start):
+                    raise ValueError('Original packet clock rows are missing, reversed or non-monotonic')
+                previous_start=start
             self._lidar_clock[frame_id]=row
+        if 'raw_clock_rows' in index and _integer(index['raw_clock_rows'],'raw_clock_rows')!=len(self.original_lidar_clock_rows):
+            raise ValueError('Declared original packet clock row count differs')
         map_rows=_read_jsonl(frame_map_path)
         self._frozen={_integer(row['lidar_frame'],'external original map index'):row for row in map_rows}
         if (len(self._frozen)!=len(map_rows) or len(map_rows)!=index['frame_map']['rows']
@@ -186,14 +380,28 @@ class SourceIndexedSession(SessionIndex):
                 nearest=self._frozen_camera(camera,row['lidar_frame'],mid)
                 if nearest['status']!='outside_video_time_range' or row['cameras'][camera]!=frozen['cameras'][camera]:
                     raise ValueError('An omitted source frame could affect paired camera coverage')
+        packet_omitted,mapping=validate_packet_row_mapping(index,self.original_lidar_clock_rows,self._frozen,selected,omitted)
+        self.fullraw_evidence=verify_fullraw_evidence(index,data_root,clock_path,self.common_clock)
+        self.member_mapping_verifications={}
+        if packet_omitted and self.fullraw_evidence is None:
+            raise ValueError('Unexported packet rows require the explicit fullraw completion/PTP contract')
         exported_ids={frame['original_frame_id'] for frame in frames}
-        if set(self._lidar_clock)-exported_ids!={row['original_frame_id'] for row in omitted}:
+        omitted_ids={row['original_frame_id'] for row in omitted}
+        packet_ids={row['source_common_clock_row']['frame_id'] for row in packet_omitted}
+        if omitted_ids & packet_ids or set(self._lidar_clock)-exported_ids!=omitted_ids|packet_ids:
             raise ValueError('Original device clock has unexplained missing source frames')
+        self.lidar_source_row_mapping=(dict(original_rows=len(self.original_lidar_clock_rows),mapped_rows=len(frames),
+             lidar_common_clock_row_indices=mapping,unexported_packet_clock_rows=packet_omitted,
+             nonexported_camera_coverage_rows=len(omitted)) if mapping is not None else None)
         self._lidar_clock={key:value for key,value in self._lidar_clock.items() if key in exported_ids}
         self._frozen={i:self._frozen[original] for i,original in enumerate(selected)}
         self._pairs=self._build_pairs()
         for frame,pair in zip(frames,self._pairs):
             pair['source_frame_map_lidar_frame']=frame.get('frame_map_lidar_frame',frame['frame_index'])
+            if mapping is not None:
+                source_index=mapping[frame['frame_index']]
+                pair['source_common_clock_row_index']=source_index
+                pair['source_common_clock_row']=self.original_lidar_clock_rows[source_index]
             for camera,expected in frame['cameras'].items():
                 actual=pair['cameras'][camera]
                 for name in ('status','record_index','media_pts_us','time_error_us'):
@@ -206,10 +414,16 @@ class SourceIndexedSession(SessionIndex):
         frame=self.source_index['frames'][pair['lidar_index']]
         if file_sha(pair['lidar_path'])!=frame['png_sha256']:
             raise ValueError('External original PNG SHA256 mismatch')
-        return super().read_cloud(pair,viewer)
+        points=super().read_cloud(pair,viewer)
+        if self.fullraw_evidence and self.fullraw_evidence['derived']:
+            from .source_membership import verify_fullraw_members
+            self.member_mapping_verifications[pair['lidar_index']]=verify_fullraw_members(
+                frame,pair['lidar_path'],self.data_root,self.manifest,_bound_file)
+        return points
 
 
 def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=6):
+    started=time.perf_counter()
     session=SourceIndexedSession.load_source_index(index_path,data_root,expected_sha256=expected_sha256,require_admitted=False)
     pairs=session.pairs();indices=np.linspace(0,len(pairs)-1,min(sample_count,len(pairs)),dtype=int)
     samples=[]
@@ -221,9 +435,14 @@ def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=
     return dict(schema='badminton-external-source-prepare-v1',source_id=session.session_id,
                 source_index=str(session.source_index_path),source_index_sha256=session.source_index_sha256,
                 frames=len(pairs),paired=sum(p['status']=='paired' for p in pairs),samples=samples,
-                original_clock_rows=session.source_index.get('raw_clock_rows',len(pairs)),
+                original_clock_rows=len(session.original_lidar_clock_rows),
                 nonexported_original_clock_rows=session.source_index.get('nonexported_original_clock_rows',[]),
-                calibration_applicability=session.source_index['coordinate_contract']['physical_camera_applicability'],
+                lidar_source_row_mapping=session.lidar_source_row_mapping,
+                unexported_packet_clock_rows=session.source_index.get('unexported_packet_clock_rows',[]),
+                fullraw_evidence=session.fullraw_evidence,
+                sampled_member_mapping_verifications=session.member_mapping_verifications,
+                preparation_seconds=time.perf_counter()-started,
+                calibration_applicability=session.source_index['coordinate_contract'].get('physical_camera_applicability','pending'),
                 camera_applicability_certificate=session.camera_applicability,
                 video_index_contract=session.source_index.get('video_index_contract'),
                 camera_calibration_admitted=session.source_index['camera_calibration_admitted'],

@@ -27,6 +27,11 @@ whole-body/pose diagnostics do not add training admission gates.
 `tools/prepare_badminton_source.py` / `source_index.py` inspect an explicitly
 provided upstream source index on CPU. Candidate calibration applicability
 does not admit fitting; default session loading remains unchanged.
+Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
+documented final unclosed scans separately. `source_membership.py` verifies a
+derived crop's exact encoded-cell members when its cloud is read. Completion,
+PTP, original timestamp indexes and parent lineage stay hash-bound; legacy
+camera-coverage omissions keep their existing checks. See docs/INSTALL.md.
 `tools/prepare_badminton_rallies.py` / `rally_inventory.py` verify sealed
 acquisition/native-analysis/rally contracts and prepare exact PNG/frame-map
 ranges on CPU. Window minutes remain separate from qualified body-label minutes.
