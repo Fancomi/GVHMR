@@ -1,5 +1,8 @@
 import base64
 import hashlib
+import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -34,6 +37,73 @@ class NativeImageBindingTests(unittest.TestCase):
         self.assertEqual(second["jpeg_sha256"], hashlib.sha256(blob).hexdigest())
         decoded = cv2.imdecode(np.frombuffer(blob, dtype=np.uint8), cv2.IMREAD_COLOR)
         np.testing.assert_array_equal(decoded, images[1])
+
+
+class PublishedStatusTests(unittest.TestCase):
+    def test_missing_live_status_uses_bound_publication_and_actual_fit_counts_without_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            publication_path = root / "canonical-publication.json"
+            publication_path.write_text(json.dumps(dict(
+                accepted=7, exports=dict(s=dict(accepted=7), empty=dict(accepted=0)),
+            )), encoding="utf-8")
+            manifest = dict(
+                canonical_publication=dict(path=str(publication_path),
+                                           sha256=hashlib.sha256(publication_path.read_bytes()).hexdigest()),
+                sources=dict(s=dict(baseline=True, rallies=[{}]), empty=dict(baseline=False, rallies=[])),
+            )
+            report = root / "sessions/s/windows/first/fit_report.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps(dict(fitted=12, accepted=10)), encoding="utf-8")
+            viewer = ViewerData(root, root, None, manifest, {}, {})
+            before = {path:path.read_bytes() for path in (publication_path, report)}
+            state = viewer.status()
+            self.assertEqual(state["status_source"], "canonical_publication")
+            self.assertEqual(state["paired_accepted"], 7)
+            self.assertEqual(state["sources"]["s"]["accepted"], 7)
+            self.assertEqual(state["sources"]["s"]["completed_fit_person_frames"], 12)
+            self.assertEqual(state["sources"]["s"]["completed_fit_qa_pass"], 10)
+            self.assertEqual(state["sources"]["empty"]["accepted"], 0)
+            self.assertEqual(state["sources"]["empty"]["available_fit_windows"], 0)
+            self.assertFalse((root / "build_status.json").exists())
+            self.assertEqual({path:path.read_bytes() for path in before}, before)
+            publication_path.write_text("changed", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+                viewer.status()
+
+    def test_existing_live_status_keeps_priority_over_publication_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live = root / "build_status.json"
+            live.write_text(json.dumps(dict(state="running", sources={})), encoding="utf-8")
+            viewer = ViewerData(root, root, None, dict(canonical_publication=dict(path="missing")), {}, {})
+            before = live.read_bytes()
+            self.assertEqual(viewer.status()["state"], "running")
+            self.assertEqual(live.read_bytes(), before)
+
+    def test_missing_status_without_a_bound_publication_is_not_invented(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            viewer = ViewerData(root, root, None, dict(sources={}), {}, {})
+            with self.assertRaises(FileNotFoundError):
+                viewer.status()
+
+    def test_independent_generated_status_precedes_original_status_without_rewriting_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "build_status.json"
+            original.write_text(json.dumps(dict(state="original", sources={})), encoding="utf-8")
+            output = root / "independent/viewer"
+            output.mkdir(parents=True)
+            (output / "build_status.json").write_text(
+                json.dumps(dict(state="repair_candidate", sources={})), encoding="utf-8"
+            )
+            viewer = ViewerData(root, root, None, dict(sources={}), {}, {}, viewer_output=output)
+            before = original.read_bytes()
+            self.assertEqual(viewer.status()["state"], "repair_candidate")
+            self.assertEqual(original.read_bytes(), before)
+            (output / "build_status.json").unlink()
+            self.assertEqual(viewer.status()["state"], "original")
 
 
 class NativeRoiTests(unittest.TestCase):

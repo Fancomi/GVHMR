@@ -11,6 +11,8 @@ and temporary experiments in ignored `.local/`. See [TODO.md](TODO.md) for owner
 | Inference HTTP service | `scripts/run_service.sh` | `tools/serve/app.py` → `tools/serve/infer_core.py` → GVHMR model | Service jobs; see `scripts/README.md` |
 
 Badminton operations and environment: [docs/INSTALL.md](docs/INSTALL.md).
+Canonical dataset roots and explicit historical source relocation:
+[docs/DATA_RELOCATIONS.md](docs/DATA_RELOCATIONS.md), `relocations.py`.
 Validated identity/foot repair strategy, rejected approaches, run stages and
 retention rules: [docs/BADMINTON_BODY_REPAIR.md](docs/BADMINTON_BODY_REPAIR.md).
 Training uses Hydra and requires an experiment, for example

@@ -12,19 +12,25 @@ from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
-from hmr4d.lidar_mocap.rally_viewer import ViewerData, load_display_bbox, serve_viewer
+from hmr4d.lidar_mocap.rally_viewer import ViewerData, load_display_bbox, serve_viewer, write_viewer_runtime_relocations
+from hmr4d.lidar_mocap.relocations import load_run_relocations
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--repair-root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2/final_labels"
-    )
+    parser.add_argument("--repair-root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2/final_labels")
     parser.add_argument("--source-root", type=Path, default=PROJ_ROOT / "outputs/badminton_rallies_v1")
     parser.add_argument("--display-crop", type=Path)
     parser.add_argument("--port", type=int, default=8771)
+    parser.add_argument("--data-relocations", type=Path)
+    parser.add_argument("--data-relocations-sha256")
+    parser.add_argument("--viewer-output", type=Path)
     args = parser.parse_args()
     root = args.repair_root.resolve()
+    try:
+        relocations = load_run_relocations(root, args.data_relocations, args.data_relocations_sha256)
+    except ValueError as exc:
+        parser.error(str(exc))
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
     manifest = copy.deepcopy(read_json(args.source_root / "viewer/manifest.json"))
     if manifest["calibration_digest"] != calibration.data["snapshot_digest"]:
@@ -39,7 +45,7 @@ def main():
     total_scans = 0
     for sid, source in manifest["sources"].items():
         source["baseline"] = False
-        session = load_run_session(root, calibration, sid)
+        session = load_run_session(root, calibration, sid, relocations=relocations)
         sessions[sid] = session
         media.update({(sid, cam): session.video_paths[cam] for cam in ("cam1", "cam2")})
         scans = set()
@@ -72,11 +78,17 @@ def main():
     bbox, evidence = load_display_bbox(calibration, args.display_crop)
     manifest["point_filter"]["boxes"] = bbox["boxes"]
     manifest["point_filter"]["display_crop"] = evidence
-    output = root / "viewer"
+    output = args.viewer_output.resolve() if args.viewer_output is not None else root / "viewer"
     output.mkdir(parents=True, exist_ok=True)
+    runtime_binding = write_viewer_runtime_relocations(root, calibration, relocations, sessions, output)
+    manifest.pop("runtime_relocations", None)
+    manifest.pop("data_relocations", None)
+    if runtime_binding is not None:
+        manifest["runtime_relocations"] = runtime_binding
+        manifest["data_relocations"] = dict(relocations.binding)
     write_json(output / "manifest.json", manifest)
     write_json(
-        root / "build_status.json",
+        (output if args.viewer_output is not None else root) / "build_status.json",
         dict(
             state="repair_candidate",
             sources=state,
@@ -93,7 +105,7 @@ def main():
     (output / "viewer.js").write_bytes((code / "rally_viewer_client.js").read_bytes())
     for name in ("review.js", "review.css"):
         (output / name).write_bytes((code / "review_assets" / name).read_bytes())
-    data = ViewerData(root, root, calibration, manifest, sessions, media, viewer_bbox=bbox)
+    data = ViewerData(root, root, calibration, manifest, sessions, media, viewer_bbox=bbox, viewer_output=output)
     serve_viewer(data, port=args.port)
 
 

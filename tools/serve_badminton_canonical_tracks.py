@@ -7,6 +7,7 @@ from pathlib import Path
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import read_json, read_rows
 from hmr4d.lidar_mocap.rally_viewer import ViewerData, prepare_viewer, serve_viewer
+from hmr4d.lidar_mocap.relocations import load_run_relocations
 from hmr4d.lidar_mocap.track_colors import track_color_registry
 
 
@@ -53,7 +54,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8774)
+    parser.add_argument("--data-relocations", type=Path)
+    parser.add_argument("--data-relocations-sha256")
+    parser.add_argument("--viewer-output", type=Path)
     args = parser.parse_args()
+    if (args.data_relocations is None) != (args.data_relocations_sha256 is None):
+        parser.error("--data-relocations and --data-relocations-sha256 must be supplied together")
     manifest = read_json(args.manifest)
     if not manifest.get("canonical_identity_revision"):
         parser.error("Select the explicitly reviewed canonical publication")
@@ -61,7 +67,11 @@ def main():
     if binding(body_path)["sha256"] != manifest["source_dataset_manifest_sha256"]:
         raise ValueError("Native body source changed")
     root = body_path.parent.parent
-    data = prepare_viewer(root, root)
+    try:
+        relocations = load_run_relocations(root, args.data_relocations, args.data_relocations_sha256)
+    except ValueError as exc:
+        parser.error(str(exc))
+    data = prepare_viewer(root, root, relocations=relocations, viewer_output=args.viewer_output)
     data.__class__ = CanonicalViewer
     data.canonical_admitted = {}
     data.canonical_frames = {}

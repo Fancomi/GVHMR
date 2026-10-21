@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 from .dual_view import file_sha
+from .relocations import require_relocation_root
 from .sessions import SessionIndex, _integer, _read_json, _read_jsonl
 
 
@@ -88,7 +89,7 @@ def validate_packet_row_mapping(index, clock_rows, frozen, selected, camera_omit
     return packet_omitted, indices
 
 
-def verify_fullraw_evidence(index, data_root, clock_path, clock):
+def verify_fullraw_evidence(index, data_root, clock_path, clock, *, relocations=None):
     """Verify export/PTP evidence separately from camera or body admission."""
     direct = index.get("source_kind") == "original_fullraw_fixed24"
     derived = index.get("parent_source_kind") == "original_fullraw_fixed24"
@@ -105,7 +106,7 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
         ):
             raise ValueError("Derived fullraw members refer to emitted-cloud returns, never full PCAP returns")
         parents = index["parent_inputs"]
-        original = _read_json(_bound_file(data_root, parents["source_index"]))
+        original = _read_json(_bound_file(data_root, parents["source_index"], relocations=relocations))
         manifest_entry = parents["source_manifest"]
         if (
             original.get("source_kind") != "original_fullraw_fixed24"
@@ -137,11 +138,11 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
                 or child.get("crop_binding_sha256") != index["crop_binding_sha256"]
             ):
                 raise ValueError("Derived fullraw parent PNG/member-map lineage differs")
-            _bound_file(data_root, mapping, verify=False)
-    manifest = _read_json(_bound_file(data_root, manifest_entry))
+            _bound_file(data_root, mapping, verify=False, relocations=relocations)
+    manifest = _read_json(_bound_file(data_root, manifest_entry, relocations=relocations))
     if manifest.get("kind") != "full" or manifest.get("frame_count") != index["frame_count"]:
         raise ValueError("Fullraw proof must refer to the complete emitted-cloud manifest")
-    proof_path = _bound_file(data_root, index["fullraw_decode_evidence"])
+    proof_path = _bound_file(data_root, index["fullraw_decode_evidence"], relocations=relocations)
     proof = _read_json(proof_path)
     if (
         proof.get("status") not in ("completed", "reconstructed_from_completion_log")
@@ -164,8 +165,8 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
         ):
             raise ValueError("Reconstructed fullraw completion requires explicit exit/no-limit/log evidence")
         for log in proof["completion_logs"]:
-            _bound_file(data_root, log)
-    ptp_path = _bound_file(data_root, index["original_ptp_validation"])
+            _bound_file(data_root, log, relocations=relocations)
+    ptp_path = _bound_file(data_root, index["original_ptp_validation"], relocations=relocations)
     ptp = _read_json(ptp_path)
     if (
         ptp.get("passed") is not True
@@ -177,11 +178,18 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
     # Frozen crops retain the original clock bytes, including raw_index paths
     # relative to its original directory. Resolve that directory through the
     # already-bound parent index, never through the relocated clock snapshot.
-    raw_clock_path = _bound_file(data_root, original["common_clock"]) if derived else clock_path
+    raw_clock_path = (_bound_file(data_root, original["common_clock"], relocations=relocations)
+                      if derived else clock_path)
     for track in clock["tracks"]:
-        raw = (raw_clock_path.parent / track["raw_index"]).resolve()
-        entry = dict(file=str(raw.relative_to(data_root)), sha256=track["raw_index_sha256"])
-        _bound_file(data_root, entry)
+        if relocations is None:
+            raw = (raw_clock_path.parent / track["raw_index"]).resolve()
+            entry = dict(file=str(raw.relative_to(data_root)), sha256=track["raw_index_sha256"])
+        else:
+            # The original clock bytes name raw indexes relative to the old
+            # logical location, even when this clock itself has moved.
+            entry = relocations.relative_binding(
+                original["common_clock"]["file"], track["raw_index"], track["raw_index_sha256"])
+        _bound_file(data_root, entry, relocations=relocations)
         raw_indexes.append(entry)
     return dict(
         parent_scope="fullraw_exported_clouds",
@@ -193,14 +201,17 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock):
         raw_timestamp_indices=raw_indexes,
         derived=derived,
     )
-def _bound_file(data_root, entry, verify=True):
-    path=(data_root/entry['file']).resolve()
+def _bound_file(data_root, entry, verify=True, *, relocations=None):
+    require_relocation_root(data_root, relocations)
+    path=(relocations.resolve(entry) if relocations is not None else (data_root/entry['file']).resolve())
     if not path.is_relative_to(data_root):
         raise ValueError('External source path escapes the explicit data root')
     if not path.is_file():raise FileNotFoundError(path)
     if entry.get('bytes') is not None and path.stat().st_size!=entry['bytes']:
         raise ValueError(f'External source size mismatch: {path}')
-    if verify and file_sha(path)!=entry['sha256']:
+    # Mapped resolution has already checked both the immutable reference and
+    # actual target SHA/bytes. Do not hash large native videos twice.
+    if verify and (relocations is None or not relocations.has_mapping(entry['file'])) and file_sha(path)!=entry['sha256']:
         raise ValueError(f'External source SHA256 mismatch: {path}')
     return path
 
@@ -257,11 +268,11 @@ def video_sidecar_contract(index):
     return 'canonical_video_sidecars',canonical
 
 
-def verify_camera_applicability(index,data_root):
+def verify_camera_applicability(index,data_root,*,relocations=None):
     require_camera_applicability(index)
     entry=index.get('camera_applicability')
     if not isinstance(entry,dict):raise ValueError('Admitted external camera source needs an applicability certificate')
-    path=_bound_file(data_root,entry);certificate=_read_json(path)
+    path=_bound_file(data_root,entry,relocations=relocations);certificate=_read_json(path)
     if (certificate.get('schema')!='badminton-camera-applicability-v1'
             or certificate.get('accepted_calibration_sha256')!=index['accepted_calibration_sha256']
             or certificate.get('accepted_bundle_sha256')!=index['accepted_bundle_sha256']
@@ -278,15 +289,22 @@ def verify_camera_applicability(index,data_root):
     evidence=source.get('review_evidence')
     if not isinstance(evidence,list) or not evidence:
         raise ValueError('Camera applicability certificate lacks native review evidence')
-    for review in evidence:_bound_file(data_root,review)
+    for review in evidence:_bound_file(data_root,review,relocations=relocations)
     return dict(file=str(path),sha256=entry['sha256'],status=source['status'],
                 review_limits=source.get('review_limits'),body_labels_production_admitted=source.get('body_labels_production_admitted'))
 
 
 class SourceIndexedSession(SessionIndex):
     @classmethod
-    def load_source_index(cls,index_path,data_root,*,expected_sha256=None,require_admitted=True):
-        index_path=Path(index_path).resolve();data_root=Path(data_root).resolve()
+    def load_source_index(cls,index_path,data_root,*,expected_sha256=None,require_admitted=True,relocations=None):
+        data_root=Path(data_root).resolve()
+        require_relocation_root(data_root,relocations)
+        logical_index_path=Path(index_path).absolute()
+        if relocations is not None and logical_index_path.is_relative_to(data_root):
+            index_path=relocations.resolve(dict(file=logical_index_path.relative_to(data_root).as_posix(),
+                                               sha256=expected_sha256))
+        else:
+            index_path=Path(index_path).resolve()
         digest=file_sha(index_path)
         if expected_sha256 and digest!=expected_sha256:
             raise ValueError('External source-index SHA256 mismatch')
@@ -295,20 +313,22 @@ class SourceIndexedSession(SessionIndex):
             raise ValueError('Unsupported external source-index schema')
         if require_admitted:require_camera_applicability(index)
         self=cls();self.source_index=index;self.source_index_path=index_path;self.source_index_sha256=digest
-        self.camera_applicability=(verify_camera_applicability(index,data_root)
+        self.data_relocations=relocations;self.source_index_logical_path=logical_index_path
+        self.camera_applicability=(verify_camera_applicability(index,data_root,relocations=relocations)
                                    if require_admitted or index.get('camera_calibration_admitted') is True else None)
         self.session_id=index['source_id'];self.session_dir=data_root/'sessions'/self.session_id
         self.data_root=data_root
         self.Q=validate_coordinate_contract(index)
         self.lidar_dir=data_root
-        _bound_file(data_root,index['source_manifest'])
-        clock_path=_bound_file(data_root,index['common_clock'])
-        frame_map_path=_bound_file(data_root,index['frame_map'])
-        self.video_paths={name:_bound_file(data_root,index['native_videos'][name]) for name in ('cam1','cam2')}
+        _bound_file(data_root,index['source_manifest'],relocations=relocations)
+        clock_path=_bound_file(data_root,index['common_clock'],relocations=relocations)
+        frame_map_path=_bound_file(data_root,index['frame_map'],relocations=relocations)
+        self.video_paths={name:_bound_file(data_root,index['native_videos'][name],relocations=relocations)
+                          for name in ('cam1','cam2')}
         _,sidecar_bindings=video_sidecar_contract(index)
         if 'video_sidecars' in index:
-            _bound_file(data_root,index['video_index_contract']['device_clock_evidence'])
-        sidecars={name:_bound_file(data_root,sidecar_bindings[name]) for name in self.video_paths}
+            _bound_file(data_root,index['video_index_contract']['device_clock_evidence'],relocations=relocations)
+        sidecars={name:_bound_file(data_root,sidecar_bindings[name],relocations=relocations) for name in self.video_paths}
         self.video_dir=sidecars['cam1'].parent
         if any(path!=self.video_dir/f'{name}.frames.jsonl' for name,path in sidecars.items()):
             raise ValueError('External native sidecars must retain canonical camera names in one directory')
@@ -324,8 +344,11 @@ class SourceIndexedSession(SessionIndex):
             end=_integer(frame['device_last_us'],'external device_last_us')
             if start is None or end is None or end<start or frame['scan_mid_us']!=start+(end-start)//2:
                 raise ValueError('External LiDAR midpoint is not bound to exact device packet times')
-            _bound_file(data_root,dict(file=frame['file'],bytes=frame['png_bytes']),verify=False)
-            normalized.append(dict(frame_id=frame['original_frame_id'],file=frame['file'],kept_points=frame['point_count']))
+            cloud_entry=dict(file=frame['file'],bytes=frame['png_bytes'])
+            if relocations is not None:cloud_entry['sha256']=frame['png_sha256']
+            cloud_path=_bound_file(data_root,cloud_entry,verify=False,relocations=relocations)
+            cloud_file=(cloud_path.relative_to(data_root).as_posix() if relocations is not None else frame['file'])
+            normalized.append(dict(frame_id=frame['original_frame_id'],file=cloud_file,kept_points=frame['point_count']))
             captures.append(dict(device_first_packet_us=start,device_last_packet_us=end))
         self.manifest=dict(index['fixed24'],coordinate_space='lidar_sensor_xyz',lidar_rotation=self.Q.tolist(),
                            frame_count=len(frames),frames=normalized,frame_capture_timestamps=captures)
@@ -386,7 +409,7 @@ class SourceIndexedSession(SessionIndex):
                 if nearest['status']!='outside_video_time_range' or row['cameras'][camera]!=frozen['cameras'][camera]:
                     raise ValueError('An omitted source frame could affect paired camera coverage')
         packet_omitted,mapping=validate_packet_row_mapping(index,self.original_lidar_clock_rows,self._frozen,selected,omitted)
-        self.fullraw_evidence=verify_fullraw_evidence(index,data_root,clock_path,self.common_clock)
+        self.fullraw_evidence=verify_fullraw_evidence(index,data_root,clock_path,self.common_clock,relocations=relocations)
         self.member_mapping_verifications={}
         if packet_omitted and self.fullraw_evidence is None:
             raise ValueError('Unexported packet rows require the explicit fullraw completion/PTP contract')
@@ -417,19 +440,25 @@ class SourceIndexedSession(SessionIndex):
 
     def read_cloud(self,pair,viewer=True):
         frame=self.source_index['frames'][pair['lidar_index']]
-        if file_sha(pair['lidar_path'])!=frame['png_sha256']:
+        if self.data_relocations is not None:
+            actual=_bound_file(self.data_root,dict(file=frame['file'],sha256=frame['png_sha256'],bytes=frame['png_bytes']),
+                               relocations=self.data_relocations)
+            if Path(pair['lidar_path']).resolve()!=actual:
+                raise ValueError('Relocated cloud pair no longer names its bound input')
+        elif file_sha(pair['lidar_path'])!=frame['png_sha256']:
             raise ValueError('External original PNG SHA256 mismatch')
         points=super().read_cloud(pair,viewer)
         if self.fullraw_evidence and self.fullraw_evidence['derived']:
             from .source_membership import verify_fullraw_members
             self.member_mapping_verifications[pair['lidar_index']]=verify_fullraw_members(
-                frame,pair['lidar_path'],self.data_root,self.manifest,_bound_file)
+                frame,pair['lidar_path'],self.data_root,self.manifest,_bound_file,relocations=self.data_relocations)
         return points
 
 
-def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=6):
+def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=6,*,relocations=None):
     started=time.perf_counter()
-    session=SourceIndexedSession.load_source_index(index_path,data_root,expected_sha256=expected_sha256,require_admitted=False)
+    session=SourceIndexedSession.load_source_index(index_path,data_root,expected_sha256=expected_sha256,
+                                                   require_admitted=False,relocations=relocations)
     pairs=session.pairs();indices=np.linspace(0,len(pairs)-1,min(sample_count,len(pairs)),dtype=int)
     samples=[]
     for i in indices:
@@ -437,7 +466,7 @@ def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=
         recovered=viewer@np.linalg.inv(session.Q).T
         samples.append(dict(lidar_index=int(i),points=len(raw),raw_to_viewer_applications=1,
                             inverse_roundtrip_max_m=float(np.max(np.abs(recovered-raw))) if len(raw) else 0.))
-    return dict(schema='badminton-external-source-prepare-v1',source_id=session.session_id,
+    report=dict(schema='badminton-external-source-prepare-v1',source_id=session.session_id,
                 source_index=str(session.source_index_path),source_index_sha256=session.source_index_sha256,
                 frames=len(pairs),paired=sum(p['status']=='paired' for p in pairs),samples=samples,
                 original_clock_rows=len(session.original_lidar_clock_rows),
@@ -453,3 +482,7 @@ def prepare_source_index(index_path,data_root,expected_sha256=None,sample_count=
                 camera_calibration_admitted=session.source_index['camera_calibration_admitted'],
                 production_admitted=session.source_index['production_admitted'],
                 body_fitting_started=False,source_files_modified=False)
+    if relocations is not None:
+        report['data_relocations']=dict(relocations.binding)
+        report['source_index_logical_path']=str(session.source_index_logical_path)
+    return report

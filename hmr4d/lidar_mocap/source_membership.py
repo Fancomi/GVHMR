@@ -4,10 +4,11 @@ import cv2
 import numpy as np
 
 
-def verify_fullraw_members(frame, child_path, data_root, grid, bound_file):
+def verify_fullraw_members(frame, child_path, data_root, grid, bound_file, *, relocations=None):
     mapping = frame["member_mapping"]
-    path = bound_file(data_root, mapping)
-    parent_path = bound_file(data_root, frame["parent_png"])
+    options = dict(relocations=relocations) if relocations is not None else {}
+    path = bound_file(data_root, mapping, **options)
+    parent_path = bound_file(data_root, frame["parent_png"], **options)
     width, height = grid["point_width"], grid["point_height"]
     images = [cv2.imread(str(p), cv2.IMREAD_UNCHANGED) for p in (parent_path, child_path)]
     if any(image is None or image.dtype != np.uint8 or image.shape != (height * 3, width, 3) for image in images):

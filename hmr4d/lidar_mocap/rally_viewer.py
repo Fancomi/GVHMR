@@ -31,6 +31,7 @@ except ImportError:
 
 from .calibration import CalibrationSnapshot
 from .pipeline import write_json
+from .relocations import validate_run_relocations
 from .rally_pipeline import load_run_session, read_json, read_rows
 from .review import EDGES
 from .preview_decoder import PreviewDecoder
@@ -192,12 +193,53 @@ def load_display_bbox(calibration, path=None):
     return badminton_detection_bbox(adjusted), evidence
 
 
-def prepare_viewer(run_root, baseline_root, display_crop=None):
+def write_viewer_runtime_relocations(root, calibration, relocations, sessions, output):
+    """Write separate runtime evidence; original run and camera artifacts stay frozen."""
+    if relocations is None:
+        return None
+    root, output = Path(root), Path(output)
+    registry_path = root / "source_registry.json"
+    registry = read_json(registry_path)
+    validate_run_relocations(registry, calibration.data, relocations)
+    if read_json(calibration.snapshot_json) != calibration.data:
+        raise ValueError("Calibration snapshot changed during runtime preparation")
+
+    def binding(path):
+        blob = Path(path).read_bytes()
+        return dict(path=str(Path(path).resolve()), sha256=hashlib.sha256(blob).hexdigest(), bytes=len(blob))
+
+    readers = {}
+    for sid, session in sessions.items():
+        if getattr(session, "source_index_sha256", None) is not None:
+            declared = registry["sources"][sid].get("source_index", {})
+            if declared.get("sha256") != session.source_index_sha256:
+                raise ValueError("Frozen source registry changed during runtime preparation")
+            readers[sid] = dict(
+                reader="source_index", source_index_sha256=session.source_index_sha256,
+                source_index_path=str(session.source_index_path),
+                source_index_logical_path=str(session.source_index_logical_path),
+            )
+        else:
+            readers[sid] = session.relocation_legacy_audit
+    receipt = dict(
+        schema="gvhmr-viewer-runtime-relocations-v1", data_root=str(relocations.root),
+        data_relocations=dict(relocations.binding), source_registry=binding(registry_path),
+        calibration_snapshot=binding(calibration.snapshot_json),
+        calibration_digest=calibration.data["snapshot_digest"], readers=readers,
+        original_registry_modified=False, original_calibration_modified=False, original_data_modified=False,
+    )
+    path = output / "runtime_relocations.json"
+    write_json(path, receipt)
+    return binding(path)
+
+
+def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=None, viewer_output=None):
     root = Path(run_root).resolve()
     baseline = Path(baseline_root).resolve()
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
     viewer_bbox, display_evidence = load_display_bbox(calibration, display_crop)
     registry = read_json(root / "source_registry.json")
+    validate_run_relocations(registry, calibration.data, relocations)
     intake = read_json(registry["intake"]["path"])
     rallies = read_rows(intake["prepared_ranges"]["path"])
     sources = {}
@@ -212,7 +254,7 @@ def prepare_viewer(run_root, baseline_root, display_crop=None):
         if not any(r["source_id"] == sid for r in rallies) and intake["sources"][sid]["paired_unique_png_frames"] == 0:
             empty_sources[sid] = dict(reason="no_selected_paired_scans", paired_scans=0, fitted_person_frames=0)
             continue
-        session = load_run_session(root, calibration, sid)
+        session = load_run_session(root, calibration, sid, relocations=relocations)
         sessions[sid] = session
         known = {
             cam: [r for r in session.camera_rows(cam) if r["common_time_us"] is not None] for cam in ("cam1", "cam2")
@@ -281,25 +323,30 @@ def prepare_viewer(run_root, baseline_root, display_crop=None):
         boxes=viewer_bbox["boxes"],
         display_crop=display_evidence,
     )
-    output = root / "viewer"
+    output = Path(viewer_output).resolve() if viewer_output is not None else root / "viewer"
     output.mkdir(parents=True, exist_ok=True)
+    runtime_binding = write_viewer_runtime_relocations(root, calibration, relocations, sessions, output)
+    if runtime_binding is not None:
+        manifest["runtime_relocations"] = runtime_binding
+        manifest["data_relocations"] = dict(relocations.binding)
     write_json(output / "manifest.json", manifest)
     template = Path(__file__).with_name("rally_viewer.html").read_text(encoding="utf-8")
     (output / "index.html").write_text(template, encoding="utf-8")
     (output / "viewer.js").write_bytes(Path(__file__).with_name("rally_viewer_client.js").read_bytes())
     for name in ("review.js", "review.css"):
         (output / name).write_bytes((Path(__file__).with_name("review_assets") / name).read_bytes())
-    return ViewerData(root, baseline, calibration, manifest, sessions, media, viewer_bbox=viewer_bbox)
+    return ViewerData(root, baseline, calibration, manifest, sessions, media, viewer_bbox=viewer_bbox, viewer_output=output)
 
 
 class ViewerData:
-    def __init__(self, root, baseline, calibration, manifest, sessions, media, viewer_bbox=None):
+    def __init__(self, root, baseline, calibration, manifest, sessions, media, viewer_bbox=None, *, viewer_output=None):
         self.root = root
         self.baseline = baseline
         self.calibration = calibration
         self.manifest = manifest
         self.sessions = sessions
         self.media = media
+        self.viewer_output = Path(viewer_output) if viewer_output is not None else (root / "viewer" if root else None)
         self._quality = {}
         self._track_colors = {}
         self._color_signatures = {}
@@ -318,17 +365,37 @@ class ViewerData:
         self._geometry_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="native_geometry")
 
     def status(self):
-        state = read_json(self.root / "build_status.json")
+        status_path = self.root / "build_status.json"
+        generated_status = self.viewer_output / "build_status.json"
+        if generated_status.exists():
+            status_path = generated_status
+        publication_fallback = not status_path.exists() and self.manifest.get("canonical_publication") is not None
+        if publication_fallback:
+            binding = self.manifest["canonical_publication"]
+            blob = Path(binding["path"]).read_bytes()
+            if hashlib.sha256(blob).hexdigest() != binding["sha256"]:
+                raise ValueError("Published viewer status manifest SHA256 mismatch")
+            publication = json.loads(blob)
+            state = dict(
+                state="complete", status_source="canonical_publication", paired_accepted=publication["accepted"],
+                sources={
+                    sid: dict(baseline=source["baseline"], state="complete", rallies=len(source["rallies"]),
+                              accepted=publication["exports"][sid]["accepted"])
+                    for sid, source in self.manifest["sources"].items()
+                },
+            )
+        else:
+            state = read_json(status_path)
         for sid, source in state["sources"].items():
             directory = (self.baseline if source["baseline"] else self.root) / "sessions" / sid / "windows"
             reports = list(directory.glob("*/fit_report.json"))
             source["available_fit_windows"] = len(reports)
-            if not source["baseline"]:
+            if not source["baseline"] or publication_fallback:
                 parsed = [read_json(p) for p in reports]
                 source["completed_fit_person_frames"] = sum(r["fitted"] for r in parsed)
                 source["completed_fit_qa_pass"] = sum(r["accepted"] for r in parsed)
         paired = self.root.with_name(self.root.name + "_paired") / "datasets/dataset_manifest.json"
-        if paired.exists():
+        if paired.exists() and not publication_fallback:
             delivered = read_json(paired)
             state["paired_accepted"] = delivered["accepted"]
         state["preview_decoder"] = self.preview_decoder.diagnostics()
@@ -631,11 +698,11 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
             path = parsed.path
             try:
                 if path in ("/", "/index.html"):
-                    return self.blob((data.root / "viewer/index.html").read_bytes(), "text/html; charset=utf-8", head)
+                    return self.blob((data.viewer_output / "index.html").read_bytes(), "text/html; charset=utf-8", head)
                 if path == "/api/manifest":
                     return self.blob(data.manifest, "application/json", head)
                 if path == "/viewer.js":
-                    return self.blob((data.root / "viewer/viewer.js").read_bytes(), "application/javascript", head)
+                    return self.blob((data.viewer_output / "viewer.js").read_bytes(), "application/javascript", head)
                 if path == '/projection.js':
                     return self.blob((Path(__file__).with_name('review_assets')/'projection.js').read_bytes(), 'application/javascript', head)
                 if path == "/api/status":
@@ -687,7 +754,7 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                     html = html.replace('id="background" type="checkbox"', 'id="background" type="checkbox" checked')
                     return self.blob(html.encode("utf-8"), "text/html; charset=utf-8", head)
                 if path in ("/scene/review.js", "/scene/review.css"):
-                    asset = data.root / "viewer" / Path(path).name
+                    asset = data.viewer_output / Path(path).name
                     return self.blob(
                         asset.read_bytes(), "application/javascript" if asset.suffix == ".js" else "text/css", head
                     )

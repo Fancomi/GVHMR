@@ -21,6 +21,7 @@ from .calibration import CalibrationSnapshot
 from .dual_view import file_sha
 from .export import FIELDS, acceptance_reasons, export_joblib
 from .pipeline import BadmintonPipeline, write_json
+from .relocations import validate_run_relocations
 from .sessions import SessionIndex
 from .source_index import SourceIndexedSession, _bound_file
 
@@ -37,11 +38,12 @@ def window_directory(root, dataset, sid, window):
     return Path(dataset.get("window_roots", {}).get(sid, root)) / "sessions" / sid / "windows" / window
 
 
-def load_run_session(root, calibration, sid):
+def load_run_session(root, calibration, sid, *, relocations=None):
     """Resolve only the explicitly frozen source registry of a rally run."""
     registry_path = Path(root) / "source_registry.json"
     if registry_path.exists():
         registry = read_json(registry_path)
+        validate_run_relocations(registry, calibration.data, relocations)
         entry = registry["sources"][sid]
         if entry.get("source_index"):
             review=registry.get('review_only') is True
@@ -62,9 +64,44 @@ def load_run_session(root, calibration, sid):
                     raise ValueError('Review source registry differs from its explicit pilot input')
             return SourceIndexedSession.load_source_index(
                 entry["source_index"]["path"], registry["data_root"], expected_sha256=entry["source_index"]["sha256"],
-                require_admitted=not review
+                require_admitted=not review, relocations=relocations
             )
-    return SessionIndex.load(Path(calibration.data["sessions_root"]) / sid, calibration.frame_map_path(sid))
+    elif relocations is not None:
+        validate_run_relocations(
+            dict(data_root=str(Path(calibration.data["sessions_root"]).parent)), calibration.data, relocations)
+    session = SessionIndex.load(Path(calibration.data["sessions_root"]) / sid, calibration.frame_map_path(sid))
+    if relocations is not None:
+        session.relocation_legacy_audit = audit_legacy_session_paths(session, relocations)
+    return session
+
+
+def audit_legacy_session_paths(session, relocations):
+    """Audit paths actually used by the unchanged legacy reader; do not relocate them."""
+    paths = [session.lidar_dir / "manifest.json",
+             session.meta_dir / f"{session.session_id}_common_clock.json", *session.video_paths.values()]
+    for camera in session.video_paths:
+        sidecar = session.video_dir / f"{camera}.frames.jsonl"
+        if sidecar.exists():
+            paths.append(sidecar)
+        else:
+            name = session._tracks.get(camera, {}).get("raw_index", f"{session.session_id}_{camera}_video_frames.jsonl")
+            paths.append(session.meta_dir / name)
+    paths.extend(Path(pair["lidar_path"]) for pair in session.pairs())
+    old_paths = []
+    for path in paths:
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(relocations.root):
+            raise ValueError("Legacy source dependency escapes the explicitly selected DATA root")
+        logical = resolved.relative_to(relocations.root).as_posix()
+        parts = Path(logical).parts
+        old_domain = (parts[0] == "upstream" or (
+            len(parts) >= 4 and parts[0] == "collections" and parts[2] == "device-time-sources"))
+        if relocations.has_mapping(logical) or old_domain:
+            old_paths.append(logical)
+    if old_paths:
+        raise ValueError("Legacy reader still depends on historical relocation paths: " + ", ".join(old_paths[:3]))
+    return dict(reader="legacy_session", paths_checked=len(paths), historical_relocation_dependencies=[],
+                relocation_applied=False)
 
 
 def select_window_pairs(pairs, eligible, seconds=60):
