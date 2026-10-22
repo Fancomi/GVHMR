@@ -294,10 +294,46 @@ class ExpandedDatasetTests(unittest.TestCase):
                 ("expanded-1019-1020-consumer-contract-draft/v1", "draft_unsealed", False),
                 ("expanded-1019-1020-consumer-contract/v1", "complete", False),
                 ("expanded-1019-1020-consumer-contract/v1", "draft", True),
+                ("expanded-1019-1020-assembly-input/v1", "complete", False),
+                (None, "complete", True),
             ):
                 with self.subTest(schema=schema, status=status, sealed=sealed):
                     with self.assertRaisesRegex(ValueError, "unsealed consumer draft"):
                         validate_union_contract(old, new, dict(contract, schema=schema, status=status, sealed=sealed))
+
+    def test_sealed_joint_input_requires_final_source_counts_and_actual_publication_binding(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            publications, contract, _ = self.make_publications(root)
+            old, new = [m for _, m in publications]
+            contract.update(schema="expanded-1019-1020-assembly-input/v1", status="complete", sealed=True,
+                            new_sources={sid: dict(final_admitted_count=e["accepted"])
+                                         for sid, e in new["exports"].items()})
+            self.assertEqual(validate_union_contract(old, new, contract)["new_zero"], "train")
+            for value in (None, True, 99):
+                changed = deepcopy(contract)
+                changed["new_sources"]["new_train"]["final_admitted_count"] = value
+                with self.subTest(count=value):
+                    with self.assertRaisesRegex(ValueError, "count is pending or differs"):
+                        validate_union_contract(old, new, changed)
+            contract["bindings"]["producer_confirmation"] = binding(
+                Path(contract["new_repair_root"]) / "new_source_completion_receipt.json")
+            contract["bindings"]["producer_joint_manifest"] = binding(publications[0][0])
+            path = root / "joint_contract.json"
+            write_json(path, contract)
+            with self.assertRaisesRegex(ValueError, "different new publication"):
+                assemble(publications[0][0], publications[1][0], path, root / "wrong_union")
+            self.assertFalse((root / "wrong_union").exists())
+            contract["bindings"]["producer_joint_manifest"] = binding(publications[1][0])
+            write_json(path, contract)
+            with (patch("hmr4d.lidar_mocap.expanded_dataset.CalibrationSnapshot.load",
+                        side_effect=lambda p: SimpleNamespace(data=dict(
+                            snapshot_digest="new-cal" if "new_repair" in str(p) else "old-cal"))),
+                  patch("hmr4d.lidar_mocap.expanded_dataset._verify_export_data", return_value={})):
+                result = assemble(publications[0][0], publications[1][0], path, root / "valid_joint_union")
+            self.assertEqual(result["source_publications"]["new"], binding(publications[1][0]))
+            self.assertEqual(result["new_completion"], contract["bindings"]["producer_confirmation"])
+            self.assertFalse(result["training_published"])
 
 
 if __name__ == "__main__":

@@ -20,6 +20,10 @@ from .rally_pipeline import read_json, read_rows
 
 
 ROLES = ("train", "val", "test")
+JOINT_CONTRACTS = (
+    "expanded-1019-1020-assembly-input/v1",
+    "expanded-1019-1020-consumer-contract/v1",
+)
 CONTRACT = dict(
     qualification_policy="bilateral_detection",
     target_body_model="neutral_smpl_24_joints",
@@ -61,7 +65,7 @@ def source_roles(manifest):
 
 def validate_union_contract(old, new, contract):
     schema = contract.get("schema", "")
-    if "draft" in schema or (schema == "expanded-1019-1020-consumer-contract/v1" and (
+    if not isinstance(schema, str) or "draft" in schema or (schema in JOINT_CONTRACTS and (
             contract.get("status") != "complete" or contract.get("sealed") is not True)):
         raise ValueError("An unsealed consumer draft cannot assemble a formal expansion")
     for manifest in (old, new):
@@ -78,6 +82,14 @@ def validate_union_contract(old, new, contract):
         for role in ROLES:
             if manifest["suggested_session_splits"][role]["sessions"] != contract[tag + "_source_splits"][role]:
                 raise ValueError("Whole-source split or order changed: " + tag + ":" + role)
+    if schema in JOINT_CONTRACTS:
+        sources = contract.get("new_sources", {})
+        if set(sources) != set(new["exports"]):
+            raise ValueError("Joint input must declare every actual new admitted source")
+        for sid, entry in new["exports"].items():
+            count = sources[sid].get("final_admitted_count")
+            if isinstance(count, bool) or not isinstance(count, int) or count != entry["accepted"]:
+                raise ValueError("Joint input source count is pending or differs from the new publication")
     return dict(old_roles, **new_roles)
 
 
@@ -269,6 +281,17 @@ def assemble(old_path, new_path, contract_path, output_root):
     check_binding(contract["bindings"]["new_source_splits"])
     dependencies.extend(contract["bindings"][name] for name in ("new_source_input", "new_source_splits"))
     roles = validate_union_contract(old, new, contract)
+    if contract.get("schema") in JOINT_CONTRACTS:
+        for name in ("producer_joint_manifest", "producer_confirmation"):
+            item = contract["bindings"].get(name)
+            if not item:
+                raise ValueError("Joint input lacks its actual " + name + " binding")
+            check_binding(item)
+            dependencies.append(item)
+            if name == "producer_joint_manifest" and (
+                    Path(item["path"]).resolve() != new_path.resolve()
+                    or item["sha256"] != dependencies[1]["sha256"]):
+                raise ValueError("Joint input names a different new publication")
     if output.exists() and any(output.iterdir()):
         raise ValueError("Assembly requires an empty destination; completed and provisional runs stay immutable")
     source_registry, verification = {}, {}

@@ -379,12 +379,25 @@ calibration snapshots. The actual 142,567-row base passes this structural and
 calibration preflight (13 sources, two calibrations). Actual assembly still
 hashes and checks every role payload/row and retains its exact tensor/metadata
 prefix. Draft or unsealed joint contracts cannot assemble the expansion.
-The expanded-dataset/pixel CPU suite passes 17 checks, including mixed old
+The expanded-dataset/pixel CPU suite passes 18 checks, including mixed old
 calibrations, unchanged prefixes, archive escapes, wrong payload hashes and
 substituted calibrations. The browser wrapper still needs the new seven-source
 scope; old 1015-specific assertions are not satisfied by relabeling a review
 receipt. Pending-runtime ranges in the readiness receipt are planning
 estimates, not measured formal-release completion.
+
+The joint publication uses two contract stages to avoid circular hashes.
+`expanded-1019-1020-assembly-input/v1` binds the actual seven-source
+paired/canonical publication, final per-source admitted counts, old full
+archive and source inputs; it must be sealed and complete before assembly.
+`producer_joint_manifest` refers to that new source publication. After actual
+archive sealing, the separate `expanded-1019-1020-consumer-contract/v1` adds
+`final_delivery` archive/dataset/training manifest bindings and typed
+`release_evidence` for audit, native verification, continuity, pixels, browser,
+seal and sequences. The final receiver rejects assembly-input contracts.
+`release_preflight/final_evidence_interface.json` binds historical report
+examples and their actual field/status meanings; those examples do not admit
+the new data. Drafts and missing/mismatched new counts/publications are rejected.
 
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
