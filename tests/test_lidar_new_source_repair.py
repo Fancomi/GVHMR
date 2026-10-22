@@ -78,6 +78,55 @@ class NewSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.write_frozen(path, dict(identity_status="approved"))
 
+    def test_formal_plan_requires_actual_equivalence_and_preserves_native_rally_windows(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source, root = workspace / "outputs/source", workspace / "outputs/repair"
+            camera = source / "calibration/calibration_snapshot.json"
+            write_json(camera, {})
+            roles = dict(train=["s"], val=["v"], test=["t"])
+            ranges = source / "ranges.jsonl"
+            ranges.write_text("".join(json.dumps(dict(source_id=sid, eligible_paired_png_indices=[0, 1]))+"\n"
+                                      for ids in roles.values() for sid in ids))
+            intake = source / "intake.json"
+            write_json(intake, dict(prepared_ranges=dict(path=str(ranges), sha256=file_sha(ranges))))
+            registry_path = source / "source_registry.json"
+            registry = dict(schema="badminton-formal-derived-source-registry-v1",
+                intake=dict(path=str(intake), sha256=file_sha(intake)), camera_admission_handoff=dict(path="bound"),
+                sources={sid: dict(baseline=False) for ids in roles.values() for sid in ids})
+            write_json(registry_path, registry)
+            write_json(source / "session_splits.json", roles)
+            cal = Mock(data=dict(snapshot_digest="formal", sessions_root=str(workspace / "sessions"),
+                                 lidar_project_root=str(workspace / "lidar")))
+            session = Mock()
+            pairs = [dict(lidar_index=i, status="paired", scan_mid_us=1000000+i*100000) for i in range(2)]
+            session.pairs.return_value = pairs
+            windows = [(str(i), i*100000, (i+1)*100000, [pair]) for i, pair in enumerate(pairs)]
+            pipe = Mock(settings=dict(camera="cam2", teacher_stride=2, batch_size=4))
+            proof_path = source / "actual_equivalence.json"
+            write_json(proof_path, dict(schema="badminton-review-formal-input-equivalence-v1", state="complete",
+                evidence=dict(formal_registry=dict(path=str(registry_path), sha256=file_sha(registry_path)),
+                              formal_calibration=dict(path=str(camera), sha256=file_sha(camera))),
+                sources={sid: {} for sid in registry["sources"]}, role_assignment=roles))
+            proof = dict(path=str(proof_path), sha256=file_sha(proof_path))
+            with (patch.object(module, "PROJ_ROOT", workspace),
+                  patch.object(module, "BadmintonPipeline", return_value=pipe),
+                  patch.object(module.CalibrationSnapshot, "load", return_value=cal),
+                  patch.object(module, "load_pilot_run_relocations", return_value=None),
+                  patch.object(module, "load_run_session", return_value=session),
+                  patch("hmr4d.lidar_mocap.pilot.review_rally_windows", return_value=windows)):
+                with self.assertRaisesRegex(ValueError, "requires its completed actual input-equivalence"):
+                    module.prepare_new_sources(source, root)
+                self.assertFalse(root.exists())
+                plan = module.prepare_new_sources(source, root, formal_equivalence=proof)
+                self.assertEqual(len(plan["jobs"]), 6)
+                self.assertEqual(plan["required_nonempty_splits"], ["train", "val", "test"])
+                self.assertEqual(plan["formal_derivation"]["input_equivalence"], proof)
+                self.assertNotIn("review_only", plan)
+                self.assertFalse(plan["training_published"])
+
 
 if __name__ == "__main__":
     unittest.main()

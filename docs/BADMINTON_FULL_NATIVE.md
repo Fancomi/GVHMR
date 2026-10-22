@@ -409,6 +409,30 @@ accepted five-file bundle. Relocation is enabled only by explicit
 fit reuse remain unchanged. Its input-equivalence receipt grants no fit import,
 body completion, repeated full RGB pixel check or training publication.
 
+Actual seven-source formal inputs were frozen and independently audited at
+`outputs/badminton_1019_1020_formal_v1`: 46,444 emitted source rows, 29,982
+selected scans and 291 effective native rally segments. Preparation took
+308.25 CPU seconds; `source_prepare_receipt.json` SHA begins `5513d8bf` and
+`formal_input_equivalence.json` begins `0ce0e0f1`. The new snapshot digest is
+`5e4c7b0f4e3bf5758ef8e8fe327787c44ffa427519a2542fb4b4de33eed005fb`.
+This completes camera/source admission only. Formal repair planning requires
+that exact completed audit via `--formal-input-equivalence` plus its SHA;
+it retains the original native rally windows and all three nonempty roles.
+Existing repair components can resolve the separately typed formal registry's
+explicit relocation declaration only through its frozen intake, real camera
+handoff, matching source-index identities and camera snapshot bundle. Ordinary
+undeclared runs keep their existing relocation checks. The relevant CPU
+relocation/formal-planning suite passes 79 checks with one platform skip.
+
+The continuous CPU relay encountered a transient Windows permission error
+opening a live teacher journal at 10:10:35 UTC. The running B01 teachers still
+completed 101 camera contexts and released real CUDA at 10:25:10. A replacement
+relay resumed B02 at 10:32:16 under the same fixed grant/deadline, preserving
+all 101 artifacts and the first cohort's completed viewer. Live JSON reads now
+retry only bounded permission errors; corrupted JSON and persistent failures
+remain errors. Three recovery tests pass; queue recovery receipts preserve the
+failed state and replacement process identity.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.

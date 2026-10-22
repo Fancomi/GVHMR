@@ -1,4 +1,8 @@
 from copy import deepcopy
+import hashlib
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from hmr4d.lidar_mocap.formal_reuse import (
@@ -6,6 +10,7 @@ from hmr4d.lidar_mocap.formal_reuse import (
     validate_formal_geometry,
     validate_formal_source,
 )
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 
 
 class FormalReuseTests(unittest.TestCase):
@@ -73,6 +78,76 @@ class FormalReuseTests(unittest.TestCase):
         new["crop_binding"]["parent_source_index_sha256"] = "another-parent"
         with self.assertRaisesRegex(ValueError, "original crop lineage"):
             validate_formal_source(old, new)
+
+
+class FormalRelocationTests(unittest.TestCase):
+    def put(self, path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        blob = json.dumps(value).encode() if isinstance(value, dict) else value
+        path.write_bytes(blob)
+        return dict(path=str(path), sha256=hashlib.sha256(blob).hexdigest())
+
+    def fixture(self, root):
+        data, run = root / "data", root / "formal"
+        sid = "20261019_152542"
+        target = data / "sessions" / sid / "meta/original.bin"
+        target_binding = self.put(target, b"actual original")
+        original = dict(file=f"upstream/2026-10-19/{sid}/original.bin",
+                        sha256=target_binding["sha256"], bytes=target.stat().st_size)
+        table = self.put(data / "relocations.json", dict(schema="badminton-data-relocations-v1", entries={
+            original["file"]: dict(file=target.relative_to(data).as_posix(),
+                                   sha256=original["sha256"], bytes=original["bytes"])}))
+        relocation = dict(file="relocations.json", sha256=table["sha256"], bytes=(data / "relocations.json").stat().st_size)
+        index = self.put(data / "admitted/source.json", {})
+        bundle = {name: "a" * 64 for name in ("calibration.json", "bbox.json", "sources.json",
+                                              "roi-config.txt", "sync-policy.json")}
+        handoff = dict(schema="badminton-camera-admission-handoff-v1", data_root=str(data),
+            camera_calibration_admitted=True, body_labels_production_admitted=False, training_published=False,
+            accepted_bundle_sha256=bundle,
+            source_indexes={sid: dict(file="admitted/source.json", sha256=index["sha256"], bytes=2)})
+        handoff_binding = self.put(data / "camera-handoff.json", handoff)
+        intake = dict(schema="badminton-formal-derived-intake-v1", execution_scope="all_effective_native_rallies",
+            data_root=str(data), camera_calibration_admitted=True, body_labels_production_admitted=False,
+            training_published=False, camera_admission_handoff=handoff_binding)
+        intake_binding = self.put(run / "intake.json", intake)
+        registry = dict(schema="badminton-formal-derived-source-registry-v1", data_root=str(data),
+            data_relocations=relocation, intake=intake_binding, camera_admission_handoff=handoff_binding,
+            sources={sid: dict(source_index=index)})
+        self.put(run / "source_registry.json", registry)
+        calibration = dict(sessions_root=str(data / "sessions"), data_relocations=relocation,
+                           configuration_files_sha256=bundle, sessions={sid: {}})
+        return run, registry, calibration, original
+
+    def test_formal_explicit_mapping_resolves_deleted_history_through_bound_intake(self):
+        with TemporaryDirectory() as directory:
+            run, _, calibration, original = self.fixture(Path(directory))
+            resolver = load_pilot_run_relocations(run, calibration)
+            self.assertEqual(resolver.resolve(original).read_bytes(), b"actual original")
+            self.assertFalse((resolver.root / original["file"]).exists())
+
+    def test_untyped_or_changed_formal_source_cannot_enable_relocations(self):
+        with TemporaryDirectory() as directory:
+            run, registry, calibration, _ = self.fixture(Path(directory))
+            changed = deepcopy(registry)
+            changed["schema"] = "unrecognized-formal-intake"
+            self.put(run / "source_registry.json", changed)
+            with self.assertRaisesRegex(ValueError, "explicit frozen review pilot"):
+                load_pilot_run_relocations(run, calibration)
+            registry["sources"]["20261019_152542"]["source_index"]["sha256"] = "b" * 64
+            self.put(run / "source_registry.json", registry)
+            with self.assertRaisesRegex(ValueError, "source differs"):
+                load_pilot_run_relocations(run, calibration)
+
+    def test_changed_handoff_or_review_camera_snapshot_blocks_formal_mapping(self):
+        with TemporaryDirectory() as directory:
+            run, registry, calibration, _ = self.fixture(Path(directory))
+            calibration["review_only"] = True
+            with self.assertRaisesRegex(ValueError, "camera snapshot"):
+                load_pilot_run_relocations(run, calibration)
+            calibration.pop("review_only")
+            Path(registry["camera_admission_handoff"]["path"]).write_text("{}")
+            with self.assertRaisesRegex(ValueError, "Frozen formal admission input changed"):
+                load_pilot_run_relocations(run, calibration)
 
 
 if __name__ == "__main__":

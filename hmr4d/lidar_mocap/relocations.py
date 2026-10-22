@@ -205,6 +205,52 @@ def load_manifest_relocations(spec):
     return resolver
 
 
+def load_formal_run_relocations(run_root, registry, calibration_data=None):
+    """Read only the explicit relocation declaration of a camera-admitted derived intake."""
+    if registry.get("schema") != "badminton-formal-derived-source-registry-v1":
+        raise ValueError("A separately prepared formal source registry is required")
+    def document(entry):
+        payload = Path(entry["path"]).read_bytes()
+        if hashlib.sha256(payload).hexdigest() != entry["sha256"]:
+            raise ValueError("Frozen formal admission input changed")
+        return json.loads(payload, object_pairs_hook=_unique_pairs)
+
+    intake = document(registry["intake"])
+    if (intake.get("schema") != "badminton-formal-derived-intake-v1"
+            or intake.get("execution_scope") != "all_effective_native_rallies"
+            or intake.get("camera_calibration_admitted") is not True
+            or intake.get("body_labels_production_admitted") is not False
+            or intake.get("training_published") is not False
+            or intake.get("camera_admission_handoff") != registry.get("camera_admission_handoff")
+            or Path(intake["data_root"]).resolve() != Path(registry["data_root"]).resolve()):
+        raise ValueError("Formal relocation requires its actual camera-admitted intake")
+    handoff = document(intake["camera_admission_handoff"])
+    if (handoff.get("schema") != "badminton-camera-admission-handoff-v1"
+            or handoff.get("camera_calibration_admitted") is not True
+            or handoff.get("body_labels_production_admitted") is not False
+            or handoff.get("training_published") is not False
+            or set(handoff.get("source_indexes", {})) != set(registry["sources"])
+            or Path(handoff["data_root"]).resolve() != Path(registry["data_root"]).resolve()):
+        raise ValueError("Formal camera handoff does not cover this exact source registry")
+    root = Path(registry["data_root"]).resolve()
+    for sid, entry in registry["sources"].items():
+        declared = handoff["source_indexes"][sid]
+        if (entry["source_index"]["sha256"] != declared["sha256"]
+                or Path(entry["source_index"]["path"]).resolve() != (root / logical_path(declared["file"])).resolve()):
+            raise ValueError("Formal registry source differs from its actual camera handoff")
+    if calibration_data is None:
+        from .calibration import CalibrationSnapshot
+
+        calibration_data = CalibrationSnapshot.load(Path(run_root) / "calibration/calibration_snapshot.json").data
+    if (registry.get("review_only") is True or calibration_data.get("review_only") is True
+            or calibration_data.get("configuration_files_sha256") != handoff.get("accepted_bundle_sha256")
+            or set(calibration_data["sessions"]) != set(registry["sources"])):
+        raise ValueError("Formal source scope/camera snapshot differs from its admitted bundle")
+    resolver = load_manifest_relocations(registry)
+    validate_run_relocations(registry, calibration_data, resolver)
+    return resolver
+
+
 def load_pilot_run_relocations(run_root, calibration_data=None):
     """Explicit command adapter for a new run's hash-bound pilot configuration.
 
@@ -213,6 +259,8 @@ def load_pilot_run_relocations(run_root, calibration_data=None):
     """
     root = Path(run_root)
     registry = json.loads((root / "source_registry.json").read_text(encoding="utf-8-sig"))
+    if registry.get("schema") == "badminton-formal-derived-source-registry-v1":
+        return load_formal_run_relocations(root, registry, calibration_data)
     entry = registry.get("pilot_manifest")
     if registry.get("review_only") is not True or not isinstance(entry, dict):
         if registry.get("data_relocations") is not None:

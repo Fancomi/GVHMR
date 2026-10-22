@@ -17,7 +17,7 @@ def write_frozen(path, value):
     write_json(path, value)
 
 
-def prepare_new_sources(source_root, root, *, relocations=None):
+def prepare_new_sources(source_root, root, *, relocations=None, formal_equivalence=None):
     source_root, root = Path(source_root).resolve(), Path(root).resolve()
     if not root.is_relative_to(PROJ_ROOT / "outputs") or root == source_root:
         raise ValueError("Use a separate GVHMR outputs root")
@@ -32,6 +32,22 @@ def prepare_new_sources(source_root, root, *, relocations=None):
     if file_sha(intake["prepared_ranges"]["path"]) != intake["prepared_ranges"]["sha256"]:
         raise ValueError("Prepared rally ranges changed")
     ranges = read_rows(intake["prepared_ranges"]["path"])
+    formal = registry.get("schema") == "badminton-formal-derived-source-registry-v1"
+    if formal:
+        from .expanded_dataset import binding, check_binding
+        from .rally_pipeline import validate_session_splits
+
+        if not isinstance(formal_equivalence, dict):
+            raise ValueError("Formal repair planning requires its completed actual input-equivalence audit")
+        check_binding(formal_equivalence)
+        proof = read_json(formal_equivalence["path"])
+        if (proof.get("schema") != "badminton-review-formal-input-equivalence-v1" or proof.get("state") != "complete"
+                or proof["evidence"]["formal_registry"] != binding(source_root / "source_registry.json")
+                or proof["evidence"]["formal_calibration"] != binding(source_root / "calibration/calibration_snapshot.json")
+                or set(proof["sources"]) != set(registry["sources"])
+                or proof["role_assignment"] != read_json(source_root / "session_splits.json")):
+            raise ValueError("Formal repair input differs from its actual geometry/source equivalence proof")
+        validate_session_splits(proof["role_assignment"], registry["sources"])
     initial = root / "initial_teacher"
     initial.mkdir(parents=True, exist_ok=True)
     if not (initial / "calibration/calibration_snapshot.json").exists():
@@ -49,7 +65,7 @@ def prepare_new_sources(source_root, root, *, relocations=None):
         eligible = {i for row in ranges if row["source_id"] == sid for i in row["eligible_paired_png_indices"]}
         selected[sid] = sorted(eligible)
         windows=select_window_pairs(session.pairs(), eligible)
-        if registry.get('review_only'):
+        if registry.get('review_only') or formal:
             from .pilot import review_rally_windows
             windows=review_rally_windows(session.pairs(),[row for row in ranges if row['source_id']==sid])
         for name, left, right, pairs in windows:
@@ -76,6 +92,10 @@ def prepare_new_sources(source_root, root, *, relocations=None):
         purpose = ('full_native_rally_review' if registry.get('execution_scope') == 'all_effective_native_rallies'
                    else 'short_native_rally_review')
         plan.update(review_only=True,purpose=purpose,required_nonempty_splits=[])
+    elif formal:
+        plan.update(purpose="formal_native_rally_derivation", required_nonempty_splits=["train", "val", "test"],
+                    formal_derivation=dict(input_equivalence=formal_equivalence,
+                                           camera_admission_handoff=registry["camera_admission_handoff"]))
     input_path = root / "new_source_input.json"
     write_frozen(input_path, plan)
     endpoints = root / "unresolved_native_endpoints.json"
