@@ -256,6 +256,15 @@ independent release observer. CPU geometric review and conservative sealing run
 after actual CUDA exit/release. Unknown relationships retain separate original
 tracklets. Cleanup checks only established native executors in authorized roots;
 it makes no claim that all unrelated machine CUDA processes are absent.
+Independent v5 review found two startup/authorization gaps. V6 registers a
+private Windows Job before each suspended launcher can run, retaining its
+original kernel handle through identity inspection. Any PID/ctime, state-write
+or observer-start failure stops and reaps only this continuation's Jobs,
+including its CPU observer. Failure evidence is written after cleanup through
+an independent exclusive writer. The effective deadline is the earlier of the
+original issued local deadline and start+20 minutes; direct workers also check
+the original stage cap, including shorter 10/15-minute grants. Six real CPU
+process/Job fault regressions preserve a same-root foreign sentinel.
 Future production does not import or execute per-run `.local` continuation code.
 Existing state and leases are preserved instead of silently overwritten.
 
@@ -263,6 +272,8 @@ For a genuinely completed run, `--verify-complete --root <run>` reads the actual
 full scope, geometry, precise decision operations, conservative policy, evidence
 hashes and both real releases, then freezes `native_identity_completion.json`.
 It starts no inference or CUDA and never backfills missing historical evidence.
+If only implementation bindings change, it preserves the prior completion and
+writes a separate versioned receipt; changed actual outcomes are rejected.
 The canonical controller is covered by synthetic CPU worker stand-ins; the real
 1020 producer below was the preceding frozen continuation and remains attributed
 to that actual execution. The canonical completed-evidence reader independently
@@ -692,11 +703,12 @@ and run full actual fallback through guard and baseline, and all-window postleg
 reconstruction through completion. Only the numerical verifier is a stand-in;
 these tests do not attest production reconstruction.
 
-Current implementation evidence is in `gpu_guarded_leg/implementation_native_v5/`;
-102 current targeted CPU checks passed (the prior70 plus32 canonical identity
-contracts). The two canonical source files are included in the native execution
+Current implementation evidence is in `gpu_guarded_leg/implementation_native_v6/`;
+all current115 targeted CPU checks passed (prior70 plus45 canonical identity
+contracts, including real CPU Job faults). The canonical source files and their
+unchanged Windows Job dependency are included in the native execution
 inventory before the first parent witness; all numerical fitter dependencies
-stay byte-identical. Old v3/v4 and 55/143 evidence is retained. The historical real loader inspection resolved
+stay byte-identical. Old v3/v4/v5 and 55/143 evidence is retained. The historical real loader inspection resolved
 the installed neutral model (6890 vertices/24 joints)
 and 3537 bound CPU package files, without a body forward, native window check,
 production witness, formal numerical import or new GPU authorization.

@@ -47,6 +47,10 @@ observe only missing boundary context under the existing grant, then release
 CUDA before complete CPU geometry/sealing. `--verify-complete` validates and
 freezes real existing identity outcomes without inference. This canonical
 entry replaces per-run local continuation scripts for future production.
+Each child enters a private Windows Job before it may execute; failed launches,
+identity reads or persistence reclaim only those Jobs. Shorter issued pose-stage
+limits are retained. Implementation-only revalidation preserves prior completion
+receipts and writes a versioned receipt with unchanged actual outcomes.
 `fit_reuse.py` audits/imports unchanged verified tensors with explicit lineage;
 `tools/run_badminton_full_fits.py` separates bounded GPU fitting from completed-only
 CPU aggregation. `tools/watch_badminton_full_native.py` waits for real intake

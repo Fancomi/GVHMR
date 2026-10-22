@@ -2,20 +2,23 @@
 
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+import hashlib
 import os
 from pathlib import Path
 import runpy
 import subprocess
 import sys
 import time
+import uuid
 
 import psutil
 
 from hmr4d import PROJ_ROOT
 from .formal_baseline import _binding, _bound, _encode, _publish, _scope
-from .gpu_handoff import make_local_stage_lease, read_continuous_grant, stop_owned_cuda_trees
+from .gpu_handoff import make_local_stage_lease, read_continuous_grant
 from .pilot import check_binding
 from .repair_execution import native_gpu_command_matches, read_live_json, write_progress_json
+from .windows_gpu_job import WindowsGPUJob
 
 ENTRY = "tools/continue_badminton_native_identity.py"
 WORKERS = dict(
@@ -203,6 +206,14 @@ def freeze_completion(root):
     value["implementation"] = [
         _binding(PROJ_ROOT / name) for name in ("hmr4d/lidar_mocap/identity_continuation.py", ENTRY)
     ]
+    if path.exists() and path.read_bytes() != _encode(value):
+        prior = read_live_json(path)
+        if {key: item for key, item in prior.items() if key != "implementation"} != {
+            key: item for key, item in value.items() if key != "implementation"
+        }:
+            raise ValueError("Actual completed identity outcomes differ from their immutable prior receipt")
+        revision = hashlib.sha256(_encode(value["implementation"])).hexdigest()
+        path = path.parent / "native_identity_completions" / (revision + ".json")
     _publish(path, _encode(value))
     return _binding(path)
 
@@ -287,7 +298,7 @@ def _worker_authority(root, item):
         or str(root) not in authorization["roots"]
         or lease.get("continuous_gpu_grant") != authorization["binding"]
         or not authorization["start"] <= start <= now < end <= authorization["deadline"]
-        or end > start + timedelta(minutes=20)
+        or end > start + timedelta(minutes=min(20, authorization["grant"]["maximum_stage_minutes"]["poses"]))
         or not Path(item["path"]).resolve().is_relative_to(root / "gpu_leases")
         or lease.get("manifest_sha256") != authorization["roots"][str(root)]["manifest_sha256"]
     ):
@@ -339,6 +350,7 @@ class IdentityContinuation:
             training_published=False,
         )
         self.active_cuda = False
+        self.owned = []
 
     @staticmethod
     def now():
@@ -357,27 +369,93 @@ class IdentityContinuation:
 
     def spawn(self, role, command, cuda=False):
         stdout, stderr = [self.evidence / (role + suffix) for suffix in (".stdout.log", ".stderr.log")]
-        with stdout.open("xb") as out, stderr.open("xb") as err:
-            child = subprocess.Popen(
-                command,
-                cwd=PROJ_ROOT,
-                env=dict(os.environ, CUDA_VISIBLE_DEVICES="0" if cuda else "-1"),
-                stdout=out,
-                stderr=err,
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+        try:
+            job = WindowsGPUJob("Local\\GVHMRIdentity_" + uuid.uuid4().hex)
+            owned = dict(role=role, job=job, child=None, closed=False)
+            self.owned.append(owned)
+            with stdout.open("xb") as out, stderr.open("xb") as err:
+                # Keep the Job registered while start owns the original Popen
+                # HANDLE; startup failures are reaped before a child can resume.
+                child, launched = job.start(
+                    command,
+                    cwd=PROJ_ROOT,
+                    env=dict(os.environ, CUDA_VISIBLE_DEVICES="0" if cuda else "-1"),
+                    log=out,
+                    affinity=[0, 1] if cuda else [26, 27],
+                )
+                owned.update(child=child, launcher=launched)
+                if cuda:
+                    self.active_cuda = True
+            item = dict(
+                role=role,
+                cli_pid=launched["pid"],
+                cli_create_time=launched["create_time"],
+                command=command,
+                started_utc=self.now().isoformat(),
+                stdout=str(stdout),
+                stderr=str(stderr),
+                output_streams_merged_into_stdout=True,
+                private_job=job.name,
+                assigned_before_resume=launched["assigned_before_resume"],
             )
-        item = dict(
-            role=role,
-            cli_pid=child.pid,
-            cli_create_time=psutil.Process(child.pid).create_time(),
-            command=command,
-            started_utc=self.now().isoformat(),
-            stdout=str(stdout),
-            stderr=str(stderr),
+            self.state["worker_executions"].append(item)
+            self.update(stage=role, cli_pid=item["cli_pid"], cli_create_time=item["cli_create_time"], command=command)
+            return child, item
+        except BaseException as error:
+            self.abort_owned(error)
+            raise
+
+    def abort_owned(self, error):
+        """Reap only launchers and descendants in this continuation's Jobs."""
+        cleaned, errors = [], []
+        for owned in reversed(self.owned):
+            if owned["closed"]:
+                continue
+            result = dict(
+                role=owned["role"],
+                private_job=owned["job"].name,
+                launcher=owned.get("launcher"),
+                actual_job_empty=False,
+            )
+            try:
+                owned["job"].terminate()
+                owned["job"].wait_empty()
+                result["actual_job_empty"] = True
+                if owned["child"] is not None:
+                    result["launcher_exit_code"] = owned["child"].wait(timeout=5)
+                    result["launcher_reaped"] = True
+            except BaseException as cleanup_error:
+                errors.append(dict(role=owned["role"], error=repr(cleanup_error)))
+            finally:
+                try:
+                    owned["job"].close()
+                    if owned["child"] is not None:
+                        result["launcher_exit_code"] = owned["child"].wait(timeout=5)
+                        result["launcher_reaped"] = True
+                except BaseException as close_error:
+                    errors.append(dict(role=owned["role"], error=repr(close_error)))
+                owned["closed"] = True
+            cleaned.append(result)
+        self.active_cuda = False
+        failure = dict(
+            state="failed_own_job_cleanup_unconfirmed" if errors else "failed_own_jobs_stopped",
+            error_type=type(error).__name__,
+            error=str(error),
+            owned_jobs=cleaned,
+            cleanup_errors=errors,
+            unrelated_processes_untouched=True,
+            training_published=False,
         )
-        self.state["worker_executions"].append(item)
-        self.update(stage=role, cli_pid=item["cli_pid"], cli_create_time=item["cli_create_time"], command=command)
-        return child, item
+        self.state.setdefault("owned_failure_cleanup", []).append(failure)
+        # This exclusive file does not depend on the atomic writer that may
+        # itself have failed. Reaping precedes every attempt to write evidence.
+        try:
+            path = self.evidence / "continuation_failures" / (uuid.uuid4().hex + ".json")
+            _publish(path, _encode(failure))
+            self.state.setdefault("failure_evidence", []).append(_binding(path))
+        except BaseException as recording_error:
+            self.state.setdefault("failure_recording_errors", []).append(repr(recording_error))
+        return failure
 
     def wait_child(self, child, execution, deadline=None):
         while child.poll() is None:
@@ -386,6 +464,12 @@ class IdentityContinuation:
                 raise TimeoutError("Identity stage local deadline reached")
             self.update()
             time.sleep(2)
+        for owned in self.owned:
+            if owned["child"] is child and not owned["closed"]:
+                owned["job"].wait_empty()
+                child.wait(timeout=5)
+                owned["job"].close()
+                owned["closed"] = True
         execution.update(
             exit_code=child.returncode,
             completed_utc=self.now().isoformat(),
@@ -440,7 +524,7 @@ class IdentityContinuation:
                 raise ValueError("Preserve existing identity GPU lease and release")
             lease = make_local_stage_lease(self.authorization, self.root, "poses", now=self.now())
             deadline = min(
-                self.authorization["deadline"],
+                datetime.fromisoformat(lease["approved_deadline_utc"]),
                 datetime.fromisoformat(lease["approved_start_utc"]) + timedelta(minutes=20),
             )
             lease.update(
@@ -456,7 +540,6 @@ class IdentityContinuation:
                 worker_command(self.root, "observe", self.threads, _binding(self.lease_path)),
                 cuda=True,
             )
-            self.active_cuda = True
             seed = self.evidence / "identity_original_process_seed.json"
             write_progress_json(
                 seed,
@@ -529,12 +612,14 @@ class IdentityContinuation:
                 physical_cross_window_identity_admitted=False,
             )
             return receipt
-        except Exception as error:
-            if self.active_cuda:
-                stopped = stop_owned_cuda_trees([self.root])
+        except BaseException as error:
+            cleanup = self.abort_owned(error)
+            try:
                 write_progress_json(
                     self.stage_progress,
-                    dict(stage="failed", error=str(error), stopped=stopped, training_published=False),
+                    dict(stage="failed", error=str(error), owned_cleanup=cleanup, training_published=False),
                 )
-            self.update(stage="failed_requires_actual_review", error_type=type(error).__name__, error=str(error))
+                self.update(stage="failed_requires_actual_review", error_type=type(error).__name__, error=str(error))
+            except BaseException as recording_error:
+                self.state.setdefault("failure_recording_errors", []).append(repr(recording_error))
             raise

@@ -304,20 +304,26 @@ def test_direct_CPU_worker_also_requires_actual_identity_CUDA_release(complete, 
         continuation.run_worker(complete.root, role, complete.project / "tools" / continuation.WORKERS[role], 1)
 
 
-@pytest.mark.parametrize("failure", [None, "GPU_exit", "local_deadline", "observer_exit"])
-def test_full_canonical_handoff_waits_for_release_before_CPU_seal_and_records_exits(complete, monkeypatch, failure):
+@pytest.mark.parametrize(
+    "failure,stage_cap",
+    [(None, 20), (None, 10), (None, 15), ("GPU_exit", 20), ("local_deadline", 20), ("observer_exit", 20)],
+)
+def test_full_canonical_handoff_waits_for_release_before_CPU_seal_and_records_exits(
+    complete, monkeypatch, failure, stage_cap
+):
     # Only child execution is synthetic. Source/authority/policy/native scope,
     # completion/decision/release checks and real controller flow remain active.
     identity_lease = complete.root / "gpu_leases/identity_poses_01.json"
     identity_release = complete.root / "identity_poses_01_release_receipt.json"
     identity_lease.unlink()
     identity_release.unlink()
+    grant = json.loads(complete.grant.read_bytes())
+    grant["maximum_stage_minutes"]["poses"] = stage_cap
+    put(complete.grant, grant)
     put(complete.request.parent / "live_progress.json", dict(state="waiting_for_actual_reviewed_identity"))
     controller = continuation.IdentityContinuation(complete.root, complete.request, complete.grant)
     clock = [complete.start + timedelta(hours=1)]
     monkeypatch.setattr(controller, "now", lambda: clock[0])
-    stopped = []
-    monkeypatch.setattr(continuation, "stop_owned_cuda_trees", lambda roots: stopped.extend(roots) or [])
     calls = []
 
     class Child:
@@ -360,6 +366,10 @@ def test_full_canonical_handoff_waits_for_release_before_CPU_seal_and_records_ex
             args = command[command.index("--worker-lease") + 1]
             item = binding(Path(args))
             continuation._worker_authority(complete.root, item)
+            lease = json.loads(Path(args).read_bytes())
+            assert datetime.fromisoformat(lease["approved_deadline_utc"]) - datetime.fromisoformat(
+                lease["approved_start_utc"]
+            ) == timedelta(minutes=stage_cap)
         if role == "identity_fixed_camera_geometric_review":
             assert json.loads(identity_lease.read_bytes())["status"] == "released"
             assert identity_release.exists()
@@ -380,7 +390,7 @@ def test_full_canonical_handoff_waits_for_release_before_CPU_seal_and_records_ex
         with pytest.raises((RuntimeError, TimeoutError)):
             controller.run()
         assert controller.state["stage"] == "failed_requires_actual_review"
-        assert stopped == [complete.root]
+        assert controller.state["owned_failure_cleanup"][-1]["unrelated_processes_untouched"] is True
         assert "identity_fixed_camera_geometric_review" not in calls
     else:
         result = controller.run()
@@ -392,4 +402,32 @@ def test_full_canonical_handoff_waits_for_release_before_CPU_seal_and_records_ex
             "identity_conservative_seal",
         ]
         assert all(item["exit_code"] == 0 for item in controller.state["worker_executions"])
-        assert controller.state["stage"] == "complete" and stopped == []
+        assert controller.state["stage"] == "complete"
+
+
+@pytest.mark.parametrize("stage_cap,worker_minutes", [(10, 10), (10, 20), (15, 15), (15, 20)])
+def test_worker_honors_shorter_original_stage_authority(complete, stage_cap, worker_minutes):
+    grant = json.loads(complete.grant.read_bytes())
+    grant["maximum_stage_minutes"]["poses"] = stage_cap
+    put(complete.grant, grant)
+    authority = gpu_handoff.read_continuous_grant(complete.request, complete.grant)
+    now = complete.start + timedelta(hours=1)
+    lease = gpu_handoff.make_local_stage_lease(authority, complete.root, "poses", now=now)
+    lease["approved_deadline_utc"] = (now + timedelta(minutes=worker_minutes)).isoformat()
+    item = put(complete.root / "gpu_leases/future_identity.json", lease)
+    if worker_minutes > stage_cap:
+        with pytest.raises(ValueError):
+            continuation._worker_authority(complete.root, item)
+    else:
+        assert continuation._worker_authority(complete.root, item)["binding"] == binding(complete.grant)
+
+
+def test_new_implementation_receipt_preserves_prior_actual_completion_bytes(complete):
+    first = continuation.freeze_completion(complete.root)
+    payload = Path(first["path"]).read_bytes()
+    implementation = complete.project / "hmr4d/lidar_mocap/identity_continuation.py"
+    implementation.write_bytes(b"# revised implementation, identical actual outcomes\n")
+    second = continuation.freeze_completion(complete.root)
+    assert second["path"] != first["path"]
+    assert Path(first["path"]).read_bytes() == payload
+    assert continuation.freeze_completion(complete.root) == second

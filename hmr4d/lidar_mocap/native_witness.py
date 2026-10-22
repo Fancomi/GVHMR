@@ -33,6 +33,7 @@ SOURCE_FILES = (
     "hmr4d/lidar_mocap/new_source_repair.py",
     "hmr4d/lidar_mocap/identity_repair.py",
     "hmr4d/lidar_mocap/identity_continuation.py",
+    "hmr4d/lidar_mocap/windows_gpu_job.py",
     "tools/continue_badminton_native_identity.py",
     "hmr4d/lidar_mocap/pilot.py",
     "hmr4d/lidar_mocap/full_native.py",
