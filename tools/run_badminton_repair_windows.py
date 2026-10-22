@@ -69,7 +69,7 @@ def main():
                 log = root / f"window_{sid}_{window}_attempt{attempt}.log"
                 with log.open("wb") as handle:
                     result = subprocess.run(
-                        command + ["--partition-worker", "--source", sid, "--window", window],
+                        command + ["--partition-worker", "--source", sid, "--window=" + window],
                         env=env,
                         cwd=PROJ_ROOT,
                         stdout=handle,

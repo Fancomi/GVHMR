@@ -79,6 +79,55 @@ def test_frozen_run_helper_requires_original_manifest_registry_and_camera_same_b
     assert (run / "source_registry.json").is_file()
 
 
+@pytest.mark.parametrize("change", [None, "coverage_registry", "coverage_file", "scope_registry"])
+def test_full_native_mapping_requires_original_full_scope_and_unchanged_coverage(tmp_path, change):
+    from test_lidar_pilot import full_spec
+
+    run, resolver, original, registry, cal = bound_run(tmp_path)
+    spec = dict(full_spec(tmp_path), data_root=original["data_root"], data_relocations=original["data_relocations"])
+    registry["pilot_manifest"] = write(tmp_path / "original-pilot.json", spec)
+    registry.update(execution_scope=spec["execution_scope"], coverage_audit=spec["coverage_audit"])
+    if change == "coverage_registry":
+        registry["coverage_audit"] = dict(spec["coverage_audit"], sha256="0" * 64)
+    if change == "coverage_file":
+        Path(spec["coverage_audit"]["path"]).write_text("changed", encoding="utf-8")
+    if change == "scope_registry":
+        registry.pop("execution_scope")
+    write(run / "source_registry.json", registry)
+    if change is None:
+        assert dict(load_pilot_run_relocations(run, cal).binding) == dict(resolver.binding)
+    else:
+        with pytest.raises(ValueError):
+            load_pilot_run_relocations(run, cal)
+
+
+@pytest.mark.parametrize("changed_scope", [False, True])
+def test_full_native_source_loader_checks_full_contract_without_formal_admission(tmp_path, changed_scope):
+    from test_lidar_pilot import full_spec
+
+    run, resolver, original, registry, cal = bound_run(tmp_path)
+    spec = dict(full_spec(tmp_path), data_root=original["data_root"], data_relocations=original["data_relocations"])
+    registry.update(
+        pilot_manifest=write(tmp_path / "original-pilot.json", spec),
+        execution_scope="changed" if changed_scope else spec["execution_scope"],
+        coverage_audit=spec["coverage_audit"],
+        sources=dict(actual=dict(source_index=dict(path=str(tmp_path / "actual.json"), sha256="b" * 64))),
+    )
+    cal.update(review_only=True, configuration_files_sha256=spec["bundle_sha256"])
+    write(run / "source_registry.json", registry)
+    with patch("hmr4d.lidar_mocap.pilot.validate_camera_review"), patch(
+        "hmr4d.lidar_mocap.source_index.SourceIndexedSession.load_source_index"
+    ) as loader:
+        if changed_scope:
+            with pytest.raises(ValueError, match="complete coverage"):
+                load_run_session(run, type("Camera", (), dict(data=cal))(), "actual", relocations=resolver)
+            loader.assert_not_called()
+        else:
+            load_run_session(run, type("Camera", (), dict(data=cal))(), "actual", relocations=resolver)
+            assert loader.call_args.kwargs["require_admitted"] is False
+            assert loader.call_args.kwargs["relocations"] is resolver
+
+
 @pytest.mark.parametrize(
     "change", ["original", "strip_registry", "wrong_registry", "wrong_camera", "strip_camera", "wrong_root"]
 )

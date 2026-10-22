@@ -6,14 +6,16 @@ import json
 from pathlib import Path
 
 from hmr4d import PROJ_ROOT
-from hmr4d.lidar_mocap.pilot import prepare_pilot, run_pilot_stage, serve_pilot
+from hmr4d.lidar_mocap.pilot import prepare_pilot, prepare_full_native_rallies, run_pilot_stage, serve_pilot
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.relocations import load_run_relocations, load_pilot_run_relocations
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
+def main(*, full_native=False):
+    p = argparse.ArgumentParser(description=(
+        "Explicit full native rally execution; fitting does not publish training data." if full_native else __doc__
+    ))
     p.add_argument("--manifest", type=Path)
     p.add_argument("--root", type=Path, required=True)
     p.add_argument(
@@ -25,6 +27,8 @@ def main():
     p.add_argument("--data-relocations", type=Path)
     p.add_argument("--data-relocations-sha256")
     p.add_argument("--viewer-output", type=Path)
+    if full_native:
+        p.add_argument("--safety-seconds", type=int, default=300)
     a = p.parse_args()
     if a.threads < 1:
         p.error("--threads must be positive")
@@ -36,8 +40,11 @@ def main():
         if a.stage == "prepare":
             if a.manifest is None:
                 p.error("prepare requires the exact new pilot --manifest")
-            result = prepare_pilot(a.manifest, a.root)
+            prepare = prepare_full_native_rallies if full_native else prepare_pilot
+            result = prepare(a.manifest, a.root)
         elif a.stage == "viewer":
+            if full_native and read_json(a.root / "pilot_input.json")["schema"] != "badminton-native-rally-fit-v1":
+                p.error("Select the separately prepared full-native run")
             labels = a.root / "repair/final_labels"
             relocations = (
                 load_pilot_run_relocations(labels)
@@ -47,11 +54,22 @@ def main():
             serve_pilot(a.root, a.port, relocations=relocations, viewer_output=a.viewer_output)
             return
         else:
-            result = run_pilot_stage(a.root, a.stage, gpu_lease=a.gpu_lease, threads=a.threads)
+            if full_native and read_json(a.root / "pilot_input.json")["schema"] != "badminton-native-rally-fit-v1":
+                p.error("Select the separately prepared full-native run")
+            if full_native and a.stage == "teacher":
+                if a.gpu_lease is None:
+                    p.error("Full teacher execution requires its separate held GPU lease")
+                from run_badminton_full_teachers import run_full_teachers
+                result = run_full_teachers(a)
+            else:
+                result = run_pilot_stage(a.root, a.stage, gpu_lease=a.gpu_lease, threads=a.threads)
     except Exception as error:
         root = a.root.resolve()
         if root.is_relative_to(PROJ_ROOT / "outputs") and (root / "pilot_input.json").is_file():
-            progress = read_json(root / "pilot_progress.json")
+            progress_path = root / "pilot_progress.json"
+            progress = read_json(progress_path) if progress_path.exists() else dict(
+                review_only=True, training_published=False
+            )
             progress.update(
                 stage="failed",
                 failed_stage=a.stage,

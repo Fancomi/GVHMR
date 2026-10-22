@@ -38,6 +38,10 @@ Pilot scope, measured quality/timing and explicit GPU handoff:
 [docs/BADMINTON_REVIEW_PILOT.md](docs/BADMINTON_REVIEW_PILOT.md).
 `tools/serve_badminton_pilot_review.py` combines verified pilot services into ten
 native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chrome playback.
+`tools/run_badminton_full_native.py` consumes a separate full-coverage manifest;
+`full_native.py` validates exact teacher/native-pose reuse, and
+`tools/run_badminton_full_teachers.py` yields at safe GPU lease boundaries.
+Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a
 derived crop's exact encoded-cell members when its cloud is read. Completion,

@@ -56,12 +56,19 @@ def load_run_session(root, calibration, sid, *, relocations=None):
                 from .pilot import validate_camera_review
                 validate_camera_review(pilot)
                 expected=pilot.get('source_indexes',{}).get(sid,{})
-                if (pilot.get('schema')!='badminton-review-pilot-v1' or pilot.get('review_only') is not True
+                if (pilot.get('schema') not in ('badminton-review-pilot-v1', 'badminton-native-rally-fit-v1')
+                        or pilot.get('review_only') is not True
                         or pilot.get('training_published') is not False
                         or pilot.get('bundle_sha256')!=calibration.data['configuration_files_sha256']
                         or expected.get('sha256')!=entry['source_index']['sha256']
                         or Path(pilot['data_root']).resolve()!=Path(registry['data_root']).resolve()):
                     raise ValueError('Review source registry differs from its explicit pilot input')
+                if pilot['schema'] == 'badminton-native-rally-fit-v1':
+                    from .pilot import validate_full_native_spec
+                    validate_full_native_spec(pilot)
+                    if (registry.get('execution_scope') != pilot['execution_scope']
+                            or registry.get('coverage_audit') != pilot['coverage_audit']):
+                        raise ValueError('Full native source loader requires its frozen complete coverage')
             return SourceIndexedSession.load_source_index(
                 entry["source_index"]["path"], registry["data_root"], expected_sha256=entry["source_index"]["sha256"],
                 require_admitted=not review, relocations=relocations

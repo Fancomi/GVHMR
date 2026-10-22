@@ -71,8 +71,7 @@ def main():
             "teacher",
             "--source",
             sid,
-            "--window",
-            window.name,
+            "--window=" + window.name,
             "--threads",
             str(args.threads),
         ]

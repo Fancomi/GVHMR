@@ -73,7 +73,9 @@ def prepare_new_sources(source_root, root, *, relocations=None):
         require_review_group(plan['session_splits'],registry['sources'])
         if intake.get('review_only') is not True or cal.data.get('review_only') is not True:
             raise ValueError('Review pilot requires matching intake and camera snapshot scope')
-        plan.update(review_only=True,purpose='short_native_rally_review',required_nonempty_splits=[])
+        purpose = ('full_native_rally_review' if registry.get('execution_scope') == 'all_effective_native_rallies'
+                   else 'short_native_rally_review')
+        plan.update(review_only=True,purpose=purpose,required_nonempty_splits=[])
     input_path = root / "new_source_input.json"
     write_frozen(input_path, plan)
     endpoints = root / "unresolved_native_endpoints.json"

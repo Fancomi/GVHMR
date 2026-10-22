@@ -224,13 +224,22 @@ def load_pilot_run_relocations(run_root, calibration_data=None):
         raise ValueError("Original pilot manifest changed")
     spec = json.loads(payload)
     if (
-        spec.get("schema") != "badminton-review-pilot-v1"
+        spec.get("schema") not in ("badminton-review-pilot-v1", "badminton-native-rally-fit-v1")
         or spec.get("review_only") is not True
         or spec.get("training_published") is not False
         or spec.get("data_relocations") != registry.get("data_relocations")
         or Path(spec["data_root"]).resolve() != Path(registry["data_root"]).resolve()
     ):
         raise ValueError("Frozen pilot registry and original relocation input differ")
+    if spec["schema"] == "badminton-native-rally-fit-v1":
+        from .pilot import validate_full_native_spec
+
+        validate_full_native_spec(spec)
+        if (
+            registry.get("execution_scope") != spec["execution_scope"]
+            or registry.get("coverage_audit") != spec["coverage_audit"]
+        ):
+            raise ValueError("Full native registry changed its frozen execution coverage")
     resolver = load_manifest_relocations(spec)
     if calibration_data is None:
         from .calibration import CalibrationSnapshot

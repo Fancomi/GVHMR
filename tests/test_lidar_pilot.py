@@ -13,6 +13,7 @@ from hmr4d.lidar_mocap.dual_view_observer import source_selection
 from hmr4d.lidar_mocap.pilot import (
     require_review_group,
     validate_pilot_spec,
+    validate_full_native_spec,
     review_rally_windows,
     validate_native_rally,
     binding,
@@ -48,6 +49,51 @@ def test_one_genuine_short_rally_is_allowed_before_second_source_or_120_seconds(
     previous = deepcopy(actual)
     assert validate_pilot_spec(actual) == dict(sources=["actual"], selected_seconds=20.0, selected_scans=3)
     assert actual == previous
+
+
+def full_spec(tmp_path):
+    value = spec()
+    audit = tmp_path / "coverage.json"
+    audit.write_text('{"actual_unique_coverage":true}', encoding="utf-8")
+    value.update(
+        schema="badminton-native-rally-fit-v1",
+        execution_scope="all_effective_native_rallies",
+        user_confirmation="Fit all valid 1019 native rallies; keep training publication separate.",
+        coverage_audit=binding(audit),
+    )
+    value["clips"][0]["end_common_us"] = 251000000
+    return value
+
+
+def test_full_native_scope_allows_long_run_without_relaxing_short_pilot(tmp_path):
+    value = full_spec(tmp_path)
+    assert validate_full_native_spec(value) == dict(sources=["actual"], selected_seconds=250.0, selected_scans=3)
+    with pytest.raises(ValueError):
+        validate_pilot_spec(value)
+    value["schema"] = "badminton-review-pilot-v1"
+    with pytest.raises(ValueError, match="180"):
+        validate_pilot_spec(value)
+    with pytest.raises(ValueError):
+        validate_full_native_spec(value)
+
+
+@pytest.mark.parametrize("change", ["scope", "confirmation", "audit", "source_omission", "published", "overlap"])
+def test_full_native_scope_requires_bound_actual_coverage_and_review_status(tmp_path, change):
+    value = full_spec(tmp_path)
+    if change == "scope":
+        value["execution_scope"] = "unchecked_all_frames"
+    if change == "confirmation":
+        value["user_confirmation"] = " "
+    if change == "audit":
+        Path(value["coverage_audit"]["path"]).write_text("changed", encoding="utf-8")
+    if change == "source_omission":
+        value["source_indexes"]["omitted"] = dict(file="omitted.json", sha256="f" * 64)
+    if change == "published":
+        value["training_published"] = True
+    if change == "overlap":
+        value["clips"].append(dict(value["clips"][0], eligible_paired_png_indices=[20, 21]))
+    with pytest.raises(ValueError):
+        validate_full_native_spec(value)
 
 
 def test_pilot_teacher_windows_follow_real_rallies_and_do_not_add_idle_minute_frames():

@@ -30,8 +30,29 @@ def check_binding(entry):
 
 
 def validate_pilot_spec(spec):
+    return _validate_review_rally_spec(spec, "badminton-review-pilot-v1", maximum_seconds=180)
+
+
+def validate_full_native_spec(spec):
+    """Full execution uses its own frozen scope; the short pilot stays bounded."""
     if (
-        spec.get("schema") != "badminton-review-pilot-v1"
+        spec.get("execution_scope") != "all_effective_native_rallies"
+        or not isinstance(spec.get("user_confirmation"), str)
+        or not spec["user_confirmation"].strip()
+        or not isinstance(spec.get("coverage_audit"), dict)
+        or not spec["coverage_audit"].get("path")
+    ):
+        raise ValueError("Full native execution requires its actual user scope and bound coverage audit")
+    check_binding(spec["coverage_audit"])
+    scope = _validate_review_rally_spec(spec, "badminton-native-rally-fit-v1", maximum_seconds=None)
+    if set(scope["sources"]) != set(spec["source_indexes"]):
+        raise ValueError("Full native scope must account for every declared source index")
+    return scope
+
+
+def _validate_review_rally_spec(spec, schema, *, maximum_seconds):
+    if (
+        spec.get("schema") != schema
         or spec.get("review_only") is not True
         or spec.get("training_published") is not False
         or not spec.get("camera_label")
@@ -71,7 +92,7 @@ def validate_pilot_spec(spec):
                 raise ValueError("Pilot source rally intervals overlap")
         intervals[sid].append((left, right))
     seconds = sum(b - a for ranges in intervals.values() for a, b in ranges) / 1e6
-    if seconds > 180:
+    if maximum_seconds is not None and seconds > maximum_seconds:
         raise ValueError("This short pilot is bounded to at most 180 selected seconds")
     return dict(sources=sorted(intervals), selected_seconds=seconds, selected_scans=len(ids))
 
@@ -133,13 +154,17 @@ def validate_native_rally(clip, source_manifest_sha256):
     raise ValueError("Pilot requires completed native rally/analysis evidence bound to this exact newly cropped source")
 
 
-def prepare_pilot(manifest_path, output_root):
+def prepare_full_native_rallies(manifest_path, output_root):
+    return prepare_pilot(manifest_path, output_root, _full_native=True)
+
+
+def prepare_pilot(manifest_path, output_root, *, _full_native=False):
     started = time.perf_counter()
     manifest_path, root = Path(manifest_path).resolve(), Path(output_root).resolve()
     if not root.is_relative_to(PROJ_ROOT / "outputs") or root == PROJ_ROOT / "outputs":
         raise ValueError("Use a separate explicit outputs/ pilot root")
     spec = read_json(manifest_path)
-    scope = validate_pilot_spec(spec)
+    scope = validate_full_native_spec(spec) if _full_native else validate_pilot_spec(spec)
     relocations = load_manifest_relocations(spec)
     validate_camera_review(spec)
     original = binding(manifest_path)
@@ -175,6 +200,8 @@ def prepare_pilot(manifest_path, output_root):
         data_root=str(data_root),
         sources={},
     )
+    if _full_native:
+        registry.update(execution_scope=spec["execution_scope"], coverage_audit=spec["coverage_audit"])
     if relocations is not None:
         registry["data_relocations"] = dict(relocations.binding)
     for sid, entry in indexes.items():
@@ -264,7 +291,7 @@ def prepare_pilot(manifest_path, output_root):
     write_frozen(source / "source_registry.json", registry)
     write_frozen(source / "session_splits.json", dict(review=scope["sources"]))
     state = dict(
-        schema="badminton-review-pilot-v1",
+        schema=spec["schema"],
         review_only=True,
         training_published=False,
         stage="prepared",
@@ -366,8 +393,7 @@ def run_pilot_stage(root, stage, *, gpu_lease=None, threads=1):
                         "teacher",
                         "--source",
                         job["source_id"],
-                        "--window",
-                        Path(job["source_window"]).name,
+                        "--window=" + Path(job["source_window"]).name,
                         "--camera",
                         "cam1",
                     ],
