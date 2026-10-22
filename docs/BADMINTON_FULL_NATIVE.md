@@ -254,6 +254,12 @@ coordinator 33564 started B03 under the original continuous grant with a new
 observer now share bounded live-JSON reads; original process observations are
 persisted before progress reads, and a coordinator-only failure preserves a
 successfully completed worker's original checkpoint.
+At 13:49 UTC, only that CPU coordinator was replaced by PID 5324 to load exact
+checkpoint-byte preservation and one bounded observer retry within the original
+held lease/deadline. B03's original teacher CLI 39108 and release observer 40552
+retained their process identities and continued to 242/494. The replacement
+waits for their genuine release before another CUDA stage. The independent
+global deadline monitor and both authorization/sampling bindings are unchanged.
 
 At the user's new paired-RGB acceleration request, the CPU sequence was explicitly
 held and B02 yielded after its current worker: 79/88 contexts, with 34 new in

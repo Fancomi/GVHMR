@@ -176,10 +176,11 @@ class Sequence:
             write_progress_json(seed_path, dict(root=str(root), lease_before=binding(lease),
                 observed_process_identities=[dict(pid=self.state["cli_pid"], create_time=self.state["cli_create_time"])],
                 observed_utc=datetime.now(timezone.utc).isoformat(), command=command))
-            observer = self.spawn([sys.executable, "-u", str(PROJ_ROOT / "tools/release_badminton_full_gpu.py"),
+            observer_command = [sys.executable, "-u", str(PROJ_ROOT / "tools/release_badminton_full_gpu.py"),
                 "--root", str(root), "--lease", str(lease), "--progress", str(progress), "--receipt", str(receipt),
                 "--kind", kind, "--seed-evidence", str(seed_path),
-                "--seed-evidence-sha256", binding(seed_path)["sha256"]], root / "logs" / (role + "_release.log"))
+                "--seed-evidence-sha256", binding(seed_path)["sha256"]]
+            observer = self.spawn(observer_command, root / "logs" / (role + "_release.log"))
             self.state.update(release_observer_cli_pid=observer.pid,
                               release_observer_cli_create_time=psutil.Process(observer.pid).create_time())
         self.heartbeat(True)
@@ -195,13 +196,26 @@ class Sequence:
                 write_progress_json(progress, value)
             raise RuntimeError(f"Continuous stage {role} failed with exit {code}; inspect its preserved log")
         if observer:
-            timeout = time.monotonic() + 90
-            while observer.poll() is None:
-                if time.monotonic() > timeout:
-                    raise RuntimeError("GPU release observer did not finish; no subsequent GPU stage launched")
-                self.wait()
-            if observer.returncode:
-                raise RuntimeError("GPU release observer failed; retain the lease and review its actual process evidence")
+            for retry in range(2):
+                timeout = time.monotonic() + 90
+                while observer.poll() is None:
+                    if time.monotonic() > timeout:
+                        raise RuntimeError("GPU release observer did not finish; no subsequent GPU stage launched")
+                    self.wait()
+                if observer.returncode == 0:
+                    break
+                current_lease = read_state_json(lease)
+                if (retry or current_lease.get("status") != "held"
+                        or datetime.now(timezone.utc) >= datetime.fromisoformat(current_lease["approved_deadline_utc"])):
+                    raise RuntimeError("GPU release observer failed; retain the lease and review its actual process evidence")
+                self.check_window()
+                self.event("release_observer_retry_with_original_lease_and_checkpoint", root,
+                           original_lease=binding(lease), completed_checkpoint=binding(progress),
+                           observer_exit_code=observer.returncode)
+                observer = self.spawn(observer_command, root / "logs" / (role + "_release.log"))
+                self.state.update(release_observer_cli_pid=observer.pid,
+                                  release_observer_cli_create_time=psutil.Process(observer.pid).create_time())
+                self.heartbeat(True)
         self.child, self.gpu_root, self.active_progress = None, None, None
         self.event(role + "_complete", root, seconds=time.perf_counter() - started,
                    release=binding(receipt) if receipt else None)
@@ -370,8 +384,10 @@ def main():
                 if not (completed_child and terminal):
                     progress.update(state="failed", stage="failed", safe_to_release_gpu=True,
                                     exit_code=sequence.child.poll() if sequence.child else None)
-                progress["continuous_sequence_error"] = dict(type=type(error).__name__, message=str(error))
-                write_progress_json(path, progress)
+                    progress["continuous_sequence_error"] = dict(type=type(error).__name__, message=str(error))
+                    write_progress_json(path, progress)
+                else:
+                    sequence.state["completed_worker_checkpoint_preserved"] = binding(path)
         sequence.state.update(state="failed_waiting_actual_review", error_type=type(error).__name__, error=str(error))
         sequence.event("sequence_failed_requires_actual_review", error_type=type(error).__name__, error=str(error))
         raise

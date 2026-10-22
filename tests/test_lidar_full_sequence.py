@@ -54,3 +54,32 @@ def test_completed_review_resume_requires_native_binding_and_every_actual_window
     put("full_native_review_completion.json", receipt)
     with pytest.raises(ValueError, match="full native verification"):
         sequence.completed_review_ready(tmp_path)
+
+
+@pytest.mark.parametrize("terminal",["complete","yielded_before_deadline","fit_windows_complete"])
+def test_coordinator_only_failure_preserves_exact_successful_worker_checkpoint(tmp_path,monkeypatch,terminal):
+    root=tmp_path/"outputs/run"
+    root.mkdir(parents=True)
+    path=root/"progress.json"
+    original=(json.dumps(dict(state=terminal,exit_code=0,completed_camera_windows=221),indent=2)+"\r\n").encode()
+    path.write_bytes(original)
+    controller=Mock()
+    controller.gpu_root=root
+    controller.active_progress=path
+    controller.child.poll.return_value=0
+    controller.state={}
+    failure=RuntimeError("observer failure")
+    controller.execute.side_effect=failure
+    monkeypatch.setattr(sequence,"PROJ_ROOT",tmp_path)
+    monkeypatch.setattr(sequence,"Sequence",Mock(return_value=controller))
+    monkeypatch.setattr(sequence,"stop_owned_cuda_trees",Mock())
+    monkeypatch.setattr(sequence.psutil,"Process",Mock())
+    monkeypatch.setattr("sys.argv",["sequence.py","--request",str(root/"request.json"),
+                                   "--grant",str(root/"grant.json"),"--directory",str(root)])
+    with pytest.raises(RuntimeError,match="observer failure"):
+        sequence.main()
+    assert path.read_bytes()==original
+    assert controller.state["completed_worker_checkpoint_preserved"]==sequence.binding(path)
+    assert controller.state["error"]=="observer failure"
+    controller.event.assert_called_once_with("sequence_failed_requires_actual_review",
+                                             error_type="RuntimeError",error="observer failure")
