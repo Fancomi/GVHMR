@@ -449,6 +449,28 @@ CUDA stages in a new formal output require their own explicit authorized
 target/lease; the current immutable grant continues to cover its original two
 roots only.
 
+The separate guarded-leg request is
+`outputs/badminton_1019_1020_formal_v1/gpu_guarded_leg/guarded_leg_gpu_request.json`
+SHA `36799351328d5e7701e953fd5abce79deeadb1588266cfd16b30d2b9dd2c65a6`.
+It targets exactly the formal `repair` root and source input `81e64096...`,
+with a 5–15 minute planning estimate and 30 minute maximum. Its absolute
+deadline is unchanged. Issuer fields, current policy/configuration hashes,
+typed grant/readiness definitions and additional runtime checks are adjacent;
+actual future baseline/identity/native/exit evidence remains pending. No grant
+or live lease was created. The older command matcher does not cover the two
+leg CUDA scripts, so an independent guard must capture their exact commands,
+target and PID creation identities before launch. Baseline/native evidence
+used for authorization must be immutable pre-leg snapshots.
+
+Historical 1015 proposal-loop timing was 50.38 s for 62,895 body-QA candidates,
+59 windows and 12 ray-witness cases, producing nine eventual corrections;
+that measurement excludes process/model startup. New witness count is unknown.
+The library exposes a device parameter, while both complete CLI stages fix
+CUDA; a full CPU route has no validated timing. No CPU backend experiment or
+algorithm change was made. The root's current CPU allocation is recorded in a
+separate request addendum: pure producer CPU tools E26/27, BelowNormal, 1–2
+threads; CUDA proposal/application and their inherited scheduling remain 0/1.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
