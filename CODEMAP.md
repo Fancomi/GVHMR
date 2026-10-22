@@ -49,6 +49,16 @@ without launching inference.
 admitted source registry against frozen review inputs, requiring identical
 geometry/member/time contracts and actual source applicability certificates.
 The audit does not import bodies or publish training data.
+`tools/import_badminton_formal_bodies.py` / `formal_import_audit.py` and
+`formal_numeric_import.py` derive unchanged completed parent tensors, native
+observations and reviewed operations into that separately admitted run on CPU.
+`tools/freeze_badminton_formal_baseline.py` / `formal_baseline.py` freeze the
+actual full pre-leg native/QA/body/pose evidence; no GPU grant or training
+admission follows from these preparation receipts.
+`tools/finalize_badminton_formal_cpu.py` / `formal_completion.py` install that
+genuine before-QA snapshot before the leg, then validate actual guarded CUDA
+exit and run the existing native/dataset verifiers on CPU. Bilateral, pixels,
+Chrome, archive and consumer admission remain separate completion gates.
 `tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately
 approved continuous grant, start the next 1019 teacher batch and enforce the
 fixed overall deadline against only authorized CUDA process trees.

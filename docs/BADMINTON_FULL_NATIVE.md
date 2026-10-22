@@ -517,6 +517,62 @@ The predecessor exit bundle uses
 Every registered predecessor must really be gone. These interfaces describe
 future genuine completion; implementation tests do not fill those pending roles.
 
+The formal CPU import has two explicit phases in
+`tools/import_badminton_formal_bodies.py`. `--phase audit` requires the formal
+run, the existing input-equivalence path/SHA and both explicit `--parent-root`
+values. It stops until each parent's full body/native/pose/identity receipts
+are genuinely complete, then checks all original report/asset/point/native
+bindings, unchanged physical geometry/window/fit/ray policy and frozen source
+roles. A changed execution digest needs the existing explicit original-revision
+compatibility proof; ordinary strict calibration reuse remains unchanged.
+The result is only import eligibility in `import_evidence/numeric_import_audit.json`.
+
+`--phase apply --audit <actual audit> --audit-sha256 <actual SHA>` copies
+ptv3/fits bytes into independent files. It copies the required original native
+teacher witnesses, rebinds native observation metadata and retains every
+reviewed identity operation. Repaired teacher tensors are compared exactly in
+value/dtype/shape after only provenance updates; the changed per-window
+`source_window` also requires a new identity digest in both teacher provenance
+and the identity receipt. No teacher/model/fitting fallback is invoked.
+Quality rows keep their original measurements, acceptance and person/scan IDs.
+`formal_numeric_import.json` binds every original/current report, native pose
+and reviewed identity receipt, unchanged teacher tensor proof and an original
+QA snapshot. It explicitly leaves aggregation and native reconstruction pending.
+`formal_import_progress.json` records actual CPU stage/window progress and
+failures. Existing equal outputs are reverified; conflicting files and any
+hardlink to an original numerical artifact are rejected without replacement.
+
+After import, run the existing repair entry in completed-only CPU mode with
+the formal `repair/new_source_input.json`, source root, labels root,
+`--native-poses-root <formal>/repair --joint-ray-filter`, the formal identity
+decisions, unchanged distal/reprojection weights `0.03`/`2`, `--stage fit
+--require-completed --device cpu --threads 1`. This validates caches and builds
+the complete aggregate/body receipt under the frozen source roles; it refuses
+missing or changed windows instead of fitting. Then run the existing full
+`verify_badminton_native_repair.py --root <formal>/repair --threads 1` before
+freezing. `freeze_badminton_formal_baseline.py --root <formal>
+--numeric-import <actual receipt> --numeric-import-sha256 <actual SHA>` rechecks
+every original/current numerical artifact and row QA value, recalculates the
+existing absolute QA and freezes independent evidence in `gpu_guarded_leg/baseline/`.
+Its `baseline.json` is the genuine complete baseline wrapper; it creates no
+final guarded-leg readiness, grant, lease, archive or consumer admission.
+
+Before any leg output exists, `finalize_badminton_formal_cpu.py --stage prepare-leg
+--root <formal> --baseline <actual baseline.json> --baseline-sha256 <actual SHA>`
+installs the byte-identical frozen absolute QA as `repair/evaluation/v2_before_leg.json`.
+It refuses to reconstruct before-QA after refinement has started. After a
+separately authorized guarded execution has really exited, use the same entry
+with `--stage post-leg --leg-execution <actual attempt/completion.json>
+--leg-execution-sha256 <actual SHA> --threads 1`. Historical request/grant,
+baseline, nonce, phase commands/outputs and actual private-Job/GPU exit must
+match; expiration of the historical grant does not prevent this CPU check or
+authorize another CUDA launch. The adapter runs only the existing full native
+and dataset reconstruction verifiers, then recalculates the existing same-v2
+QA comparison against the genuine before snapshot, preserving person-frame
+membership. Its `repair/evaluation/formal_postleg_cpu_receipt.json` explicitly
+leaves bilateral/native-pixel/Chrome/sequence/archive and consumer admission
+pending. It never calls the older automatic CUDA completion path.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
