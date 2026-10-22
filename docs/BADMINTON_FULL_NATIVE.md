@@ -640,9 +640,17 @@ actual/derived set. Guard and baseline verify that full chain. Unchanged proven
 windows may remain cached after the leg; changed or unproven windows are actually
 reconstructed and receive new subset witnesses. Prior checkpoints are retained.
 
-Current implementation evidence is in `gpu_guarded_leg/implementation_native_v3/`:
-67 targeted CPU checks passed; the old 55/143 suites were not repeated. The real
-loader inspection resolved the installed neutral model (6890 vertices/24 joints)
+Independent review found an uninitialized formal root when no derived windows
+remain. Root initialization now precedes both witness-bearing paths. Added
+synthetic regressions retain the real model-open/witness/context/coverage checks
+and run full actual fallback through guard and baseline, and all-window postleg
+reconstruction through completion. Only the numerical verifier is a stand-in;
+these tests do not attest production reconstruction.
+
+Current implementation evidence is in `gpu_guarded_leg/implementation_native_v4/`;
+70 current targeted CPU checks passed, including the three added paths. Old v3
+and 55/143 evidence is retained. The historical real loader inspection resolved
+the installed neutral model (6890 vertices/24 joints)
 and 3537 bound CPU package files, without a body forward, native window check,
 production witness, formal numerical import or new GPU authorization.
 

@@ -344,6 +344,7 @@ def validate_native_derivations(repair, native, *, allow_partial=False, postleg=
         raise ValueError("A derived native provenance envelope was removed")
     if not has_derived_native(native) and not has_actual:
         return []
+    root = _formal_root(repair.parent)
     runtime = capture_runtime()
     _actual_witnesses(repair, native, runtime)
     derived_keys = {
@@ -366,7 +367,6 @@ def validate_native_derivations(repair, native, *, allow_partial=False, postleg=
         ):
             raise ValueError("Actual full reconstruction did not supersede missing derived evidence")
         return native_derivation_anchors(native)
-    root = _formal_root(repair.parent)
     proof_binding = native.get("derived_native_proof")
     proof = _read(proof_binding)
     if (
