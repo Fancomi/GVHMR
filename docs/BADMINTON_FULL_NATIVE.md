@@ -195,6 +195,26 @@ Independent reports and their SHA bindings are in
 and `coverage_before_native.json`. The other four source watchers still wait for
 actual successful native manifests; no source preflight grants GPU or training admission.
 
+Full-native `prepare` now also runs the all-window body-plan stage with CUDA
+masked and `--device cpu`, using the same command/settings as subsequent fitting.
+An incomplete or failed body plan cannot make the intake ready. Existing successful
+body-plan receipts are checked and retained byte-for-byte. This closes the earlier
+manual preparation step for the four subsequent sources and the joint run.
+The helper was actually exercised on all 44 prepared 1019 windows (exit 0,
+6.128281 s), preserving the old B01 progress, release receipt and full body-plan
+SHA. The focused suite has 118 passing CPU checks.
+
+The user's priority instruction on 2026-10-22 superseded waiting for Sports360's
+full round. Sports360 saved a complete checkpoint and explicitly paused its GPU
+trainers/admission for the whole production. The remaining four native stages
+run first under their own explicit grants. The prepared continuous human-production
+request is `outputs/badminton_full_native_gpu_queue_20261022/continuous_gpu_request.json`;
+it is a request, not a granted lease. It proposes at most 30 hours after the
+native CUDA executors exit, actual manifest-bound local stage leases, and 1019
+followed by the 1020 joint run. No per-source 1020 GPU fitting has started, so
+the joint root avoids duplicate inference. Sports360 resumes only after the
+whole production is explicitly returned through the coordinating root.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.

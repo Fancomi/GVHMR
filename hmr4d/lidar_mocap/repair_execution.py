@@ -39,6 +39,90 @@ def remaining_lease_seconds(lease, manifest_sha256, now=None):
     return (deadline - (now or datetime.now(timezone.utc))).total_seconds()
 
 
+def full_native_fit_command(root, threads):
+    import sys
+    from hmr4d import PROJ_ROOT
+
+    root = Path(root)
+    repair = root / "repair"
+    return [sys.executable, "-u", str(PROJ_ROOT / "tools/repair_badminton_body_labels.py"),
+        "--union", str(repair / "new_source_input.json"), "--source-root", str(root / "source"),
+        "--output-root", str(repair / "final_labels"), "--native-poses-root", str(repair),
+        "--joint-ray-filter", "--identity-decisions", str(repair / "identity_evidence/identity_decisions.json"),
+        "--distal-pose-weight", "0.03", "--lower-limb-reprojection-weight", "2", "--threads", str(threads)]
+
+
+def prepare_full_native_body_plan(root, threads):
+    """Finish the all-window CPU plan before any partition can acquire GPU."""
+    import os
+    import psutil
+    from hmr4d import PROJ_ROOT
+    from .dual_view import file_sha
+
+    root = Path(root).resolve()
+    if threads < 1 or not root.is_relative_to(PROJ_ROOT / "outputs") or root == PROJ_ROOT / "outputs":
+        raise ValueError("Use the prepared full-native output and positive threads")
+    process = psutil.Process()
+    process.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+    process.cpu_affinity([0, 1])
+    source_input = root / "repair/new_source_input.json"
+    source_sha = file_sha(source_input)
+    source = json.loads(source_input.read_bytes())
+    path = root / "repair/final_labels/repair_plan.json"
+
+    def check_plan():
+        plan = json.loads(path.read_bytes())
+        expected = {(item["source_id"], item["source_window"]) for item in source["jobs"]}
+        actual = {(item["source_id"], item["source_window"]) for item in plan["jobs"]}
+        if (file_sha(source_input) != source_sha or plan["source_union_sha256"] != source_sha
+                or actual != expected or len(plan["jobs"]) != len(source["jobs"])
+                or plan["fitting_config"]["distal_pose_prior_weight"] != .03
+                or plan["fitting_config"]["lower_limb_reprojection_weight"] != 2):
+            raise ValueError("Full native CPU body plan changed its complete window scope or fitting policy")
+        return plan
+
+    receipt_path = root / "body_prepare_cpu_receipt.json"
+    if receipt_path.exists():
+        previous = json.loads(receipt_path.read_bytes())
+        entry = previous["repair_plan"]
+        if (previous.get("state") != "ready_cpu_only" or previous.get("exit_code") != 0
+                or previous.get("gpu_started") is not False or previous.get("training_published") is not False
+                or Path(entry["path"]).resolve() != path or file_sha(path) != entry["sha256"]):
+            raise ValueError("Existing full body-plan receipt changed; preserve it and use an independent output")
+        check_plan()
+        return previous
+    state = dict(state="preparing_full_body_plan_cpu", cpu_only=True, gpu_started=False, training_published=False)
+    environment = dict(os.environ, CUDA_VISIBLE_DEVICES="-1")
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        environment[key] = str(threads)
+    command = full_native_fit_command(root, threads) + ["--stage", "prepare", "--device", "cpu"]
+    execution = run_isolated_native_worker(command, cwd=PROJ_ROOT, log_path=root / "body_prepare_cpu.log",
+        state=state, state_path=root / "body_prepare_cpu_progress.json",
+        active=dict(role="cpu_full_body_plan"), env=environment)
+    if execution["exit_code"]:
+        state.update(state="failed", **execution)
+        state.pop("active", None)
+        write_progress_json(root / "body_prepare_cpu_progress.json", state)
+        raise RuntimeError("Full native CPU body-plan preparation failed; no GPU stage was started")
+    try:
+        plan = check_plan()
+    except Exception as error:
+        state.update(state="failed", error_type=type(error).__name__, error=str(error), **execution)
+        state.pop("active", None)
+        write_progress_json(root / "body_prepare_cpu_progress.json", state)
+        raise
+    receipt = dict(schema="badminton-full-body-prepare-v1", state="ready_cpu_only", cpu_only=True,
+        gpu_started=False, training_published=False, **execution,
+        cli_seconds=execution["seconds"], cli_pid=state.get("active", {}).get("cli_pid"),
+        source_input=dict(path=str(source_input), sha256=source_sha),
+        repair_plan=dict(path=str(path), sha256=file_sha(path)), windows=len(plan["jobs"]))
+    write_progress_json(receipt_path, receipt)
+    state.update(state="ready_cpu_only", **execution, repair_plan=receipt["repair_plan"])
+    state.pop("active", None)
+    write_progress_json(root / "body_prepare_cpu_progress.json", state)
+    return receipt
+
+
 def require_completed_fit_windows(root, jobs):
     """Fail before pose/model setup when a collection-only run has missing fits."""
     missing = []

@@ -43,8 +43,8 @@ def main(*, full_native=False):
         if a.stage == "prepare":
             if a.manifest is None:
                 p.error("prepare requires the exact new pilot --manifest")
-            prepare = prepare_full_native_rallies if full_native else prepare_pilot
-            result = prepare(a.manifest, a.root)
+            result = (prepare_full_native_rallies(a.manifest, a.root, threads=a.threads)
+                      if full_native else prepare_pilot(a.manifest, a.root))
         elif a.stage == "viewer":
             if full_native and read_json(a.root / "pilot_input.json")["schema"] != "badminton-native-rally-fit-v1":
                 p.error("Select the separately prepared full-native run")

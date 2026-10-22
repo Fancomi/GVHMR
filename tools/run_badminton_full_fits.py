@@ -4,7 +4,6 @@ import argparse
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import sys
 import time
 
 import psutil
@@ -15,7 +14,7 @@ from hmr4d.lidar_mocap.pilot import binding, check_binding, validate_full_native
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import (
     load_isolated_stage_progress, remaining_lease_seconds, require_gpu_lease,
-    run_isolated_native_worker, write_progress_json,
+    run_isolated_native_worker, write_progress_json, full_native_fit_command,
 )
 
 
@@ -52,12 +51,7 @@ def fit_inputs(root):
 
 
 def fit_command(root, threads):
-    repair = root / "repair"
-    return [sys.executable, "-u", str(PROJ_ROOT / "tools/repair_badminton_body_labels.py"),
-        "--union", str(repair / "new_source_input.json"), "--source-root", str(root / "source"),
-        "--output-root", str(repair / "final_labels"), "--native-poses-root", str(repair),
-        "--joint-ray-filter", "--identity-decisions", str(repair / "identity_evidence/identity_decisions.json"),
-        "--distal-pose-weight", "0.03", "--lower-limb-reprojection-weight", "2", "--threads", str(threads)]
+    return full_native_fit_command(root, threads)
 
 
 def validate_root(root, threads):

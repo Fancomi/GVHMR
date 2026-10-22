@@ -3,6 +3,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import runpy
 
 import pytest
@@ -110,6 +111,55 @@ def test_fit_reuse_import_rejects_stale_compatibility_and_window_execution_proof
         next(iter(changed[group].values()))[field] = "stale"
         with pytest.raises(ValueError, match="repeat the compatibility/input audit"):
             validate_audited_fit_execution(changed, "current")
+
+
+@pytest.mark.parametrize("result", ["complete", "partial", "missing", "failed"])
+def test_full_cpu_prepare_requires_every_fit_window_and_preserves_completed_receipt(tmp_path, monkeypatch, result):
+    import hmr4d
+    import psutil
+    from unittest.mock import Mock
+    from hmr4d.lidar_mocap import repair_execution as execution
+    from hmr4d.lidar_mocap.dual_view import file_sha
+
+    monkeypatch.setattr(hmr4d, "PROJ_ROOT", tmp_path)
+    monkeypatch.setattr(psutil, "Process", Mock())
+    root = tmp_path / "outputs/run"
+    source_input = root / "repair/new_source_input.json"
+    source_input.parent.mkdir(parents=True)
+    jobs = [dict(source_id="actual", source_window=f"actual/window_{i}") for i in range(2)]
+    source_input.write_text(json.dumps(dict(jobs=jobs)), encoding="utf-8")
+    plan_path = root / "repair/final_labels/repair_plan.json"
+
+    def worker(command, **options):
+        assert options["env"]["CUDA_VISIBLE_DEVICES"] == "-1"
+        if result not in ("missing", "failed"):
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(json.dumps(dict(source_union_sha256=file_sha(source_input),
+                jobs=jobs if result == "complete" else jobs[:1],
+                fitting_config=dict(distal_pose_prior_weight=.03, lower_limb_reprojection_weight=2))), encoding="utf-8")
+        return dict(exit_code=7 if result == "failed" else 0, seconds=.02)
+
+    runner = Mock(side_effect=worker)
+    monkeypatch.setattr(execution, "run_isolated_native_worker", runner)
+    receipt_path = root / "body_prepare_cpu_receipt.json"
+    if result != "complete":
+        error = {"partial": ValueError, "missing": FileNotFoundError, "failed": RuntimeError}[result]
+        with pytest.raises(error):
+            execution.prepare_full_native_body_plan(root, 2)
+        assert not receipt_path.exists()
+        return
+    receipt = execution.prepare_full_native_body_plan(root, 2)
+    assert receipt["windows"] == 2 and receipt["gpu_started"] is False
+    original = receipt_path.read_bytes()
+    runner.reset_mock()
+    assert execution.prepare_full_native_body_plan(root, 2) == receipt
+    assert receipt_path.read_bytes() == original
+    runner.assert_not_called()
+    plan_path.write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="receipt changed"):
+        execution.prepare_full_native_body_plan(root, 2)
+    assert receipt_path.read_bytes() == original
+    runner.assert_not_called()
 
 
 def test_completed_only_preflight_checks_all_windows_before_any_model_setup(tmp_path):

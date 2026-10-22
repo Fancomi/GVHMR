@@ -227,8 +227,15 @@ def validate_native_rally(clip, source_manifest_sha256):
     raise ValueError("Pilot requires completed native rally/analysis evidence bound to this exact newly cropped source")
 
 
-def prepare_full_native_rallies(manifest_path, output_root):
-    return prepare_pilot(manifest_path, output_root, _full_native=True)
+def prepare_full_native_rallies(manifest_path, output_root, *, threads=1):
+    from .repair_execution import prepare_full_native_body_plan
+
+    result = prepare_pilot(manifest_path, output_root, _full_native=True)
+    body = prepare_full_native_body_plan(output_root, threads)
+    result["body_prepare_receipt"] = binding(Path(output_root) / "body_prepare_cpu_receipt.json")
+    result["body_plan"] = body["repair_plan"]
+    write_json(Path(output_root) / "pilot_progress.json", result)
+    return result
 
 
 def prepare_pilot(manifest_path, output_root, *, _full_native=False):
