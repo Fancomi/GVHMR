@@ -351,6 +351,33 @@ not evidence that the current rules exclude it. The SHA-bound supplement
 plane, presence evidence and rule implementations. No thresholds, sample
 membership, cameras or formal releases were changed for this clarification.
 
+Formal-release readiness is recorded separately in
+`release_preflight/formal_release_readiness.json`. Existing CPU verification
+proves all 8,115 aggregate rows equal their native-verified window tensors;
+the current presence-qualified subset has 1,157/6,943 rows and 102 real
+continuous segments. The unchanged full continuity screen covers 8,115 rows
+and 8,022 adjacent edges with no flags under its existing criteria.
+The seven-source role draft preserves the full old 142,567 rows and their
+98,011/19,213/25,343 roles. New train sources are both 1019 sources plus
+1020 182854/193236/200346; val is 191011 and test is 184642. This draft uses
+only frozen eligible-scan counts and still needs the consumer's sealed input
+bindings. The original two-source 1019 review cannot independently populate
+all three nonempty source-disjoint roles required by the current intake.
+
+Camera admission requires a separate real applicability certificate and new
+admitted source indexes, not an edit to the active review inputs. The new
+formal calibration package also declares all seven `valid_source_ids` in
+`calibration.json`, and matching canonical `frame_maps` in `sources.json`.
+Changing source-scope/admission metadata requires an explicit derived-fit
+lineage adapter: existing strict review fit-reuse validation is retained.
+Final body completion, bilateral/native/pixel checks, version-bound Chrome
+acceptance, exact expansion, archive sealing and independent consumer CPU
+admission remain separate gates. The current expansion/browser wrappers also
+need explicit support for an already-expanded multi-calibration base and the
+new seven-source scope; old 1015-specific assertions are not satisfied by
+relabeling a review receipt. Pending-runtime ranges in the readiness receipt
+are planning estimates, not measured formal-release completion.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
