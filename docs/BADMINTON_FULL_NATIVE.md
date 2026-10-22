@@ -433,6 +433,22 @@ retry only bounded permission errors; corrupted JSON and persistent failures
 remain errors. Three recovery tests pass; queue recovery receipts preserve the
 failed state and replacement process identity.
 
+The formal 291-window body plan also completed on CPU in 125.16 s:
+`body_prepare_receipt.json` SHA `efc064d7...` binds the original and formal
+window configs, proving exact equality except the admitted calibration digest,
+and equal full fitting settings. `repair/new_source_input.json` retains the
+existing `badminton-new-source-repair-input-v1` jobs contract and SHA
+`81e6409626b6aa7ee44bf78d96763dbbd113f6474cbd88675dc841a8899fa920`.
+`preparation_handoff_receipt.json` (`8c8515c9...`) records the completed source
+and planning proofs separately from unfinished body/native/identity import.
+The consumer independently checked the complete old 142,567 rows and both
+calibrations in 116.98 s and the actual new formal camera wrapper in 3.53 s;
+its independent receiver has 49 passing CPU checks. These are preparation
+receipts, not new body-label or final training admission. Existing guarded-leg
+CUDA stages in a new formal output require their own explicit authorized
+target/lease; the current immutable grant continues to cover its original two
+roots only.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
