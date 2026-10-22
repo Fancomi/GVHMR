@@ -604,6 +604,19 @@ existing absolute QA and freezes independent evidence in `gpu_guarded_leg/baseli
 Its `baseline.json` is the genuine complete baseline wrapper; it creates no
 final guarded-leg readiness, grant, lease, archive or consumer admission.
 
+The proposed derived-native shortcut was separately checked against the actual
+1019 evidence. Its pose receipt binds the currently unchanged neutral SMPL
+model, but the original native reconstruction did not bind the model file it
+actually loaded; the native input inventory covers the verifier/plan/identity
+and teachers instead. A pose-stage model SHA is not a reconstruction-execution
+witness. Therefore the current formal pre-leg reconstruction remains required;
+no derived passed receipt is created from that incomplete historical chain.
+`badminton_full_native_gpu_queue_20261022/derived_native_eligibility_evaluation_20261022.json`
+records all 44 original report bindings and the precise missing proof. A future
+parent's first genuine CPU verification could record model/code/runtime before
+and after invoking the unchanged verifier, enabling a later explicit derivation
+only for fully witnessed windows. No such execution is claimed here.
+
 Before any leg output exists, `finalize_badminton_formal_cpu.py --stage prepare-leg
 --root <formal> --baseline <actual baseline.json> --baseline-sha256 <actual SHA>`
 installs the byte-identical frozen absolute QA as `repair/evaluation/v2_before_leg.json`.
