@@ -75,6 +75,8 @@ def test_full_native_scope_allows_long_run_without_relaxing_short_pilot(tmp_path
     value["schema"] = "badminton-review-pilot-v1"
     with pytest.raises(ValueError, match="180"):
         validate_pilot_spec(value)
+    with pytest.raises(ValueError):
+        validate_full_native_spec(value)
 
 
 @pytest.mark.parametrize("name", ["source_indexes", "excluded_source_indexes"])
@@ -86,8 +88,18 @@ def test_full_native_source_indexes_use_the_existing_bound_file_contract(tmp_pat
     with pytest.raises(ValueError, match="requires a file/sha256 binding relative to data_root"):
         validate_full_native_spec(value)
     assert value == previous
-    with pytest.raises(ValueError):
-        validate_full_native_spec(value)
+
+
+def test_read_only_full_intake_rejects_external_calibration_before_creating_a_snapshot(tmp_path):
+    from hmr4d.lidar_mocap.full_native import inspect_full_native_manifest
+
+    value = full_spec(tmp_path)
+    value.update(lidar_project_root=str(tmp_path / "lidar_project"), calibration_dir=str(tmp_path / "outside"))
+    manifest = tmp_path / "full.json"
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="Calibration dependency escapes its root"):
+        inspect_full_native_manifest(manifest)
+    assert not (tmp_path / "lidar_project").exists()
 
 
 @pytest.mark.parametrize("change", ["scope", "confirmation", "audit", "source_omission", "published", "overlap"])

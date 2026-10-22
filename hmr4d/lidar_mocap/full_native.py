@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 
 from hmr4d import PROJ_ROOT
-from .calibration import CalibrationSnapshot
+from .calibration import CalibrationSnapshot, _bounded
 from .dual_view import file_sha
 from .pipeline import write_json
 from .pilot import binding, check_binding, validate_full_native_spec, validate_camera_review, validate_native_rally
@@ -26,9 +26,10 @@ def inspect_full_native_manifest(manifest_path):
     original = binding(manifest_path)
     spec = read_json(manifest_path)
     scope = validate_full_native_spec(spec)
+    calibration_dir = _bounded(spec["lidar_project_root"], spec["calibration_dir"])
     validate_camera_review(spec)
     for name, digest in spec["bundle_sha256"].items():
-        if file_sha(Path(spec["calibration_dir"]) / name) != digest:
+        if file_sha(calibration_dir / name) != digest:
             raise ValueError("Full native input changed its physical camera bundle")
     resolver = load_manifest_relocations(spec)
     data = Path(spec["data_root"])
