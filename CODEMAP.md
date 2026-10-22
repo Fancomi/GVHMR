@@ -45,6 +45,9 @@ native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chr
 `tools/run_badminton_full_fits.py` separates bounded GPU fitting from completed-only
 CPU aggregation. `tools/watch_badminton_full_native.py` waits for real intake
 without launching inference.
+`tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately
+approved continuous grant, start the next 1019 teacher batch and enforce the
+fixed overall deadline against only authorized CUDA process trees.
 Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a

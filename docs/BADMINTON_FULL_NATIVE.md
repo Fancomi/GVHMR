@@ -215,6 +215,20 @@ followed by the 1020 joint run. No per-source 1020 GPU fitting has started, so
 the joint root avoids duplicate inference. Sports360 resumes only after the
 whole production is explicitly returned through the coordinating root.
 
+`tools/watch_badminton_full_gpu.py` is a hidden CPU-only receiver for that final
+grant. It verifies the frozen request, both actual manifest hashes, four distinct
+native return proofs, the Sports360 stop proof, delegation and the fixed overall
+deadline. A sample, future window or incomplete handoff cannot start inference.
+On the real window it creates the bounded B02 lease and starts the 1019 teacher
+controller plus its independent release observer. It then stays resident as the
+deadline monitor while poses, reviewed identity and fitting are dispatched.
+An active grant is immutable: replacement, removal or expiry stops only known
+CUDA trees in the two authorized outputs, matching PID creation identities.
+The receiver's actual PID, heartbeat, child PIDs and release binding are in
+`outputs/badminton_full_native_gpu_queue_20261022/continuous_gpu_receiver.json`.
+The focused 130-check suite includes real CPU subprocess-tree termination and
+proves that a different output root keeps running. No scheduled task is used.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
