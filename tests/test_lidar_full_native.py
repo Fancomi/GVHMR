@@ -10,6 +10,7 @@ import pytest
 from hmr4d.lidar_mocap.full_native import validate_window_reuse, pose_config_digest, rebind_native_pose_record
 from hmr4d.lidar_mocap.fit_reuse import (
     validate_calibration_reuse, calibration_execution_ast, same_teacher_values, rebind_fit_row,
+    validate_audited_fit_execution,
 )
 
 
@@ -94,6 +95,21 @@ def test_calibration_execution_proof_allows_freeze_metadata_but_rejects_camera_m
     math_change = metadata_change.replace(b'x*2', b'x*3')
     assert calibration_execution_ast(before) == calibration_execution_ast(metadata_change)
     assert calibration_execution_ast(before) != calibration_execution_ast(math_change)
+
+
+def test_fit_reuse_import_rejects_stale_compatibility_and_window_execution_proof():
+    audit = dict(windows=dict(actual=dict(current_fit_algorithm_digest="current")),
+                 algorithms=dict(original=dict(current_digest="current")))
+    previous = deepcopy(audit)
+    validate_audited_fit_execution(audit, "current")
+    assert audit == previous
+    with pytest.raises(ValueError, match="repeat the compatibility/input audit"):
+        validate_audited_fit_execution(audit, "new-execution")
+    for group, field in (("windows", "current_fit_algorithm_digest"), ("algorithms", "current_digest")):
+        changed = deepcopy(audit)
+        next(iter(changed[group].values()))[field] = "stale"
+        with pytest.raises(ValueError, match="repeat the compatibility/input audit"):
+            validate_audited_fit_execution(changed, "current")
 
 
 def test_completed_only_preflight_checks_all_windows_before_any_model_setup(tmp_path):

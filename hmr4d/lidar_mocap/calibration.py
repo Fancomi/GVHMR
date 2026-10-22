@@ -259,6 +259,7 @@ class CalibrationSnapshot:
         sessions = {}
         for entry in entries:
             declared_parent_path = None
+            declared_source_paths = []
             sid = entry["source_id"]
             if not isinstance(sid, str) or Path(sid).name != sid or sid in (".", ".."):
                 raise ValueError("Invalid canonical source identity")
@@ -280,11 +281,38 @@ class CalibrationSnapshot:
                         raise ValueError('Review source crop/candidate bundle differs from the frozen pilot camera')
                     if portable_review:
                         identity = index.get("parent_source_index_identity", {})
-                        if (identity.get("file") != entry.get("source_index")
-                                or identity.get("sha256") != entry.get("source_index_sha256")):
+                        indexed_parent = "source_index" in entry or "source_index_sha256" in entry
+                        if indexed_parent and (identity.get("file") != entry.get("source_index")
+                                               or identity.get("sha256") != entry.get("source_index_sha256")):
                             raise ValueError("Review crop parent differs from the declared original source index")
                         declared_parent_path = _bound_file(Path(data_root).resolve(), identity, relocations=relocations)
                         inputs[declared_parent_path] = _checked_blob(declared_parent_path, identity["sha256"])
+                        if not indexed_parent:
+                            # Applicability can be frozen before fullraw indexing. Its
+                            # original recording bindings must exactly identify the
+                            # subsequently generated parent; no path discovery occurs.
+                            parent = _json(inputs[declared_parent_path])
+                            if (index.get("parent_source_kind") != "original_fullraw_fixed24"
+                                    or parent.get("source_kind") != "original_fullraw_fixed24"
+                                    or parent.get("source_id") != sid
+                                    or index.get("parent_inputs", {}).get("source_index", {}).get("sha256") != identity["sha256"]):
+                                raise ValueError("Recording-bound review requires the exact fullraw crop parent")
+                            fields = (("original_recording_manifest", "recording_manifest"),
+                                      ("common_clock", "common_clock"),
+                                      ("ptp_validation", "original_ptp_validation"),
+                                      ("download_receipt", "source_download"),
+                                      ("original_pcap", "source_pcap"))
+                            for declared_name, parent_name in fields:
+                                declared, actual = entry.get(declared_name), parent.get(parent_name)
+                                if (not isinstance(declared, dict) or not isinstance(actual, dict)
+                                        or any(not declared.get(key) or declared.get(key) != actual.get(key)
+                                               for key in ("file", "sha256", "bytes"))):
+                                    raise ValueError(f"Review fullraw parent differs from original recording binding: {declared_name}")
+                                path = _bound_file(Path(data_root).resolve(), declared,
+                                                   verify=declared_name != "original_pcap", relocations=relocations)
+                                if declared_name != "original_pcap":
+                                    inputs[path] = _checked_blob(path, declared["sha256"])
+                                    declared_source_paths.append(path)
                 elif (index.get("accepted_calibration_sha256") != hashes["calibration.json"]
                       or index.get("accepted_bundle_sha256") != hashes):
                     raise ValueError("Explicit source index is bound to another calibration")
@@ -301,7 +329,7 @@ class CalibrationSnapshot:
                 sidecars = {name: _bounded(session_dir, Path("output-zcam") / f"zcam_{sid}" / f"{name}.frames.jsonl")
                             for name in ("cam1", "cam2")}
                 session = SessionIndex.load(session_dir)
-            raw_paths = [manifest_path, clock_path, *sidecars.values()]
+            raw_paths = [manifest_path, clock_path, *sidecars.values(), *declared_source_paths]
             if declared_parent_path is not None:
                 raw_paths.append(declared_parent_path)
             for path in raw_paths:

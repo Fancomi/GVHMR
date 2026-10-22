@@ -294,6 +294,86 @@ class CalibrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
                 freeze('changed-authority', review_source_ids=[f.sid], review_authorization=authority)
 
+    def test_recording_bound_review_checks_all_original_bindings_and_fullraw_parent(self):
+        from hmr4d.lidar_mocap import source_index as source_module
+
+        f = self.fixture
+
+        def binding(path):
+            return dict(file=str(path.relative_to(f.sessions)), sha256=sha(path.read_bytes()), bytes=path.stat().st_size)
+
+        recording, ptp, download, pcap = [f.sessions / name for name in
+                                        ("recording.json", "ptp.json", "download.json", "original.pcapng")]
+        for path in (recording, ptp, download, pcap):
+            path.write_text('{"original":true}', encoding="utf-8")
+        fields = (("original_recording_manifest", "recording_manifest", recording),
+                  ("common_clock", "common_clock", f.clock_path),
+                  ("ptp_validation", "original_ptp_validation", ptp),
+                  ("download_receipt", "source_download", download),
+                  ("original_pcap", "source_pcap", pcap))
+        source = dict(source_id=f.sid, **{declared: binding(path) for declared, _, path in fields})
+        original = dict(source_id=f.sid, source_kind="original_fullraw_fixed24",
+                        **{parent: binding(path) for _, parent, path in fields})
+        parent_path = f.sessions / "original-index.json"
+        write_json(parent_path, original)
+        sources = dict(schema="badminton-calibration-sources-v1", usage="review_only",
+                       valid_source_ids=[f.sid], sources=[source], production_admitted=False,
+                       camera_calibration_admitted=False, body_labels_production_admitted=False)
+        write_json(f.base / "sources.json", sources)
+        hashes = {name: sha((f.base / name).read_bytes()) for name in module._CONFIG_FILES}
+        auth = f.base / "review-status.json"
+        write_json(auth, dict(schema="badminton-calibration-review-status-v1", usage="review_only",
+                   camera_pilot_authorized=True, body_labels_production_admitted=False, training_published=False,
+                   result_files=hashes, user_confirmation="Review the measured new recording"))
+        authority = dict(path=str(auth), sha256=sha(auth.read_bytes()))
+        session = SessionIndex.load(f.session)
+        session.source_index = dict(candidate_bundle_sha256=hashes, crop_binding=dict(bbox_sha256=hashes["bbox.json"]),
+            parent_source_kind="original_fullraw_fixed24", frame_count=3, frame_map=dict(rows=3),
+            source_manifest=binding(f.manifest_path), common_clock=binding(f.clock_path),
+            canonical_video_sidecars={cam: binding(f.video / (cam + ".frames.jsonl")) for cam in ("cam1", "cam2")})
+        index_path = f.sessions / "derived-index.json"
+        index_path.write_text("{}", encoding="utf-8")
+
+        def set_parent(parent):
+            write_json(parent_path, parent)
+            session.source_index.update(parent_source_index_identity=binding(parent_path),
+                                        parent_inputs=dict(source_index=binding(parent_path)))
+
+        def freeze(name):
+            return CalibrationSnapshot.freeze(f.project, f.sessions, f.workspace / name, calibration_dir=f.base,
+                source_indexes={f.sid: binding(index_path)}, data_root=f.sessions,
+                review_source_ids=[f.sid], review_authorization=authority)
+
+        set_parent(original)
+        with patch.object(source_module.SourceIndexedSession, "load_source_index", return_value=session):
+            result = freeze("recording-bound")
+            self.assertEqual(result.data["provenance"], sources)
+            self.assertFalse(result.data["production_admitted"])
+            self.assertEqual(result.frame_map_path(f.sid).read_bytes(), f.expected_map)
+            evidence = result.data["sessions"][f.sid]["source_evidence_sha256"]
+            for path in (recording, f.clock_path, ptp, download, parent_path):
+                self.assertEqual(evidence[str(path)], sha(path.read_bytes()))
+            for declared, key, _ in fields:
+                for changed in ("file", "sha256", "bytes"):
+                    with self.subTest(binding=declared, field=changed):
+                        parent = copy.deepcopy(original)
+                        parent[key][changed] = 999 if changed == "bytes" else "changed"
+                        set_parent(parent)
+                        with self.assertRaisesRegex(ValueError, "original recording binding"):
+                            freeze(f"wrong-{declared}-{changed}")
+            for key, value in (("source_id", "another-recording"), ("source_kind", "unrelated")):
+                set_parent(dict(original, **{key: value}))
+                with self.assertRaisesRegex(ValueError, "exact fullraw crop parent"):
+                    freeze(f"wrong-{key}")
+            set_parent(original)
+            session.source_index["parent_inputs"]["source_index"]["sha256"] = "f" * 64
+            with self.assertRaisesRegex(ValueError, "exact fullraw crop parent"):
+                freeze("wrong-parent-copy")
+            set_parent(original)
+            ptp.write_text("changed original bytes", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "size mismatch|SHA256 mismatch"):
+                freeze("changed-original")
+
     def test_canonical_five_files_and_original_source_sha_are_distinct(self):
         snapshot = self.fixture.freeze()
         self.assertEqual(snapshot.data["schema"], module._CANONICAL_SCHEMA)

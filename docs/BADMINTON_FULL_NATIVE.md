@@ -144,6 +144,31 @@ remains active as well. Actual launch references are in
 preparation. `tools/watch_badminton_full_native.py` masks CUDA for every
 preparation subprocess. No Windows scheduled tasks are added.
 
+The 1020 bundle binds original recordings because it predates fullraw indexes.
+Portable review freezes may validate that explicit fullraw parent against the
+original recording manifest, common clock, PTP validation, download receipt and
+PCAP bindings, requiring matching file/SHA/bytes and source identity. The four
+small originals are hash-checked; PCAP identity retains the original download
+SHA and current size contract. The existing explicit source-index branch stays
+strict. Neither branch searches for missing files or changes the five-file bundle.
+
+Source `20261020_191011` completed actual CPU intake at
+`2026-10-22T03:37:09.128801+00:00`: manifest `93ff37af...`, 23 segments,
+2,285 unique eligible scans and 227.736177 seconds. Prepare CLI took 29.481714 s
+(19.166396 s internally); the separate complete body-plan prepare took 5.431744 s.
+`outputs/badminton_1020_full_native_20261020_191011_v1/cpu_prepare_receipt.json`
+binds the prepared registry, input, case plan, calibration and all-window body
+plan. Its 46 independent camera-teacher contexts, 4,570 planned native
+camera/scan observations and subsequent fitting/QA remain pending.
+
+The explicit two-cohort GPU queue is
+`outputs/badminton_full_native_gpu_queue_20261022/queue.json`: 1019 has 43 teacher
+contexts left, followed by the first ready 1020 source's 46. Each teacher lease
+requests at most 30 minutes and uses its own progress file; subsequent poses,
+reviewed identity, fitting, native verification and the full player retain their
+existing stage gates. The queue does not grant or launch GPU work automatically;
+Sports360's actual explicit handoff is still required.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.

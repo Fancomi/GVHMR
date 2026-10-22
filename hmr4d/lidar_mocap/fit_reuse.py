@@ -40,6 +40,12 @@ def calibration_execution_ast(blob):
     return ast.dump(tree, include_attributes=False).encode()
 
 
+def validate_audited_fit_execution(audit, current_digest):
+    if (any(item.get("current_fit_algorithm_digest") != current_digest for item in audit["windows"].values())
+            or any(item.get("current_digest") != current_digest for item in audit["algorithms"].values())):
+        raise ValueError("Fit execution changed since its reuse audit; repeat the compatibility/input audit before import")
+
+
 def audit_algorithm_compatibility(original_digest, current_digest, original_commit=None):
     current = {name: (PROJ_ROOT / name).read_bytes().replace(b"\r\n", b"\n") for name in FIT_MODULES}
     if hashlib.sha256(b"".join(current.values())).hexdigest() != current_digest:
@@ -219,7 +225,7 @@ def apply_full_fit_reuse(root):
     from .calibration import CalibrationSnapshot
     from .dual_view import file_sha
     from .pilot import binding, check_binding, validate_full_native_spec
-    from .pipeline import write_json
+    from .pipeline import BadmintonPipeline, write_json
     from .pose_ray_filter import RayFilteredPoseProvider
     from .rally_pipeline import read_json, read_rows
     from .teacher import load_teacher_track, run_teacher
@@ -237,6 +243,7 @@ def apply_full_fit_reuse(root):
     audit = read_json(audit_path)
     if audit["manifest"] != frozen["manifest"]:
         raise ValueError("Fit reuse audit belongs to another full execution")
+    validate_audited_fit_execution(audit, BadmintonPipeline._fit_digest(None))
     check_binding(audit["teacher_reuse"])
     check_binding(audit["native_pose_reuse"])
     calibration = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
