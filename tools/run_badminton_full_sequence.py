@@ -22,15 +22,49 @@ from hmr4d.lidar_mocap.pilot import binding, check_binding
 from hmr4d.lidar_mocap.repair_execution import write_progress_json, teacher_batch_metrics, native_gpu_command_matches
 
 
+def read_state_json(path, attempts=20, delay=.05):
+    """Atomic Windows journal replacement can briefly deny a reader's open."""
+    for attempt in range(attempts):
+        try:
+            return json.loads(path.read_bytes())
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay)
+
+
+def completed_review_ready(root):
+    receipt = root / "full_native_review_completion.json"
+    if not receipt.exists():
+        return None
+    value = read_state_json(receipt)
+    if value.get("state") != "review_complete":
+        return None
+    native_path = root / "repair/final_labels/native_verification.json"
+    if (value.get("review_only") is not True or value.get("training_published") is not False
+            or value["manifest"] != read_state_json(root / "pilot_input.json")["manifest"]
+            or value["evidence"]["repair/final_labels/native_verification.json"] != binding(native_path)):
+        raise ValueError("Completed review resume receipt differs from its actual frozen run")
+    check_binding(value["manifest"])
+    for item in value["evidence"].values():
+        check_binding(item)
+    native = read_state_json(native_path)
+    if (native.get("passed") is not True or native.get("state") != "complete"
+            or native["verified_windows"] != native["total_windows"]
+            or native["accepted_checked"] != value["counts"]["accepted"]):
+        raise ValueError("Completed review lacks actual full native verification")
+    return receipt
+
+
 def reviewed_identity_ready(root):
     path = root / "repair/identity_evidence/identity_decisions.json"
     if not path.exists():
         return False
-    value = json.loads(path.read_bytes())
+    value = read_state_json(path)
     if value.get("review_status") != "reviewed":
         return False
     source = root / "repair/new_source_input.json"
-    plan = json.loads(source.read_bytes())
+    plan = read_state_json(source)
     required = {item["source_id"] + ":" + Path(item["source_window"]).name for item in plan["jobs"]}
     if (value.get("source_union_sha256") != binding(source)["sha256"]
             or value.get("calibration_digest") != plan["calibration_digest"]
@@ -47,7 +81,7 @@ class Sequence:
         self.threads, self.authorization, self.child, self.gpu_root, self.active_progress = threads, None, None, None, None
         self.paired_native_rgb = paired_native_rgb
         self.state_path = directory / "continuous_sequence.json"
-        previous = json.loads(self.state_path.read_bytes()) if self.state_path.exists() else {}
+        previous = read_state_json(self.state_path) if self.state_path.exists() else {}
         if previous.get("pid"):
             try:
                 old = psutil.Process(previous["pid"])
@@ -67,7 +101,7 @@ class Sequence:
         if not force and time.monotonic() - self.last_save < 10:
             return
         self.state["heartbeat_utc"] = datetime.now(timezone.utc).isoformat()
-        first = Path(json.loads(self.request.read_bytes())["scope"][0]["root"])
+        first = Path(read_state_json(self.request)["scope"][0]["root"])
         batches = [(int(re.search(r"batch(\d+)", path.name)[1]), path)
                    for path in first.glob("full_teacher_progress.batch*.json")]
         index, current = max(batches, default=(0, None))
@@ -75,12 +109,12 @@ class Sequence:
         if index > 1:
             release_path = first / f"teacher_batch_{index-1:02d}_release_receipt.json"
             if release_path.exists():
-                proof = json.loads(release_path.read_bytes())["full_teacher_progress"]
+                proof = read_state_json(release_path)["full_teacher_progress"]
                 check_binding(proof)
                 baseline = Path(proof["path"])
         if current is not None and current.exists():
-            raw = json.loads(current.read_bytes())
-            previous = json.loads(baseline.read_bytes())
+            raw = read_state_json(current)
+            previous = read_state_json(baseline)
             self.state["first_teacher_metrics"] = teacher_batch_metrics(raw, previous)
             self.state["first_teacher_progress_path"] = str(current)
             self.state["first_teacher_baseline"] = binding(baseline)
@@ -151,7 +185,7 @@ class Sequence:
         if code:
             if gpu:
                 stop_owned_cuda_trees([root])
-                value = json.loads(progress.read_bytes()) if progress.exists() else {}
+                value = read_state_json(progress) if progress.exists() else {}
                 value.update(state="failed", stage="failed", safe_to_release_gpu=True, exit_code=code)
                 write_progress_json(progress, value)
             raise RuntimeError(f"Continuous stage {role} failed with exit {code}; inspect its preserved log")
@@ -191,8 +225,8 @@ class Sequence:
 
     def batches(self, root, stage):
         marker = root / ("dual_teacher_receipt.json" if stage == "teacher" else "full_aggregate_progress.json")
-        if marker.exists() and (json.loads(marker.read_bytes()).get("complete") is True
-                                or json.loads(marker.read_bytes()).get("state") == "complete_cpu_aggregate"):
+        if marker.exists() and (read_state_json(marker).get("complete") is True
+                                or read_state_json(marker).get("state") == "complete_cpu_aggregate"):
             return
         stem = "full_teacher_progress" if stage == "teacher" else "full_fit_progress"
         while True:
@@ -202,18 +236,18 @@ class Sequence:
             if resume is not None:
                 old_release = root / f"{stage}_batch_{index-1:02d}_release_receipt.json"
                 if not old_release.exists():
-                    pending = json.loads(resume.read_bytes())
+                    pending = read_state_json(resume)
                     if pending.get("state") in ("running", "complete", "yielded_before_deadline", "fit_windows_complete"):
                         self.state.update(state="waiting_for_existing_" + stage + "_batch_real_release",
                                           root=str(root), existing_progress_path=str(resume))
                         self.wait()
                         continue
                     raise ValueError("Prior GPU batch lacks its real release receipt; no new lease created")
-                old = json.loads(old_release.read_bytes())
+                old = read_state_json(old_release)
                 resume = Path(old["full_teacher_progress" if stage == "teacher" else "full_fit_progress"]["path"])
                 check_binding(old["full_teacher_progress" if stage == "teacher" else "full_fit_progress"])
-                if marker.exists() and (json.loads(marker.read_bytes()).get("complete") is True
-                                        or json.loads(marker.read_bytes()).get("state") == "complete_cpu_aggregate"):
+                if marker.exists() and (read_state_json(marker).get("complete") is True
+                                        or read_state_json(marker).get("state") == "complete_cpu_aggregate"):
                     return
             progress = root / f"{stem}.batch{index:02d}.json"
             release = root / f"{stage}_batch_{index:02d}_release_receipt.json"
@@ -222,7 +256,7 @@ class Sequence:
             if resume: command += ["--resume-progress", str(resume)]
             self.run(root, command, f"{stage}_batch_{index:02d}", gpu=True, lease=lease,
                      progress=progress, receipt=release, kind=stage)
-            outcome = json.loads(progress.read_bytes())["state"]
+            outcome = read_state_json(progress)["state"]
             if outcome in ("complete", "fit_windows_complete"):
                 return
 
@@ -236,7 +270,7 @@ class Sequence:
             inventory = root / "repair/identity_evidence/boundary_inventory.pending.json"
             if not inventory.exists():
                 self.run(root, self.command(root, "identity"), "identity_inventory_cpu")
-            tracklets = len(json.loads(inventory.read_bytes())["tracklets"])
+            tracklets = len(read_state_json(inventory)["tracklets"])
             endpoint = root / "repair/identity_evidence/endpoint_previews/endpoints-0.json"
             if not endpoint.exists():
                 self.run(root, [sys.executable, "-u", str(PROJ_ROOT / "tools/prepare_badminton_identity_review.py"),
@@ -244,7 +278,7 @@ class Sequence:
                     "identity_endpoints_cpu")
             self.event("identity_endpoint_review_available", root, inventory=binding(inventory), endpoint=binding(endpoint))
         pose = root / "repair/pose_receipt.json"
-        if not pose.exists() or json.loads(pose.read_bytes()).get("state") != "complete":
+        if not pose.exists() or read_state_json(pose).get("state") != "complete":
             lease = self.lease(root, "poses", "poses_01")
             self.run(root, self.command(root, "poses") + ["--gpu-lease", str(lease)], "native_poses",
                 gpu=True, lease=lease, progress=root / "pilot_progress.json", receipt=root / "poses_01_release_receipt.json", kind="poses")
@@ -259,9 +293,9 @@ class Sequence:
         fit_inputs(root)  # Complete current poses, reviewed identity and all teacher hashes before acquiring CUDA.
         self.batches(root, "fit")
         aggregate = root / "full_aggregate_progress.json"
-        if not aggregate.exists() or json.loads(aggregate.read_bytes()).get("state") != "complete_cpu_aggregate":
+        if not aggregate.exists() or read_state_json(aggregate).get("state") != "complete_cpu_aggregate":
             self.run(root, self.command(root, "aggregate"), "full_aggregate_cpu")
-        if json.loads((root / "pilot_progress.json").read_bytes()).get("stage") != "verify_complete":
+        if read_state_json(root / "pilot_progress.json").get("stage") != "verify_complete":
             self.run(root, self.command(root, "verify"), "full_native_verify_cpu")
         viewer = self.spawn(self.command(root, "viewer") + ["--port", str(port)], root / "logs/viewer.log")
         timeout = time.monotonic() + 180
@@ -286,14 +320,19 @@ class Sequence:
             except (FileNotFoundError, ValueError):
                 self.wait()
         self.state["grant"] = self.authorization["binding"]
-        first_release = Path(json.loads(self.request.read_bytes())["scope"][0]["root"]) / "teacher_batch_02_release_receipt.json"
+        first_release = Path(read_state_json(self.request)["scope"][0]["root"]) / "teacher_batch_02_release_receipt.json"
         while not first_release.exists():
             self.state["state"] = "waiting_for_1019_B02_real_cuda_release"
             self.wait()
-        if json.loads(first_release.read_bytes()).get("status") != "released":
+        if read_state_json(first_release).get("status") != "released":
             raise ValueError("B02 did not release its actual CUDA lease")
-        for index, item in enumerate(json.loads(self.request.read_bytes())["scope"]):
-            self.cohort(Path(item["root"]), 8784 + index)
+        for index, item in enumerate(read_state_json(self.request)["scope"]):
+            root = Path(item["root"])
+            completed = completed_review_ready(root)
+            if completed is not None:
+                self.event("completed_review_reused_without_viewer_or_cuda_relaunch", root, receipt=binding(completed))
+                continue
+            self.cohort(root, 8784 + index)
         self.state.update(state="all_compute_and_native_verification_complete_pending_visual_quality_review")
         self.event("all_compute_complete_quality_review_still_required")
 
@@ -320,7 +359,7 @@ def main():
             stop_owned_cuda_trees([sequence.gpu_root])
             if sequence.active_progress is not None:
                 path = sequence.active_progress
-                progress = json.loads(path.read_bytes()) if path.exists() else {}
+                progress = read_state_json(path) if path.exists() else {}
                 progress.update(state="failed", stage="failed", safe_to_release_gpu=True,
                                 exit_code=sequence.child.poll() if sequence.child else None,
                                 continuous_sequence_error=dict(type=type(error).__name__, message=str(error)))
