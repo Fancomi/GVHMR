@@ -317,6 +317,40 @@ reviewable; one has a rejected endpoint and the other is the previously observed
 `coverage_bilateral_cells.json`, `quality_report.json`, `outlier_review.json`
 and `browser_checks/continuous_verification.json` in the 1019 full root.
 
+The accepted 115.77 mm case is source `20261019_152750`, scan `3948`,
+motion `000393173671_000397340410:1:0` (`003948_t000.npz`). Its ground
+distance uses the frozen shared physical court plane in viewer metres:
+`h = (vertex - origin) dot normalize(normal)`, then
+`max_vertex(max(-h, 0))` over all 6,890 SMPL vertices. The plane origin is
+`[13.31866272714975, -0.4794938249119665, -2.9825130024854447]` and its
+upward normal is `[-0.04387101604378947, -0.10197160568839171, 0.9938194632752052]`.
+This is separate from the ground Ignore upper surface. CPU recomputation from
+the saved vertices gives 115.76760 mm versus the stored 115.76763 mm; 354
+vertices are more than 20 mm below this plane. No plane or camera was changed.
+
+The existing optimizer uses a 20 mm soft tolerance with floor weight 0.5;
+this is not an export rejection threshold. `export.acceptance_reasons` rejects
+penetration strictly above 120 mm, point-to-surface mean above 65 mm or p90
+above 120 mm, fewer than 80 source points, nonfinite fits, combined reprojection
+above 50 px, or fewer than six valid joints in every available camera.
+This case has 308 points, surface mean/p90 26.25/52.86 mm, finite parameters,
+16 valid joints per camera and combined reprojection 40.735 px, so its existing
+body QA has no rejection reasons. The combined reprojection averages available
+per-camera confidence-weighted errors (57.455/24.014 px here); it does not impose
+a separate 50 px limit on each camera. It also passes the unchanged bilateral
+detection-presence rule, which does not add an anatomical or 20 mm floor gate.
+
+This person-scan is currently review-only and is absent from formal training.
+`dual_view.export_reviewed` rejects a review-only dataset or calibration; the
+only present split is `review`. If a separately admitted future formal source,
+camera bundle and role assignment retain these tensors and numerical gates,
+this person-scan would be eligible under those gates. Its visible defect is
+not evidence that the current rules exclude it. The SHA-bound supplement
+`ground_acceptance_review.json` preserves the original
+`full_native_review_completion.json` bytes and binds the exact fit, QA rows,
+plane, presence evidence and rule implementations. No thresholds, sample
+membership, cameras or formal releases were changed for this clarification.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
