@@ -287,6 +287,36 @@ estimated at 15–23 hours from 07:30 UTC, including CPU review/acceptance with
 some overlap, within the unchanged 2026-10-23 11:41:39.650687 UTC hard deadline.
 No new formal training release has been published.
 
+The first 1019 full review completed GPU fitting at 08:29:40 UTC: 44 windows,
+8,124 actual fitted person-scans and 8,115 fit-QA candidates. All 8,115 candidates
+passed native point-member/pelvis verification with zero error and rebuilt SMPL
+error at most 1.91e-6 m. Ten actual five-second Chrome clips passed at 08:48:50 UTC,
+including the tail of rally 19's jump. Review: http://127.0.0.1:8784/ .
+The 1020 joint teacher batch actually started at 08:29:43 UTC, overlapping the
+first cohort's CPU verification/browser work, and the original sequence adopts
+that exact batch only after its real CUDA release.
+
+`tools/audit_badminton_full_coverage.py` accounts for all actual selected scans
+before reporting qualification. A nominal two people on 4,117 scans gives 8,234
+cells: 112 missing nominal cells offset by two additional fitted hypotheses
+produce the net difference of 110. There are two zero-fit scans, 108 one-fit
+scans, 4,005 two-fit scans and two three-fit scans. Missing support comprises
+92 cells without usable continuous primary teachers and 20 excluded at native
+pose/point segmentation. Nine distinct fitted cells fail QA, with potentially
+overlapping rejection reasons. Existing cached-native bilateral detection gates
+qualify 8,100 of the 8,115 QA candidates; 15 lack a qualifying camera-1 match.
+These are presence-rule candidates using original bound native detections, not
+a new formal training export or repeated full native-pixel acceptance.
+
+The all-fit mean visible-point residual is 23.367 mm and raw camera reprojection
+means are 8.054/4.363 px. Accepted ground outliers remain, including source
+152750 scan 3948 at 115.77 mm, source 152542 scan 443 at 110.39 mm and source
+152750 scan 5277 at 98.41 mm. Two pelvis-step candidates remain explicitly
+reviewable; one has a rejected endpoint and the other is the previously observed
+2576-to-2577 fast motion. Full receipts are `coverage_bilateral_audit.json`,
+`coverage_bilateral_cells.json`, `quality_report.json`, `outlier_review.json`
+and `browser_checks/continuous_verification.json` in the 1019 full root.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.

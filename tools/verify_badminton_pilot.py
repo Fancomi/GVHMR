@@ -18,6 +18,8 @@ def main():
     p.add_argument("--url", default="http://127.0.0.1:8781/")
     p.add_argument("--output", type=Path)
     p.add_argument("--original-rallies", type=int, nargs="+", help="Explicit original rally numbers to play")
+    p.add_argument("--tail-rallies", type=int, nargs="+", default=[],
+                   help="Play the last five seconds of these selected rallies to include a late event")
     p.add_argument("--outlier-scan", type=int)
     p.add_argument("--outlier-source")
     args = p.parse_args()
@@ -74,7 +76,11 @@ def main():
                 page.goto(args.url + f"?source={sid}&rally={rally['index']}")
                 page.wait_for_function("window.viewerReady===true", timeout=90000)
                 page.evaluate("async(i)=>{await viewer.selectRally(i);return true}", rally["index"])
-                page.evaluate("async(t)=>{await viewer.seek(t);return true}", rally["begin"] + (0 if combined else 0.1))
+                tail = rally["original_rally_index"] in args.tail_rallies
+                clip_start = (rally["end"] - 5.15 if tail else rally["begin"] + (0 if combined else 0.1))
+                if clip_start < rally["begin"]:
+                    raise ValueError("The selected tail cannot provide five native seconds")
+                page.evaluate("async(t)=>{await viewer.seek(t);return true}", clip_start)
                 page.wait_for_function("!frameBusy && lastPairedFrame.athletes.length===2", timeout=45000)
                 before_rgb = visible_rgb_checks(page)
                 assert all(r["visible"] and r["different_rgba_components"] == 0 for r in before_rgb), before_rgb
@@ -119,6 +125,7 @@ def main():
                     source_id=sid,
                     rally=rally["index"],
                     original_rally_index=rally["original_rally_index"],
+                    selection="last_five_seconds" if tail else "opening_five_seconds",
                     passed=True,
                     actual_begin=begin,
                     actual_end=end,
