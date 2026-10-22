@@ -55,6 +55,12 @@ observations and reviewed operations into that separately admitted run on CPU.
 `tools/freeze_badminton_formal_baseline.py` / `formal_baseline.py` freeze the
 actual full pre-leg native/QA/body/pose evidence; no GPU grant or training
 admission follows from these preparation receipts.
+`tools/verify_badminton_native_bound.py` / `native_witness.py` run the unchanged
+native verifier with actual model-open and CPU runtime witnesses.
+`tools/derive_badminton_formal_native.py` / `formal_native_derive.py` prove every
+reused window against genuine parents and the full numerical-import equivalence,
+then actually reconstruct all uncovered or changed windows. Baseline, post-leg
+completion and the guarded executor check explicit actual/derived coverage.
 `tools/finalize_badminton_formal_cpu.py` / `formal_completion.py` install that
 genuine before-QA snapshot before the leg, then validate actual guarded CUDA
 exit and run the existing native/dataset verifiers on CPU. Bilateral, pixels,

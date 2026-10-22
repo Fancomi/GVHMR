@@ -539,7 +539,9 @@ def run_pilot_stage(root, stage, *, gpu_lease=None, threads=1):
                 "native_member_smpl_verification",
                 python
                 + [
-                    str(PROJ_ROOT / "tools/verify_badminton_native_repair.py"),
+                    str(PROJ_ROOT / "tools" / (
+                        "verify_badminton_native_bound.py" if frozen.get("schema") == "badminton-native-rally-fit-v1"
+                        else "verify_badminton_native_repair.py")),
                     "--root",
                     str(repair),
                     "--threads",

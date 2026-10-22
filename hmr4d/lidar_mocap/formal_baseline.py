@@ -223,6 +223,8 @@ def freeze_formal_baseline(root, numeric_import, numeric_import_sha256):
         inputs[role] = _binding(path)
         values[role], payloads[role] = _bound(inputs[role], observed)
     native, body, poses, identity = [values[role] for role in ("native", "body", "pose", "identity")]
+    from .formal_native_derive import validate_native_derivations
+    validate_native_derivations(repair, native)
     if (
         native.get("passed") is not True
         or native.get("state") != "complete"

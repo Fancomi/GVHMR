@@ -596,8 +596,14 @@ decisions, unchanged distal/reprojection weights `0.03`/`2`, `--stage fit
 --require-completed --device cpu --threads 1`. This validates caches and builds
 the complete aggregate/body receipt under the frozen source roles; it refuses
 missing or changed windows instead of fitting. Then run the existing full
-`verify_badminton_native_repair.py --root <formal>/repair --threads 1` before
-freezing. `freeze_badminton_formal_baseline.py --root <formal>
+native checks through `derive_badminton_formal_native.py --root <formal>
+--numeric-import <actual receipt> --numeric-import-sha256 <actual SHA>
+--parent-witness <actual 1020 execution witness> --parent-witness-sha256 <actual SHA>
+--run-required-actual --threads 1` before freezing. Omit absent historical
+witnesses; those windows retain actual reconstruction. With no eligible witness
+the adapter actually checks the whole scope. The original native verifier bytes,
+limits, source members, accepted rows and source roles remain unchanged.
+`freeze_badminton_formal_baseline.py --root <formal>
 --numeric-import <actual receipt> --numeric-import-sha256 <actual SHA>` rechecks
 every original/current numerical artifact and row QA value, recalculates the
 existing absolute QA and freezes independent evidence in `gpu_guarded_leg/baseline/`.
@@ -613,9 +619,32 @@ witness. Therefore the current formal pre-leg reconstruction remains required;
 no derived passed receipt is created from that incomplete historical chain.
 `badminton_full_native_gpu_queue_20261022/derived_native_eligibility_evaluation_20261022.json`
 records all 44 original report bindings and the precise missing proof. A future
-parent's first genuine CPU verification could record model/code/runtime before
-and after invoking the unchanged verifier, enabling a later explicit derivation
-only for fully witnessed windows. No such execution is claimed here.
+parent's first genuine CPU verification can now record model/code/runtime before
+and after invoking the unchanged verifier. The 1020 full-native `verify` branch
+selects `verify_badminton_native_bound.py` in its future fresh child process;
+the long-lived coordinator's in-memory pilot function is not invoked for that
+child's stage. No coordinator/CUDA restart is needed to load this branch.
+
+The wrapper records the neutral model file actually opened by the constructor,
+resolved file SHA, verifier/calling implementation and installed CPU math/image
+libraries before and after successful checking. Historical cached windows gain
+no new witness. `native_verification_witness.json` is written only after a first
+genuine full execution; subset witnesses name only newly reconstructed windows.
+The formal adapter reruns the existing complete input-equivalence audit, checks
+every numerical artifact/point row, native observation, teacher tensor and
+reviewed operation, and requires the witnessed model/runtime to match. Missing
+or invalid original witnesses fall back to actual checks, never a passed derived
+receipt. Each window names either its actual execution witness or its actual
+parent plus derived equivalence proof; `verification_coverage` covers the whole
+actual/derived set. Guard and baseline verify that full chain. Unchanged proven
+windows may remain cached after the leg; changed or unproven windows are actually
+reconstructed and receive new subset witnesses. Prior checkpoints are retained.
+
+Current implementation evidence is in `gpu_guarded_leg/implementation_native_v3/`:
+67 targeted CPU checks passed; the old 55/143 suites were not repeated. The real
+loader inspection resolved the installed neutral model (6890 vertices/24 joints)
+and 3537 bound CPU package files, without a body forward, native window check,
+production witness, formal numerical import or new GPU authorization.
 
 Before any leg output exists, `finalize_badminton_formal_cpu.py --stage prepare-leg
 --root <formal> --baseline <actual baseline.json> --baseline-sha256 <actual SHA>`

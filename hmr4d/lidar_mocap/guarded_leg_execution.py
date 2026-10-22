@@ -43,6 +43,8 @@ def configure_desktop_allowance(checked):
     age = (datetime.now(timezone.utc) - utc_time(policy["observed_utc"])).total_seconds()
     if not 0 <= age <= 900:
         raise ValueError("Capture the actual desktop identities within fifteen minutes before leg startup")
+    if utc_time(policy["valid_until_utc"]) < utc_time(checked["authorization"]["grant"]["approved_deadline_utc"]):
+        raise ValueError("Desktop identity policy must cover the entire approved guarded-leg deadline")
     global DESKTOP_ALLOWANCE
     DESKTOP_ALLOWANCE = allowance
 

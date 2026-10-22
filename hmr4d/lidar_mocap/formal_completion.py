@@ -468,7 +468,7 @@ entry=sys.argv[1];sys.argv=sys.argv[1:];runpy.run_path(entry,run_name='__main__'
 def _run_cpu_check(checked, role, directory, threads):
     repair, labels = checked["repair"], checked["repair"] / "final_labels"
     name, args = {
-        "native": ("verify_badminton_native_repair.py", ["--root", str(repair)]),
+        "native": ("verify_badminton_native_bound.py", ["--root", str(repair), "--verified-formal-cache"]),
         "dataset": ("verify_badminton_dataset.py", ["--output-root", str(labels), "--samples-per-session", "64"]),
     }[role]
     entry = PROJ_ROOT / "tools" / name
@@ -524,6 +524,9 @@ def _run_cpu_check(checked, role, directory, threads):
 
 def _native_after(checked):
     labels = checked["repair"] / "final_labels"
+    from .formal_native_derive import refresh_native_coverage
+
+    refresh_native_coverage(checked["repair"], postleg=True)
     native = _load(labels / "native_verification.json", {})
     if (
         native.get("passed") is not True

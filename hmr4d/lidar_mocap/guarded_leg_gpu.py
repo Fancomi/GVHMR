@@ -149,6 +149,8 @@ def implementation_files():
         windows_job="hmr4d/lidar_mocap/windows_gpu_job.py",
         entry="tools/run_badminton_guarded_leg.py",
         common_authorization="hmr4d/lidar_mocap/gpu_handoff.py",
+        native_witness="hmr4d/lidar_mocap/native_witness.py",
+        native_derivation="hmr4d/lidar_mocap/formal_native_derive.py",
     ).items()}
 
 
@@ -206,7 +208,7 @@ def inspect_request(path):
                 runtime=contract, cpu=cpu, request_binding=binding(path))
 
 
-def _complete_native(value, keys, *, source_sha=None, calibration=None):
+def _complete_native(value, keys, *, source_sha=None, calibration=None, repair=None):
     if (value.get("passed") is not True or value.get("state") != "complete"
             or set(value.get("windows", {})) != keys or value.get("verified_windows") != len(keys)
             or value.get("total_windows") != len(keys)):
@@ -215,6 +217,9 @@ def _complete_native(value, keys, *, source_sha=None, calibration=None):
         raise ValueError("Native evidence uses another source input")
     if calibration and value.get("calibration_digest") != calibration:
         raise ValueError("Native evidence uses another camera")
+    if repair is not None:
+        from .formal_native_derive import validate_native_derivations
+        validate_native_derivations(repair, value)
 
 
 def _reviewed_identity(value, keys, source_sha, calibration):
@@ -252,7 +257,7 @@ def validate_readiness(checked, grant):
         raise ValueError("Actual final parent fitting completion is required")
     source_sha, calibration = plan["source_union_sha256"], plan["calibration_digest"]
     _complete_native(evidence["formal_preleg_native_verification"], keys,
-                     source_sha=source_sha, calibration=calibration)
+                     source_sha=source_sha, calibration=calibration, repair=root)
     _reviewed_identity(evidence["formal_reviewed_identity"], keys, source_sha, calibration)
     qa = evidence["formal_preleg_qa"]
     if (qa.get("schema") != "badminton-native-absolute-qa-v1" or set(qa.get("windows", {})) != keys
@@ -373,5 +378,7 @@ def immutable_anchors(checked):
         check_binding(implementation["desktop_allowance"])
         values.append(implementation["desktop_allowance"])
     values += bound_json(implementation["test_execution"])["test_files"]
+    from .formal_native_derive import native_derivation_anchors
+    values += native_derivation_anchors(bound_json(ready["evidence"]["formal_preleg_native_verification"]))
     unique = {(x["path"], x["sha256"]): x for x in values}
     return list(unique.values())

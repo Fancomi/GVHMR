@@ -485,7 +485,7 @@ def test_dataset_success_requires_actual_native_report_fields_not_a_passed_flag(
 def test_real_cpu_worker_launcher_is_hidden_belownormal_and_disables_cuda(finished, monkeypatch, tmp_path):
     log_dir = tmp_path / "worker_probe"
     log_dir.mkdir()
-    bytes_file(completion.PROJ_ROOT / "tools/verify_badminton_native_repair.py", b"# synthetic verifier entry\n")
+    bytes_file(completion.PROJ_ROOT / "tools/verify_badminton_native_bound.py", b"# synthetic verifier entry\n")
     allocation = dict(
         schema="gvhmr-formal-cpu-worker-v1", affinity=[26, 27], priority="BelowNormal", cuda_visible_devices="-1"
     )
@@ -511,7 +511,7 @@ def test_real_cpu_worker_launcher_is_hidden_belownormal_and_disables_cuda(finish
     checked = dict(repair=finished.repair)
     result = module._run_cpu_check(checked, "native", log_dir, 2)
     assert result["allocation"] == allocation and result["hidden_window"] is True
-    assert result["command"][-4:] == ["--root", str(finished.repair), "--threads", "2"]
+    assert result["command"][-5:] == ["--root", str(finished.repair), "--verified-formal-cache", "--threads", "2"]
 
 
 def test_changed_person_frame_set_is_rejected_even_with_same_totals(finished, monkeypatch):

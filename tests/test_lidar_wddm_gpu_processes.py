@@ -154,7 +154,13 @@ def test_actual_driver_loads_desktop_binding_from_its_issued_implementation_mani
         encoding="utf-8",
     )
     checked = dict(
-        request_binding=desktop.policy["request"], authorization=dict(grant=dict(independent_guard=binding(path)))
+        request_binding=desktop.policy["request"],
+        authorization=dict(
+            grant=dict(
+                independent_guard=binding(path),
+                approved_deadline_utc=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+            )
+        ),
     )
     execution.configure_desktop_allowance(checked)
     assert execution.DESKTOP_ALLOWANCE == binding(desktop.path)
@@ -191,4 +197,25 @@ def test_machine_fixture_or_stale_desktop_snapshot_cannot_start_actual_leg(deskt
         request_binding=desktop.policy["request"], authorization=dict(grant=dict(independent_guard=binding(path)))
     )
     with pytest.raises(ValueError):
+        execution.configure_desktop_allowance(checked)
+
+
+def test_desktop_policy_must_cover_the_complete_approved_leg_window(desktop):
+    desktop.policy["valid_until_utc"] = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    desktop.put()
+    path = desktop.folder / "implementation.json"
+    path.write_text(
+        json.dumps(dict(desktop_allowance=binding(desktop.path), desktop_allowance_fixture_only=False)),
+        encoding="utf-8",
+    )
+    checked = dict(
+        request_binding=desktop.policy["request"],
+        authorization=dict(
+            grant=dict(
+                independent_guard=binding(path),
+                approved_deadline_utc=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="entire approved"):
         execution.configure_desktop_allowance(checked)
