@@ -238,6 +238,51 @@ own nine new camera contexts. Historical timing stays under `previous_attempts`.
 A replacement CPU coordinator waits for the existing GPU batch's actual release
 before dispatching any following stage; it does not restart the CUDA tree.
 
+For a prepared native identity scope and reviewed conservative policy, use the
+canonical continuation alongside the coordinator:
+
+```powershell
+uv run --no-sync python tools/continue_badminton_native_identity.py `
+  --root outputs/<full-native-run> `
+  --request outputs/<queue>/continuous_gpu_request.json `
+  --grant outputs/<queue>/continuous_gpu_grant.json
+```
+
+It waits for real complete full poses, their genuine release and the coordinator's
+identity phase. Only then may the existing source-bound grant admit a local pose
+lease of at most 20 minutes. The observer reuses exact existing native files and
+computes missing boundary context; its original PID/create-time seeds the
+independent release observer. CPU geometric review and conservative sealing run
+after actual CUDA exit/release. Unknown relationships retain separate original
+tracklets. Cleanup checks only established native executors in authorized roots;
+it makes no claim that all unrelated machine CUDA processes are absent.
+Future production does not import or execute per-run `.local` continuation code.
+Existing state and leases are preserved instead of silently overwritten.
+
+For a genuinely completed run, `--verify-complete --root <run>` reads the actual
+full scope, geometry, precise decision operations, conservative policy, evidence
+hashes and both real releases, then freezes `native_identity_completion.json`.
+It starts no inference or CUDA and never backfills missing historical evidence.
+The canonical controller is covered by synthetic CPU worker stand-ins; the real
+1020 producer below was the preceding frozen continuation and remains attributed
+to that actual execution. The canonical completed-evidence reader independently
+checks its real outcomes without rerunning the models.
+
+Actual 1020 continuation: all 51,730 full native observations were fresh
+(7,010.422 s), followed by 1,491 fresh identity observations plus 8,761 exact
+reused records (325.724 s). Full and identity leases were genuinely released at
+20:14:10 and 20:20:09 UTC on October 22. All 247 geometric cases yielded 184 same,
+eight different and 55 unknown relationships, retained separately. The sole
+coordinator automatically started fit at 20:24:07 UTC. The first six fresh fit
+windows cover 493 scans, 1,944 fitted and 1,939 currently accepted person-frames
+in 802.079 s. An initial person-frame/window regression with a provisional
+81,066-person-frame mixed singles/doubles scenario predicts 9.25 fit hours;
+these assumed person counts are not delivered labels. Keep the 8–10-hour fit
+risk budget and separate QA/archive budget until later-source actual timings
+update it. CUDA remains bounded by the original 11:41:39 UTC October 23 deadline;
+any formal guarded leg still requires actual prerequisites and its separate grant.
+CPU verification/archive work can continue without CUDA after that deadline.
+
 The 1020 B02 release observer encountered a Windows sharing violation reading
 its atomic progress journal. Inference itself finished 120 new camera contexts,
 giving 221/494 with exit zero. Recovery preserved the failed journals, verified
@@ -647,9 +692,11 @@ and run full actual fallback through guard and baseline, and all-window postleg
 reconstruction through completion. Only the numerical verifier is a stand-in;
 these tests do not attest production reconstruction.
 
-Current implementation evidence is in `gpu_guarded_leg/implementation_native_v4/`;
-70 current targeted CPU checks passed, including the three added paths. Old v3
-and 55/143 evidence is retained. The historical real loader inspection resolved
+Current implementation evidence is in `gpu_guarded_leg/implementation_native_v5/`;
+102 current targeted CPU checks passed (the prior70 plus32 canonical identity
+contracts). The two canonical source files are included in the native execution
+inventory before the first parent witness; all numerical fitter dependencies
+stay byte-identical. Old v3/v4 and 55/143 evidence is retained. The historical real loader inspection resolved
 the installed neutral model (6890 vertices/24 joints)
 and 3537 bound CPU package files, without a body forward, native window check,
 production witness, formal numerical import or new GPU authorization.

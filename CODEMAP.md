@@ -41,6 +41,12 @@ native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chr
 `tools/run_badminton_full_native.py` consumes a separate full-coverage manifest;
 `full_native.py` validates exact teacher/native-pose reuse, and
 `tools/run_badminton_full_teachers.py` yields at safe GPU lease boundaries.
+`tools/continue_badminton_native_identity.py` / `identity_continuation.py` wait
+for genuine full-pose completion/release and the coordinator's identity phase,
+observe only missing boundary context under the existing grant, then release
+CUDA before complete CPU geometry/sealing. `--verify-complete` validates and
+freezes real existing identity outcomes without inference. This canonical
+entry replaces per-run local continuation scripts for future production.
 `fit_reuse.py` audits/imports unchanged verified tensors with explicit lineage;
 `tools/run_badminton_full_fits.py` separates bounded GPU fitting from completed-only
 CPU aggregation. `tools/watch_badminton_full_native.py` waits for real intake
