@@ -55,9 +55,10 @@ def audit_algorithm_compatibility(original_digest, current_digest, original_comm
                     current_digest=current_digest, compatible=True)
     if not original_commit:
         raise ValueError("Changed fit digest needs explicit original source revision, never an assumed equivalent version")
+    git_options = dict(cwd=PROJ_ROOT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     commit = subprocess.check_output(["git", "rev-parse", "--verify", original_commit + "^{commit}"],
-                                     cwd=PROJ_ROOT, text=True).strip()
-    previous = {name: subprocess.check_output(["git", "show", commit + ":" + name], cwd=PROJ_ROOT)
+                                     **git_options, text=True).strip()
+    previous = {name: subprocess.check_output(["git", "show", commit + ":" + name], **git_options)
                 .replace(b"\r\n", b"\n") for name in FIT_MODULES}
     if hashlib.sha256(b"".join(previous.values())).hexdigest() != original_digest:
         raise ValueError("Original source revision does not reproduce the completed fit digest")
