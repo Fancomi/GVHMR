@@ -369,6 +369,9 @@ def immutable_anchors(checked):
     values += list(request["scope"][0]["existing_input_and_code_bindings"].values())
     implementation = bound_json(grant["independent_guard"])
     values += list(implementation["code"].values()) + [implementation["test_execution"]]
+    if implementation.get("desktop_allowance"):
+        check_binding(implementation["desktop_allowance"])
+        values.append(implementation["desktop_allowance"])
     values += bound_json(implementation["test_execution"])["test_files"]
     unique = {(x["path"], x["sha256"]): x for x in values}
     return list(unique.values())

@@ -540,6 +540,30 @@ The predecessor exit bundle uses
 Every registered predecessor must really be gone. These interfaces describe
 future genuine completion; implementation tests do not fill those pending roles.
 
+The actual Windows WDDM driver reports desktop/browser processes in
+`nvidia-smi --query-compute-apps`, including `C+G` entries in its XML. A raw
+nonempty list therefore cannot identify a training owner on this machine.
+The execution guard now retains the raw list and exempts only an explicitly
+bound desktop snapshot's exact PID, creation time and executable identities.
+Unknown/new/reused/inaccessible identities remain blocking, including idle
+Python CUDA workers. No external process is stopped to clear that list.
+`implementation_wddm_v2/actual_gpu_process_observation.json` records the real
+29-entry observation: 28 independently observed GUI identities plus one actual
+1020 CUDA worker, which correctly remained blocking. The new 23-case focused
+CPU receipt also binds an AST comparison proving original timing, Job ownership,
+deadline and termination functions unchanged; the historical 55-case suite was
+not repeated.
+
+That desktop capture is a machine fixture, not a future leg admission proof.
+Before actual leg startup, capture the then-current reviewed GUI identities and
+bind the fresh path/SHA as `desktop_allowance` in the issued implementation
+manifest with `desktop_allowance_fixture_only=false`. Driver and independent
+watchdog each load it from that issued manifest; startup rejects a fixture or
+a capture older than 15 minutes. The policy is included among immutable context
+anchors. Each GPU check revalidates its bytes and current process identities;
+new GUI identities need another explicit capture rather than a broad program
+name exception. Exit evidence retains both raw and classified process lists.
+
 The formal CPU import has two explicit phases in
 `tools/import_badminton_formal_bodies.py`. `--phase audit` requires the formal
 run, the existing input-equivalence path/SHA and both explicit `--parent-root`

@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -21,6 +22,9 @@ from .repair_execution import write_progress_json
 from .windows_gpu_job import WindowsGPUJob
 
 
+DESKTOP_ALLOWANCE = None  # Each actual driver/watchdog loads the issued manifest's fresh binding.
+
+
 def cpu_only():
     os.environ.update(CUDA_VISIBLE_DEVICES="-1", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="1")
     process = psutil.Process()
@@ -28,14 +32,70 @@ def cpu_only():
     process.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
 
 
-def compute_pids():
+def configure_desktop_allowance(checked):
+    implementation = bound_json(checked["authorization"]["grant"]["independent_guard"])
+    allowance = implementation.get("desktop_allowance")
+    policy = bound_json(allowance)
+    if implementation.get("desktop_allowance_fixture_only") is not False:
+        raise ValueError("A machine fixture cannot authorize actual guarded execution")
+    if policy.get("request") != checked["request_binding"]:
+        raise ValueError("Desktop evidence belongs to another actual guarded request")
+    age = (datetime.now(timezone.utc) - utc_time(policy["observed_utc"])).total_seconds()
+    if not 0 <= age <= 900:
+        raise ValueError("Capture the actual desktop identities within fifteen minutes before leg startup")
+    global DESKTOP_ALLOWANCE
+    DESKTOP_ALLOWANCE = allowance
+
+
+def gpu_process_observation(desktop_allowance=None):
+    """Keep raw WDDM data, exempting only separately frozen desktop identities."""
+    allowance = desktop_allowance or DESKTOP_ALLOWANCE
+    if allowance is None:
+        raise ValueError("An explicitly issued fresh desktop binding is required before GPU inspection")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
     result = subprocess.run(["nvidia-smi", "--id=0", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
                             capture_output=True, text=True, timeout=2, creationflags=flags, check=True)
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if any(not value.isdigit() for value in lines):
         raise RuntimeError("Cannot verify actual GPU-0 compute ownership")
-    return {int(value) for value in lines}
+    raw = {int(value) for value in lines}
+    policy = bound_json(allowance)
+    if (policy.get("schema") != "gvhmr-guarded-leg-wddm-desktop-identities-v1"
+            or policy.get("state") != "frozen_observed_desktop_only"
+            or policy.get("future_or_reused_PID_exempt") is not False
+            or datetime.now(timezone.utc) >= utc_time(policy["valid_until_utc"])):
+        raise ValueError("A current hash-bound original-desktop policy is required")
+    check_binding(policy["request"])
+    entries = {}
+    for item in policy["desktop_identities"]:
+        if (type(item.get("pid")) is not int or item["pid"] <= 0 or item["pid"] in entries
+                or type(item.get("create_time")) not in (int, float)
+                or not math.isfinite(item["create_time"]) or item["create_time"] <= 0
+                or not Path(item.get("executable", "")).is_absolute()
+                or item.get("classification") != "root_observed_desktop_GUI"
+                or Path(item["executable"]).name.lower() in ("python.exe", "pythonw.exe")):
+            raise ValueError("Desktop exclusion lacks its original non-Python PID/create-time/executable")
+        entries[item["pid"]] = item
+    ignored = []
+    for pid in raw & entries.keys():
+        original = entries[pid]
+        try:
+            process = psutil.Process(pid)
+            if (process.create_time() == original["create_time"]
+                    and os.path.normcase(process.exe()) == os.path.normcase(original["executable"])):
+                ignored.append(original)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass  # Unknown/inaccessible/reused/stale identities remain blocking.
+    return dict(schema="gvhmr-gpu-process-classification-v1", observed_utc=datetime.now(timezone.utc).isoformat(),
+                raw_wddm_compute_pids=sorted(raw), frozen_desktop_exclusions=ignored,
+                blocking_compute_pids=sorted(raw - {item["pid"] for item in ignored}),
+                desktop_allowance=allowance)
+
+
+def compute_pids():
+    observation = gpu_process_observation()
+    compute_pids.last_observation = observation
+    return set(observation["blocking_compute_pids"])
 
 
 def _assert_time(checked, *, first=False, now=None):
@@ -110,6 +170,7 @@ def watchdog(context_path, context_sha):
     context = bound_json(dict(path=str(Path(context_path).resolve()), sha256=context_sha))
     directory = Path(context_path).resolve().parent
     checked = load_authorization(context["request"]["path"], context["grant"]["path"], deep=False)
+    configure_desktop_allowance(checked)
     validate_context(context, context_path, checked)
     _anchors(context)
     _use_lease_deadline(checked, bound_json(context["lease"]))
@@ -161,6 +222,7 @@ def watchdog(context_path, context_sha):
                         state="all_owned_cuda_exited", context_sha256=context_sha,
                         observed_process_identities=list(observed.values()), job_empty=True,
                         gpu0_compute_pids_empty=True,
+                        gpu0_process_classification=getattr(compute_pids, "last_observation", None),
                         completed_utc=datetime.now(timezone.utc).isoformat()))
                     return
                 write_progress_json(state_path, dict(state="guarding", heartbeat_utc=datetime.now(timezone.utc).isoformat(),
@@ -226,6 +288,7 @@ def execute(request_path, grant_path):
     cpu_only()
     request_path, grant_path = Path(request_path).resolve(), Path(grant_path).resolve()
     checked = load_authorization(request_path, grant_path)
+    configure_desktop_allowance(checked)
     _assert_time(checked, first=True)
     _assert_clean_outputs(checked["root"])
     if compute_pids():
