@@ -169,6 +169,32 @@ reviewed identity, fitting, native verification and the full player retain their
 existing stage gates. The queue does not grant or launch GPU work automatically;
 Sports360's actual explicit handoff is still required.
 
+All five 1020 frozen sources passed the existing consumer's CPU source reader
+at `2026-10-22T04:43:12.928298+00:00`, taking 122.102458 s overall. The run
+verified original clocks and native camera indexes, plus six encoded point-member
+samples per source. All 30 sampled crops were bit-identical subsets of their
+emitted parent PNGs; the maximum single-M roundtrip error was 9.46e-7 m.
+
+| Source | Emitted scans | Paired nonempty scans | Empty crop scans |
+| --- | ---: | ---: | ---: |
+| 20261020_191011 | 3,664 | 3,649 | 11 |
+| 20261020_182854 | 10,027 | 10,015 | 6 |
+| 20261020_184642 | 6,529 | 6,520 | 0 |
+| 20261020_193236 | 11,975 | 11,920 | 49 |
+| 20261020_200346 | 6,711 | 6,707 | 1 |
+| Total | 38,906 | 38,811 | 67 |
+
+The reader's paired count already excludes empty foreground and validates common
+overlap and both native cameras. Of 67 empty crops, 64 have both camera matches
+and three lack one or both; another 28 nonempty scans lack camera matches.
+The 38,911 original clock rows retain five explicitly unclosed final packet rows.
+These source counts precede native rally selection and are not fitted bodies.
+Independent reports and their SHA bindings are in
+`outputs/badminton_1020_source_cpu_preflight_20261022/completion_receipt.json`
+(SHA `7863c8e07168a785c35f721a91ce6d5a4dfff7e1d37a07d930ab5c30108b15bd`)
+and `coverage_before_native.json`. The other four source watchers still wait for
+actual successful native manifests; no source preflight grants GPU or training admission.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
