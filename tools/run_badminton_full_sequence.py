@@ -19,18 +19,14 @@ import psutil
 from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.gpu_handoff import read_continuous_grant, make_local_stage_lease, stop_owned_cuda_trees
 from hmr4d.lidar_mocap.pilot import binding, check_binding
-from hmr4d.lidar_mocap.repair_execution import write_progress_json, teacher_batch_metrics, native_gpu_command_matches
+from hmr4d.lidar_mocap.repair_execution import (
+    write_progress_json, teacher_batch_metrics, native_gpu_command_matches, read_live_json,
+)
 
 
 def read_state_json(path, attempts=20, delay=.05):
     """Atomic Windows journal replacement can briefly deny a reader's open."""
-    for attempt in range(attempts):
-        try:
-            return json.loads(path.read_bytes())
-        except PermissionError:
-            if attempt + 1 == attempts:
-                raise
-            time.sleep(delay)
+    return read_live_json(path, attempts=attempts, delay=delay)
 
 
 def completed_review_ready(root):
@@ -174,9 +170,18 @@ class Sequence:
         self.state.update(cli_pid=self.child.pid, cli_create_time=psutil.Process(self.child.pid).create_time())
         observer = None
         if gpu:
+            seed_path = root / "logs" / (role + "_process_seed.json")
+            if seed_path.exists():
+                raise ValueError("Preserve the original batch process observation; do not overwrite it")
+            write_progress_json(seed_path, dict(root=str(root), lease_before=binding(lease),
+                observed_process_identities=[dict(pid=self.state["cli_pid"], create_time=self.state["cli_create_time"])],
+                observed_utc=datetime.now(timezone.utc).isoformat(), command=command))
             observer = self.spawn([sys.executable, "-u", str(PROJ_ROOT / "tools/release_badminton_full_gpu.py"),
                 "--root", str(root), "--lease", str(lease), "--progress", str(progress), "--receipt", str(receipt),
-                "--kind", kind], root / "logs" / (role + "_release.log"))
+                "--kind", kind, "--seed-evidence", str(seed_path),
+                "--seed-evidence-sha256", binding(seed_path)["sha256"]], root / "logs" / (role + "_release.log"))
+            self.state.update(release_observer_cli_pid=observer.pid,
+                              release_observer_cli_create_time=psutil.Process(observer.pid).create_time())
         self.heartbeat(True)
         started = time.perf_counter()
         while self.child.poll() is None:
@@ -360,9 +365,12 @@ def main():
             if sequence.active_progress is not None:
                 path = sequence.active_progress
                 progress = read_state_json(path) if path.exists() else {}
-                progress.update(state="failed", stage="failed", safe_to_release_gpu=True,
-                                exit_code=sequence.child.poll() if sequence.child else None,
-                                continuous_sequence_error=dict(type=type(error).__name__, message=str(error)))
+                completed_child = sequence.child is not None and sequence.child.poll() == 0
+                terminal = progress.get("state") in ("complete", "yielded_before_deadline", "fit_windows_complete")
+                if not (completed_child and terminal):
+                    progress.update(state="failed", stage="failed", safe_to_release_gpu=True,
+                                    exit_code=sequence.child.poll() if sequence.child else None)
+                progress["continuous_sequence_error"] = dict(type=type(error).__name__, message=str(error))
                 write_progress_json(path, progress)
         sequence.state.update(state="failed_waiting_actual_review", error_type=type(error).__name__, error=str(error))
         sequence.event("sequence_failed_requires_actual_review", error_type=type(error).__name__, error=str(error))

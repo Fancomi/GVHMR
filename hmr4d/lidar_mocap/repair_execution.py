@@ -6,6 +6,22 @@ from pathlib import Path
 import time
 
 
+def read_live_bytes(path, attempts=20, delay=.05):
+    """Retry transient Windows atomic-replace reader locks with a fixed bound."""
+    for attempt in range(attempts):
+        try:
+            return path.read_bytes()
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(delay)
+
+
+def read_live_json(path, attempts=20, delay=.05):
+    """Decode the actual bytes; malformed data is not converted into progress."""
+    return json.loads(read_live_bytes(path, attempts=attempts, delay=delay))
+
+
 def write_progress_json(path, value, *, attempts=10):
     """Retry transient Windows reader locks without changing atomic JSON content."""
     from .pipeline import write_json

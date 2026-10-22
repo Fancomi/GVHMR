@@ -238,6 +238,23 @@ own nine new camera contexts. Historical timing stays under `previous_attempts`.
 A replacement CPU coordinator waits for the existing GPU batch's actual release
 before dispatching any following stage; it does not restart the CUDA tree.
 
+The 1020 B02 release observer encountered a Windows sharing violation reading
+its atomic progress journal. Inference itself finished 120 new camera contexts,
+giving 221/494 with exit zero. Recovery preserved the failed journals, verified
+all 221 cache artifact sets and restored the original terminal bytes only after
+matching the independently retained pointer SHA `52bd730c...`. Reconciliation
+binds the known original launcher PID/create-time, actual child completion
+records and the independent current process scan; missing historical descendant
+creation times remain explicit. The fresh release observer released B02 at
+`2026-10-22T13:31:38.767130+00:00`, without extending its expired lease. A unique
+coordinator 33564 started B03 under the original continuous grant with a new
+13:31:41–15:31:41 UTC lease; the first real new context advanced to 222/494.
+`sequence_observer_recovery_20261022.json` and the in-run
+`observer_recovery_20261022/` retain the complete evidence. Coordinator and
+observer now share bounded live-JSON reads; original process observations are
+persisted before progress reads, and a coordinator-only failure preserves a
+successfully completed worker's original checkpoint.
+
 At the user's new paired-RGB acceleration request, the CPU sequence was explicitly
 held and B02 yielded after its current worker: 79/88 contexts, with 34 new in
 2,687.424143 s; actual CUDA release was `2026-10-22T06:26:36.187496+00:00`.
