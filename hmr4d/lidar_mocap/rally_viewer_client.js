@@ -147,7 +147,9 @@ async function seek(t){
 async function selectSource(sid,rallyIndex){
  ['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=true);
  loading=true;stopPlayback();generation++;sourceId=sid;source=manifest.sources[sid];$('source').value=sid;$('seek').max=source.duration;
- $('rally').replaceChildren(...source.rallies.map(c=>new Option('回合 '+c.index+' · '+(c.end-c.begin).toFixed(1)+'s',c.index)));
+ $('rally').replaceChildren(...source.rallies.map(c=>new Option(
+  (c.segment_index==null?'回合 '+c.index:'原回合 '+c.original_rally_index+' · 有效段 '+(c.segment_index+1))+
+  ' · '+(c.end-c.begin).toFixed(1)+'s',c.index)));
  try{videos.forEach((v,i)=>{v.src=source.cameras['cam'+(i+1)].url;v.load();});if(!paired())await Promise.all(videos.map(mediaReady));
  await selectRally(rallyIndex||source.rallies[0].index);
  }finally{loading=false;['source','rally','previous','next','play','exact','mode'].forEach(id=>$(id).disabled=false);}

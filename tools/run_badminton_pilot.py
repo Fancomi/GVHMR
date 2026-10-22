@@ -19,7 +19,8 @@ def main(*, full_native=False):
     p.add_argument("--manifest", type=Path)
     p.add_argument("--root", type=Path, required=True)
     p.add_argument(
-        "--stage", choices=("prepare", "teacher", "poses", "identity", "fit", "verify", "viewer"), default="prepare"
+        "--stage", choices=("prepare", "teacher", "poses", "identity", "fit", "verify", "viewer")
+        + (("aggregate",) if full_native else ()), default="prepare"
     )
     p.add_argument("--gpu-lease", type=Path)
     p.add_argument("--threads", type=int, default=1)
@@ -29,6 +30,8 @@ def main(*, full_native=False):
     p.add_argument("--viewer-output", type=Path)
     if full_native:
         p.add_argument("--safety-seconds", type=int, default=300)
+        p.add_argument("--progress-output", type=Path)
+        p.add_argument("--resume-progress", type=Path)
     a = p.parse_args()
     if a.threads < 1:
         p.error("--threads must be positive")
@@ -61,6 +64,14 @@ def main(*, full_native=False):
                     p.error("Full teacher execution requires its separate held GPU lease")
                 from run_badminton_full_teachers import run_full_teachers
                 result = run_full_teachers(a)
+            elif full_native and a.stage == "fit":
+                if a.gpu_lease is None:
+                    p.error("Full fitting requires its separate held GPU lease")
+                from run_badminton_full_fits import run_full_fits
+                result = run_full_fits(a)
+            elif full_native and a.stage == "aggregate":
+                from run_badminton_full_fits import aggregate_full_fits
+                result = aggregate_full_fits(a)
             else:
                 result = run_pilot_stage(a.root, a.stage, gpu_lease=a.gpu_lease, threads=a.threads)
     except Exception as error:

@@ -284,6 +284,7 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
                 end=(r["last_scan_mid_us"] - begin) / 1e6,
                 source_begin_frame=r["source_begin_frame"],
                 source_frame_count=r["source_frame_count"],
+                **({"segment_index": r["segment_index"]} if "segment_index" in r else {}),
             )
             for r in rallies
             if r["source_id"] == sid

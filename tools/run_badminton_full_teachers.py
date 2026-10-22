@@ -4,7 +4,6 @@ import argparse
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 
@@ -14,18 +13,10 @@ from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.pilot import binding, check_binding, validate_full_native_spec
 from hmr4d.lidar_mocap.rally_pipeline import read_json
-from hmr4d.lidar_mocap.repair_execution import require_gpu_lease, write_progress_json
-
-
-def remaining_lease_seconds(lease, manifest_sha256, now=None):
-    if (lease.get("status") != "held" or lease.get("owner") != "GVHMR"
-            or lease.get("manifest_sha256") != manifest_sha256
-            or lease.get("training_published") is not False):
-        raise ValueError("Full teacher stage requires its own held manifest-bound GPU lease")
-    deadline = datetime.fromisoformat(lease["approved_deadline_utc"].replace("Z", "+00:00"))
-    if deadline.tzinfo is None:
-        raise ValueError("GPU deadline must specify UTC offset")
-    return (deadline - (now or datetime.now(timezone.utc))).total_seconds()
+from hmr4d.lidar_mocap.repair_execution import (
+    require_gpu_lease, write_progress_json, load_isolated_stage_progress, run_isolated_native_worker,
+    remaining_lease_seconds,
+)
 
 
 def teacher_directory(repair, job, camera):
@@ -68,8 +59,9 @@ def run_full_teachers(args):
     source, repair = root / "source", root / "repair"
     input_path = repair / "new_source_input.json"
     plan, input_sha = read_json(input_path), file_sha(input_path)
-    state_path = root / "full_teacher_progress.json"
-    state = read_json(state_path) if state_path.exists() else dict(windows={})
+    state_path, state = load_isolated_stage_progress(root, getattr(args, "progress_output", None),
+        getattr(args, "resume_progress", None), default_name="full_teacher_progress.json",
+        release_pattern="teacher_batch_*_release_receipt.json", binding_key="full_teacher_progress")
     if state.get("source_input_sha256", input_sha) != input_sha:
         raise ValueError("Full-native teacher plan changed")
     if state.get("state") == "running" and state.get("supervisor_pid") != os.getpid():
@@ -99,6 +91,8 @@ def run_full_teachers(args):
     progress.update(stage="teacher_running", supervisor_pid=os.getpid(),
                     completed_teacher_camera_windows=state["completed_camera_windows"])
     write_progress_json(root / "pilot_progress.json", progress)
+    write_progress_json(root / "teacher_progress_pointer.json", dict(
+        progress_path=str(state_path), gpu_lease=str(args.gpu_lease.resolve()), state="running"))
     logs = root / "logs/full_teachers"
     logs.mkdir(parents=True, exist_ok=True)
     new_count, exhausted = 0, False
@@ -123,28 +117,13 @@ def run_full_teachers(args):
                 "--source-root", str(source), "--root", str(repair), "--stage", "teacher",
                 "--source", sid, "--window=" + name, "--camera", camera, "--threads", str(args.threads)]
             log_path = logs / f"{sid}_{name}_{camera}.log"
-            timer = time.perf_counter()
-            with log_path.open("ab") as log:
-                child = subprocess.Popen(command, cwd=PROJ_ROOT, env=os.environ.copy(), stdout=log,
-                    stderr=subprocess.STDOUT,
-                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
-                state.update(active=dict(source_id=sid, window=name, camera=camera, cli_pid=child.pid,
-                    started_utc=datetime.now(timezone.utc).isoformat(), log=str(log_path)))
-                write_progress_json(state_path, state)
-                while child.poll() is None:
-                    try:
-                        descendants = psutil.Process(child.pid).children(recursive=True)
-                        state["active"]["python_pids"] = [p.pid for p in descendants if p.name().lower() == "python.exe"]
-                    except psutil.NoSuchProcess:
-                        pass
-                    write_progress_json(state_path, state)
-                    time.sleep(1)
-            if child.returncode:
-                state.update(state="failed", exit_code=child.returncode, safe_to_release_gpu=True)
+            execution = run_isolated_native_worker(command, cwd=PROJ_ROOT, log_path=log_path,
+                state=state, state_path=state_path, active=dict(source_id=sid, window=name, camera=camera))
+            if execution["exit_code"]:
+                state.update(state="failed", exit_code=execution["exit_code"], safe_to_release_gpu=True)
                 write_progress_json(state_path, state)
                 raise RuntimeError("Native teacher failed; see " + str(log_path))
-            current[camera] = dict(cache_entry(directory), reused=False, seconds=time.perf_counter() - timer,
-                                   completed_utc=datetime.now(timezone.utc).isoformat(), log=str(log_path))
+            current[camera] = dict(cache_entry(directory), reused=False, **execution)
             new_count += 1
             state.pop("active", None)
             state["completed_camera_windows"] = sum(len(v) for v in state["windows"].values())
@@ -170,6 +149,9 @@ def run_full_teachers(args):
     progress.update(stage="teacher_complete" if complete else "teacher_safe_boundary",
                     completed_teacher_camera_windows=state["completed_camera_windows"])
     write_progress_json(root / "pilot_progress.json", progress)
+    write_progress_json(root / "teacher_progress_pointer.json", dict(
+        progress_path=str(state_path), progress_sha256=file_sha(state_path),
+        gpu_lease=str(args.gpu_lease.resolve()), state=state["state"]))
     print(dict(state=state["state"], safe_to_release_gpu=True, complete=state["completed_camera_windows"]), flush=True)
     return dict(state=state["state"], safe_to_release_gpu=True,
                 completed_camera_windows=state["completed_camera_windows"], windows_total=len(plan["jobs"]))
@@ -181,6 +163,8 @@ def main():
     parser.add_argument("--gpu-lease", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--safety-seconds", type=int, default=300)
+    parser.add_argument("--progress-output", type=Path)
+    parser.add_argument("--resume-progress", type=Path)
     run_full_teachers(parser.parse_args())
 
 

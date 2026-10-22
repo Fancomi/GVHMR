@@ -47,7 +47,68 @@ def validate_full_native_spec(spec):
     scope = _validate_review_rally_spec(spec, "badminton-native-rally-fit-v1", maximum_seconds=None)
     if set(scope["sources"]) != set(spec["source_indexes"]):
         raise ValueError("Full native scope must account for every declared source index")
+    excluded, no_fit = spec.get("excluded_source_indexes", {}), spec.get("no_fit_sources", {})
+    if (not isinstance(excluded, dict) or not isinstance(no_fit, dict) or set(excluded) != set(no_fit)
+            or set(excluded) & set(spec["source_indexes"])):
+        raise ValueError("No-fit sources require disjoint explicit index/evidence bindings")
+    for sid, entry in no_fit.items():
+        proof = validate_no_fit_source(entry, source_id=sid)
+        if proof["source_index_sha256"] != excluded[sid]["sha256"]:
+            raise ValueError("No-fit declaration refers to another original source index")
+    segments = set()
+    for clip in spec["clips"]:
+        number, segment = clip.get("rally_index"), clip.get("segment_index", 0)
+        if ("contiguous_windows" in clip or type(number) is not int or number < 0
+                or type(segment) is not int or segment < 0):
+            raise ValueError("Use flat native rally clips with the original rally_index and nonnegative segment_index")
+        key = (clip["source_id"], number, segment)
+        if key in segments:
+            raise ValueError("A native rally segment is declared twice")
+        segments.add(key)
+    if excluded:
+        scope["excluded_no_fit_sources"] = sorted(excluded)
     return scope
+
+
+def validate_no_fit_source(entry, *, source_id=None):
+    """No-fit receipts close real native coverage without inventing an empty clip."""
+    check_binding(entry)
+    proof = read_json(entry["path"])
+    sid = source_id or proof.get("source_id")
+    if (proof.get("schema") != "badminton-native-no-fit-needed-v1" or proof.get("status") != "no_fit_needed"
+            or not isinstance(sid, str) or proof.get("source_id") != sid
+            or type(proof.get("eligible_paired_scan_count")) is not int or proof["eligible_paired_scan_count"] != 0
+            or not isinstance(proof.get("reason"), str) or not proof["reason"].strip()):
+        raise ValueError("No-fit receipt must explicitly close zero actual eligible scans for its source")
+    check_binding(proof["source_index"])
+    check_binding(proof["coverage_audit"])
+    count = read_json(proof["coverage_audit"]["path"]).get("assigned_unique_scans")
+    if (proof["source_index_sha256"] != proof["source_index"]["sha256"]
+            or proof.get("coverage_audit_sha256", proof["coverage_audit"]["sha256"]) != proof["coverage_audit"]["sha256"]
+            or type(count) is not int or count != 0):
+        raise ValueError("No-fit source index/coverage differs from its actual zero-scan evidence")
+    index = read_json(proof["source_index"]["path"])
+    if index.get("source_kind") != "derived_native_roi_fixed24" or index.get("source_id") != sid:
+        raise ValueError("No-fit source needs its actual completed native crop index")
+    documents, entries = [], proof.get("evidence_files", [])
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("No-fit source requires explicit native evidence file bindings")
+    for item in entries:
+        check_binding(item)
+        if Path(item["path"]).suffix.lower() == ".json":
+            documents.append(read_json(item["path"]))
+    for table in documents:
+        if not isinstance(table, dict) or table.get("schema") != "badminton-analysis-clips-v1" or table.get("source_id") != sid:
+            continue
+        for receipt in documents:
+            if (isinstance(receipt, dict) and receipt.get("source_id") == sid and receipt.get("status") == "completed"
+                    and type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
+                    and receipt.get("source_manifest_sha256") == index["source_manifest"]["sha256"]
+                    and receipt.get("analysis_sha256") == table["analysis_sha256"]
+                    and receipt.get("planner_sha256") == table.get("planner_sha256")
+                    and any(item["sha256"] == table["analysis_sha256"] for item in entries)):
+                return proof
+    raise ValueError("No-fit source lacks completed actual native analysis/planner evidence")
 
 
 def _validate_review_rally_spec(spec, schema, *, maximum_seconds):
@@ -202,6 +263,8 @@ def prepare_pilot(manifest_path, output_root, *, _full_native=False):
     )
     if _full_native:
         registry.update(execution_scope=spec["execution_scope"], coverage_audit=spec["coverage_audit"])
+        if spec.get("excluded_source_indexes"):
+            registry.update(excluded_source_indexes=spec["excluded_source_indexes"], no_fit_sources=spec["no_fit_sources"])
     if relocations is not None:
         registry["data_relocations"] = dict(relocations.binding)
     for sid, entry in indexes.items():
@@ -260,6 +323,8 @@ def prepare_pilot(manifest_path, output_root, *, _full_native=False):
                 evidence_files=clip["evidence_files"],
             )
         )
+        if "segment_index" in clip:
+            rows[-1]["segment_index"] = clip["segment_index"]
     source.mkdir(parents=True, exist_ok=True)
     ranges_path = source / "pilot_ranges.jsonl"
     ranges_text = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
@@ -571,6 +636,10 @@ def serve_pilot(root, port, *, relocations=None, viewer_output=None):
     data.manifest.update(
         review_only=True, training_published=False, camera_label=read_json(root / "pilot_input.json")["camera_label"]
     )
+    segmented = any("segment_index" in rally for entry in data.manifest["sources"].values() for rally in entry["rallies"])
+    if segmented:
+        data.manifest["native_rally_count"] = len({(sid, rally["original_rally_index"])
+            for sid, entry in data.manifest["sources"].items() for rally in entry["rallies"]})
     write_json(data.viewer_output / "manifest.json", data.manifest)
     page = data.viewer_output / "index.html"
     html = page.read_text(encoding="utf-8")
@@ -582,6 +651,10 @@ def serve_pilot(root, port, *, relocations=None, viewer_output=None):
         "7 来源 / 204 回合", f'{data.manifest["source_count"]} 来源 / {data.manifest["rally_count"]} 回合'
     )
     html = html.replace("回合版人帧", "试拟合人帧").replace("回合版数据", "R11 试拟合数据")
+    if segmented:
+        label = f'{data.manifest["native_rally_count"]} 原生回合 · {data.manifest["rally_count"]} 有效段'
+        html = html.replace(f'{data.manifest["rally_count"]} 回合', label)
+        html = html.replace('<th>回合</th>', '<th>有效段</th>')
     html = html.replace('<div class="counts">', '<div class="counts"><span>仅所选回合 · 未发布训练</span>')
     html = html.replace(
         "本页展示密封回合子集，合格人帧包含旧场次的回合复用和新增场次，不代表所有历史数据累计量。",

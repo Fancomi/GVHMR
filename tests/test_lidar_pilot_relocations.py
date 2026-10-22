@@ -254,3 +254,17 @@ def test_calibration_relocation_cannot_be_bound_to_an_unrelated_data_root(tmp_pa
     resolver = manifest(data, {})
     with pytest.raises(ValueError, match="explicit DATA"):
         CalibrationSnapshot.freeze(tmp_path / "project", data / "sessions", tmp_path / "out", relocations=resolver)
+
+
+def test_native_teacher_cli_preserves_signed_window_id_as_one_argument(tmp_path):
+    from hmr4d import PROJ_ROOT
+    import hmr4d.lidar_mocap.new_source_repair as fresh
+
+    script = PROJ_ROOT / "tools/prepare_badminton_new_source_repair.py"
+    signed = "-00000033308_000005333394"
+    argv = [str(script), "--root", str(tmp_path / "repair"), "--source-root", str(tmp_path / "source"),
+            "--stage", "teacher", "--source", "actual", "--window=" + signed, "--camera", "cam2", "--threads", "2"]
+    with patch("sys.argv", argv), patch.object(fresh, "initial_teacher_window", return_value=dict(tracks=[])) as teacher:
+        runpy.run_path(str(script), run_name="__main__")
+    assert teacher.call_args.args[1:3] == ("actual", signed)
+    assert teacher.call_args.kwargs["camera"] == "cam2"

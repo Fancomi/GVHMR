@@ -14,6 +14,7 @@ from hmr4d.lidar_mocap.pilot import (
     require_review_group,
     validate_pilot_spec,
     validate_full_native_spec,
+    validate_no_fit_source,
     review_rally_windows,
     validate_native_rally,
     binding,
@@ -62,6 +63,7 @@ def full_spec(tmp_path):
         coverage_audit=binding(audit),
     )
     value["clips"][0]["end_common_us"] = 251000000
+    value["clips"][0]["rally_index"] = 1
     return value
 
 
@@ -94,6 +96,70 @@ def test_full_native_scope_requires_bound_actual_coverage_and_review_status(tmp_
         value["clips"].append(dict(value["clips"][0], eligible_paired_png_indices=[20, 21]))
     with pytest.raises(ValueError):
         validate_full_native_spec(value)
+
+
+def test_disconnected_valid_native_segments_keep_one_original_rally_without_duplicate_scans(tmp_path):
+    value = full_spec(tmp_path)
+    original, _, _ = native_rally_fixture(tmp_path)
+    value["clips"] = [
+        dict(original, segment_index=0, begin_common_us=1650000, end_common_us=1850000,
+             eligible_paired_png_indices=[7, 8]),
+        dict(original, segment_index=1, begin_common_us=1950000, end_common_us=2050000,
+             eligible_paired_png_indices=[10]),
+    ]
+    assert validate_full_native_spec(value)["selected_scans"] == 3
+    for clip in value["clips"]:
+        assert clip["rally_index"] == 2
+        validate_native_rally(clip, "new-crop")
+    pairs = [dict(lidar_index=i, scan_mid_us=1000000 + i * 100000, status="paired") for i in range(20)]
+    windows = review_rally_windows(pairs, value["clips"])
+    assert [[p["lidar_index"] for p in w[3]] for w in windows] == [[7, 8], [10]]
+    value["clips"][1]["segment_index"] = 0
+    with pytest.raises(ValueError, match="segment is declared twice"):
+        validate_full_native_spec(value)
+    value["clips"][1]["segment_index"] = 1
+    value["clips"][0]["contiguous_windows"] = []
+    with pytest.raises(ValueError, match="flat native"):
+        validate_full_native_spec(value)
+
+
+def test_real_no_fit_source_closes_native_coverage_without_fabricating_any_fit_window(tmp_path):
+    clip, _, receipt = native_rally_fixture(tmp_path)
+    index = tmp_path / "no_fit_index.json"
+    index.write_text(json.dumps(dict(source_id="empty_actual", source_kind="derived_native_roi_fixed24",
+                                    source_manifest=dict(sha256="new-crop"))), encoding="utf-8")
+    coverage = tmp_path / "empty_coverage.json"
+    coverage.write_text('{"assigned_unique_scans":0}', encoding="utf-8")
+    table_path = tmp_path / "empty_clips.json"
+    analysis_entry = clip["evidence_files"][0]
+    table = dict(schema="badminton-analysis-clips-v1", source_id="empty_actual", clips=[],
+                 analysis_sha256=analysis_entry["sha256"], planner_sha256="planner")
+    table_path.write_text(json.dumps(table), encoding="utf-8")
+    receipt_path = tmp_path / "empty_native_receipt.json"
+    receipt.update(source_id="empty_actual")
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    marker = tmp_path / "empty_actual.no-fit-needed.json"
+    proof = dict(schema="badminton-native-no-fit-needed-v1", source_id="empty_actual", status="no_fit_needed",
+        eligible_paired_scan_count=0, reason="Actual native analysis found no eligible rallies",
+        source_index=binding(index), source_index_sha256=binding(index)["sha256"], coverage_audit=binding(coverage),
+        evidence_files=[analysis_entry, binding(table_path), binding(receipt_path)])
+    marker.write_text(json.dumps(proof), encoding="utf-8")
+    assert validate_no_fit_source(binding(marker), source_id="empty_actual")["eligible_paired_scan_count"] == 0
+    value = full_spec(tmp_path)
+    value.update(excluded_source_indexes=dict(empty_actual=dict(file="no_fit_index.json", sha256=binding(index)["sha256"])),
+                 no_fit_sources=dict(empty_actual=binding(marker)))
+    result = validate_full_native_spec(value)
+    assert result["sources"] == ["actual"] and result["excluded_no_fit_sources"] == ["empty_actual"]
+    assert result["selected_scans"] == 3 and len(value["clips"]) == 1
+    value["clips"] = []
+    with pytest.raises(ValueError, match="actual native-confirmed"):
+        validate_full_native_spec(value)
+    receipt["exit_code"] = 1
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    proof["evidence_files"][-1] = binding(receipt_path)
+    marker.write_text(json.dumps(proof), encoding="utf-8")
+    with pytest.raises(ValueError, match="completed actual native"):
+        validate_no_fit_source(binding(marker), source_id="empty_actual")
 
 
 def test_pilot_teacher_windows_follow_real_rallies_and_do_not_add_idle_minute_frames():

@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--identity-decisions", type=Path)
     parser.add_argument('--partition-worker',action='store_true',help='Disjoint one-source worker; preserve the full plan and defer aggregate export')
     parser.add_argument("--no-segment-cache", action="store_true")
+    parser.add_argument("--require-completed", action="store_true",
+                        help="Verify/resume existing fitted windows only; never perform new inference or fitting")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--threads", type=int, default=4)
     args = parser.parse_args()
@@ -79,6 +81,9 @@ def main():
         raise ValueError("Select existing frozen windows and a separate workspace output root")
     if any(root == window or root in window.parents or window in root.parents for _, window in jobs):
         raise ValueError("Repair output must not contain or overwrite a frozen source window")
+    if args.require_completed:
+        from hmr4d.lidar_mocap.repair_execution import require_completed_fit_windows
+        require_completed_fit_windows(root, jobs)
     root.mkdir(parents=True, exist_ok=True)
     if not (root / "calibration/calibration_snapshot.json").exists():
         shutil.copytree(args.source_root / "calibration", root / "calibration")
@@ -117,7 +122,7 @@ def main():
         ],
     )
     if pilot_review:
-        plan.update(review_only=True,purpose='short_native_rally_review')
+        plan.update(review_only=True,purpose=read_json(args.union).get('purpose','short_native_rally_review'))
     if args.partition_worker:
         if not args.source or len(args.source)!=1 or not (root/'repair_plan.json').exists():
             raise ValueError('A partition worker requires one explicit source and an existing full plan')
@@ -163,6 +168,10 @@ def main():
         decision = decisions["windows"].get(sid + ":" + original.name) if decisions else None
         if decision and decision["source_teacher_manifest_sha256"] != file_sha(original / "teacher/manifest.json"):
             raise ValueError("Identity source teacher changed")
+        if args.require_completed and (
+            not (output / "teacher/manifest.json").is_file() or not (output / "fit_report.json").is_file()
+        ):
+            raise ValueError("Completed-only execution found an unfinished native window")
         if args.seed_teacher_root and decision is None and not (output / "teacher/manifest.json").exists():
             seeded = args.seed_teacher_root / "sessions" / sid / "windows" / original.name / "teacher"
             shutil.copytree(seeded, output / "teacher", dirs_exist_ok=True)
@@ -203,6 +212,8 @@ def main():
             completed.append(cached)
             print(f"[validated resume] {sid}/{original.name}", flush=True)
             continue
+        if args.require_completed:
+            raise ValueError("Completed-only execution found changed fit inputs or artifacts; no recomputation performed")
         if sid not in sessions:
             sessions[sid] = load_run_session(root, calibration, sid, relocations=relocations)
         session = sessions[sid]

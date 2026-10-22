@@ -41,6 +41,10 @@ native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chr
 `tools/run_badminton_full_native.py` consumes a separate full-coverage manifest;
 `full_native.py` validates exact teacher/native-pose reuse, and
 `tools/run_badminton_full_teachers.py` yields at safe GPU lease boundaries.
+`fit_reuse.py` audits/imports unchanged verified tensors with explicit lineage;
+`tools/run_badminton_full_fits.py` separates bounded GPU fitting from completed-only
+CPU aggregation. `tools/watch_badminton_full_native.py` waits for real intake
+without launching inference.
 Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a

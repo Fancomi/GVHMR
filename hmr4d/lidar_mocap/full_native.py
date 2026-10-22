@@ -11,11 +11,55 @@ from hmr4d import PROJ_ROOT
 from .calibration import CalibrationSnapshot
 from .dual_view import file_sha
 from .pipeline import write_json
-from .pilot import binding, check_binding, validate_full_native_spec
+from .pilot import binding, check_binding, validate_full_native_spec, validate_camera_review, validate_native_rally
 from .rally_pipeline import load_run_session, read_json
 from .relocations import load_pilot_run_relocations
 from .segmentation import court_polygon
 from .teacher import _jsonable, _normalize_rows, _provenance, run_teacher, validate_provenance
+
+
+def inspect_full_native_manifest(manifest_path):
+    """Read-only intake check before an unattended consumer creates frozen output."""
+    from .relocations import load_manifest_relocations
+    from .source_index import SourceIndexedSession, _bound_file
+
+    original = binding(manifest_path)
+    spec = read_json(manifest_path)
+    scope = validate_full_native_spec(spec)
+    validate_camera_review(spec)
+    for name, digest in spec["bundle_sha256"].items():
+        if file_sha(Path(spec["calibration_dir"]) / name) != digest:
+            raise ValueError("Full native input changed its physical camera bundle")
+    resolver = load_manifest_relocations(spec)
+    data = Path(spec["data_root"])
+    sessions = {}
+    for sid, item in spec["source_indexes"].items():
+        path = _bound_file(data, item, relocations=resolver)
+        index = read_json(path)
+        if (index.get("source_kind") != "derived_native_roi_fixed24"
+                or index.get("crop_binding", {}).get("bbox_sha256") != spec["bundle_sha256"]["bbox.json"]):
+            raise ValueError("Full native intake requires its exact adopted fixed24 crop")
+        session = SourceIndexedSession.load_source_index(path, data, expected_sha256=item["sha256"],
+                                                        require_admitted=False, relocations=resolver)
+        sessions[sid] = (index, session.pairs())
+    for clip in spec["clips"]:
+        index, pairs = sessions[clip["source_id"]]
+        validate_native_rally(clip, index["source_manifest"]["sha256"])
+        for ordinal in clip["eligible_paired_png_indices"]:
+            if ordinal >= len(pairs):
+                raise ValueError("Full native scan ordinal leaves its actual source")
+            pair = pairs[ordinal]
+            if pair["status"] != "paired" or not clip["begin_common_us"] <= pair["scan_mid_us"] < clip["end_common_us"]:
+                raise ValueError("Full native scan lacks its declared dual-camera/rally coverage")
+    for sid, item in spec.get("excluded_source_indexes", {}).items():
+        path = _bound_file(data, item, relocations=resolver)
+        index = read_json(path)
+        proof = read_json(spec["no_fit_sources"][sid]["path"])
+        if (file_sha(path) != proof["source_index_sha256"]
+                or index.get("crop_binding", {}).get("bbox_sha256") != spec["bundle_sha256"]["bbox.json"]):
+            raise ValueError("Excluded no-fit source changed its frozen index")
+    check_binding(original)
+    return dict(manifest=original, selection=scope, windows=len(spec["clips"]), read_only=True)
 
 
 def validate_window_reuse(previous, current):
