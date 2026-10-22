@@ -229,6 +229,22 @@ The receiver's actual PID, heartbeat, child PIDs and release binding are in
 The focused 130-check suite includes real CPU subprocess-tree termination and
 proves that a different output root keeps running. No scheduled task is used.
 
+`tools/run_badminton_full_sequence.py` continues teachers, native poses, reviewed
+identity, audited fit import, bounded fitting, CPU aggregation/native verification
+and the full viewer serially. It emits durable review events and cannot invent a
+reviewed identity decision. `live_progress.json` derives the current B02 statistics
+from the frozen 45-camera-window B01 baseline; old 17-window/1,499-second values
+remain historical, never current-batch throughput. New batch initialization now
+archives those fields under `previous_attempts`. There are 132 passing focused checks.
+
+At the user's new paired-RGB acceleration request, the CPU sequence was explicitly
+held and B02 yielded after its current worker: 79/88 contexts, with 34 new in
+2,687.424143 s; actual CUDA release was `2026-10-22T06:26:36.187496+00:00`.
+The original local lease was retained before shortening its deadline; the active
+continuous grant is unchanged. `execution_hold.json` records the separate
+10 Hz frontend trial. The existing 30 Hz temporal contract is not relaxed, and
+no sparse policy has yet been adopted for the remaining full run.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.

@@ -14,7 +14,7 @@ from hmr4d.lidar_mocap.pilot import binding, check_binding, validate_full_native
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import (
     load_isolated_stage_progress, remaining_lease_seconds, require_gpu_lease,
-    run_isolated_native_worker, write_progress_json, full_native_fit_command,
+    run_isolated_native_worker, write_progress_json, full_native_fit_command, begin_isolated_batch,
 )
 
 
@@ -79,6 +79,7 @@ def run_full_fits(args):
         raise ValueError("Another full-native fit supervisor is running")
     require_gpu_lease(args.gpu_lease)
     remaining_lease_seconds(read_json(args.gpu_lease), frozen["manifest"]["sha256"])
+    begin_isolated_batch(state, "new_windows_this_batch")
     state.update(state="running", supervisor_pid=os.getpid(), source_input_sha256=input_sha,
         gpu_lease=str(args.gpu_lease.resolve()), windows_total=len(plan["jobs"]), review_only=True,
         training_published=False, safe_to_release_gpu=False, started_batch_utc=datetime.now(timezone.utc).isoformat())
@@ -131,6 +132,7 @@ def run_full_fits(args):
         state["completed_windows"] = len(state["windows"])
         write_progress_json(state_path, state)
         new_windows += 1
+        state["new_windows_this_batch"] = new_windows
         print(dict(source=sid, window=name, completed=len(state["windows"]), total=len(plan["jobs"])), flush=True)
     complete = len(state["windows"]) == len(plan["jobs"])
     state.update(state="fit_windows_complete" if complete else "yielded_before_deadline", safe_to_release_gpu=True,

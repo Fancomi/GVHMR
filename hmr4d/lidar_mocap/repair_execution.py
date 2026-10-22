@@ -39,6 +39,41 @@ def remaining_lease_seconds(lease, manifest_sha256, now=None):
     return (deadline - (now or datetime.now(timezone.utc))).total_seconds()
 
 
+def begin_isolated_batch(state, counter_key):
+    """Keep old batch statistics with their old attempt when resuming windows."""
+    from datetime import datetime, timezone
+
+    keys = ("exit_code", "new_camera_windows_this_batch", "new_windows_this_batch", "batch_seconds",
+            "completed_batch_utc", "started_batch_utc")
+    previous = {key: state.pop(key) for key in keys if key in state}
+    if previous:
+        state.setdefault("previous_attempts", []).append(dict(previous, state=state.get("state"), active=state.get("active")))
+    state.update({counter_key: 0, "batch_seconds": 0., "completed_batch_utc": None,
+                  "started_batch_utc": datetime.now(timezone.utc).isoformat()})
+
+
+def teacher_batch_metrics(current, baseline, *, now=None):
+    """Derive current counts from frozen window sets, never old resumed counters."""
+    from datetime import datetime, timezone
+
+    def keys(value):
+        return {(name, camera) for name, row in value.get("windows", {}).items()
+                for camera in row if camera in ("cam1", "cam2")}
+
+    done, before = keys(current), keys(baseline)
+    if not before <= done:
+        raise ValueError("Resumed teacher progress lost previously completed camera windows")
+    start = datetime.fromisoformat(current["started_batch_utc"].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(current["completed_batch_utc"].replace("Z", "+00:00")) if current.get("completed_batch_utc") else None
+    terminal = current.get("state") in ("complete", "yielded_before_deadline", "failed")
+    completed = end if terminal and end is not None and end >= start else None
+    return dict(completed_camera_windows=len(done), baseline_completed_camera_windows=len(before),
+                new_camera_windows_this_batch=len(done - before),
+                batch_seconds=max(0., ((completed or now or datetime.now(timezone.utc)) - start).total_seconds()),
+                completed_batch_utc=completed.isoformat() if completed else None,
+                ignores_raw_resumed_previous_batch_statistics=True)
+
+
 def full_native_fit_command(root, threads):
     import sys
     from hmr4d import PROJ_ROOT
@@ -183,6 +218,9 @@ def run_isolated_native_worker(command, *, cwd, log_path, state, state_path, act
                 state["active"]["python_pids"] = [p.pid for p in descendants if p.name().lower() == "python.exe"]
             except psutil.NoSuchProcess:
                 pass
+            if state.get("started_batch_utc"):
+                state["batch_seconds"] = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                    state["started_batch_utc"].replace("Z", "+00:00"))).total_seconds()
             write_progress_json(state_path, state)
             time.sleep(1)
     return dict(exit_code=child.returncode, seconds=time.perf_counter() - timer,

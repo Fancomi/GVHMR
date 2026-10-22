@@ -113,6 +113,55 @@ def test_fit_reuse_import_rejects_stale_compatibility_and_window_execution_proof
             validate_audited_fit_execution(changed, "current")
 
 
+def test_resuming_batch_keeps_old_statistics_historical_and_derives_actual_new_completions():
+    from hmr4d.lidar_mocap.repair_execution import begin_isolated_batch, teacher_batch_metrics
+
+    baseline = dict(windows=dict(old=dict(cam1={}, cam2={})))
+    current = dict(windows=dict(old=dict(cam1={}, cam2={}), new=dict(cam2={})), state="running",
+                   started_batch_utc="2026-10-22T05:41:00Z", completed_batch_utc="2026-10-22T00:44:00Z",
+                   new_camera_windows_this_batch=17, batch_seconds=1499, exit_code=2)
+    previous = deepcopy(current)
+    observed = teacher_batch_metrics(current, baseline, now=datetime(2026, 10, 22, 5, 44, tzinfo=timezone.utc))
+    assert observed["new_camera_windows_this_batch"] == 1
+    assert observed["batch_seconds"] == 180 and observed["completed_batch_utc"] is None
+    assert current == previous
+    begin_isolated_batch(current, "new_camera_windows_this_batch")
+    assert current["windows"] == previous["windows"]
+    assert current["new_camera_windows_this_batch"] == 0 and current["batch_seconds"] == 0
+    assert current["completed_batch_utc"] is None
+    assert current["previous_attempts"][-1]["new_camera_windows_this_batch"] == 17
+    assert current["previous_attempts"][-1]["batch_seconds"] == 1499
+
+
+def test_sequence_cannot_fit_pending_incomplete_or_changed_identity_evidence(tmp_path):
+    module = runpy.run_path(str(Path(__file__).parents[1] / "tools/run_badminton_full_sequence.py"))
+    ready = module["reviewed_identity_ready"]
+    from hmr4d.lidar_mocap.pilot import binding
+
+    root = tmp_path / "actual"
+    source = root / "repair/new_source_input.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(json.dumps(dict(calibration_digest="physical", jobs=[dict(source_id="s", source_window="source/window")])), encoding="utf-8")
+    evidence = root / "native-review.json"
+    evidence.write_text('{"actual_review":true}', encoding="utf-8")
+    identity = root / "repair/identity_evidence/identity_decisions.json"
+    identity.parent.mkdir()
+    assert not ready(root)
+    value = dict(review_status="pending", source_union_sha256=binding(source)["sha256"], calibration_digest="physical",
+                 windows={"s:window": {}}, evidence_files={str(evidence): binding(evidence)["sha256"]})
+    identity.write_text(json.dumps(value), encoding="utf-8")
+    assert not ready(root)
+    value["review_status"] = "reviewed"
+    identity.write_text(json.dumps(value), encoding="utf-8")
+    assert ready(root)
+    for key, changed in (("windows", {}), ("calibration_digest", "changed"), ("source_union_sha256", "changed"), ("evidence_files", {})):
+        identity.write_text(json.dumps(dict(value, **{key: changed})), encoding="utf-8")
+        with pytest.raises(ValueError): ready(root)
+    identity.write_text(json.dumps(value), encoding="utf-8")
+    evidence.write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError): ready(root)
+
+
 @pytest.mark.parametrize("result", ["complete", "partial", "missing", "failed"])
 def test_full_cpu_prepare_requires_every_fit_window_and_preserves_completed_receipt(tmp_path, monkeypatch, result):
     import hmr4d

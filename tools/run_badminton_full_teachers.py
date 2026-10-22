@@ -15,7 +15,7 @@ from hmr4d.lidar_mocap.pilot import binding, check_binding, validate_full_native
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import (
     require_gpu_lease, write_progress_json, load_isolated_stage_progress, run_isolated_native_worker,
-    remaining_lease_seconds,
+    remaining_lease_seconds, begin_isolated_batch,
 )
 
 
@@ -68,9 +68,7 @@ def run_full_teachers(args):
         previous_pid = state.get("supervisor_pid")
         if previous_pid and psutil.pid_exists(previous_pid):
             raise ValueError("Another full-native teacher supervisor is still running")
-    if "exit_code" in state:
-        state.setdefault("previous_attempts", []).append(dict(exit_code=state.pop("exit_code"),
-            state=state.get("state"), active=state.get("active")))
+    begin_isolated_batch(state, "new_camera_windows_this_batch")
     if (root / "teacher_reuse_receipt.json").exists():
         reused = read_json(root / "teacher_reuse_receipt.json")
         check_binding(reused["source_input"])
@@ -125,6 +123,7 @@ def run_full_teachers(args):
                 raise RuntimeError("Native teacher failed; see " + str(log_path))
             current[camera] = dict(cache_entry(directory), reused=False, **execution)
             new_count += 1
+            state["new_camera_windows_this_batch"] = new_count
             state.pop("active", None)
             state["completed_camera_windows"] = sum(len(v) for v in state["windows"].values())
             write_progress_json(state_path, state)
