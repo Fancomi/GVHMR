@@ -42,9 +42,10 @@ def reviewed_identity_ready(root):
 
 
 class Sequence:
-    def __init__(self, request, grant, directory, threads=2):
+    def __init__(self, request, grant, directory, threads=2, paired_native_rgb=False):
         self.request, self.grant_path, self.directory = request, grant, directory
         self.threads, self.authorization, self.child, self.gpu_root, self.active_progress = threads, None, None, None, None
+        self.paired_native_rgb = paired_native_rgb
         self.state_path = directory / "continuous_sequence.json"
         previous = json.loads(self.state_path.read_bytes()) if self.state_path.exists() else {}
         if previous.get("pid"):
@@ -67,12 +68,22 @@ class Sequence:
             return
         self.state["heartbeat_utc"] = datetime.now(timezone.utc).isoformat()
         first = Path(json.loads(self.request.read_bytes())["scope"][0]["root"])
-        current = first / "full_teacher_progress.batch02.json"
+        batches = [(int(re.search(r"batch(\d+)", path.name)[1]), path)
+                   for path in first.glob("full_teacher_progress.batch*.json")]
+        index, current = max(batches, default=(0, None))
         baseline = first / "full_teacher_progress.json"
-        if current.exists():
+        if index > 1:
+            release_path = first / f"teacher_batch_{index-1:02d}_release_receipt.json"
+            if release_path.exists():
+                proof = json.loads(release_path.read_bytes())["full_teacher_progress"]
+                check_binding(proof)
+                baseline = Path(proof["path"])
+        if current is not None and current.exists():
             raw = json.loads(current.read_bytes())
             previous = json.loads(baseline.read_bytes())
             self.state["first_teacher_metrics"] = teacher_batch_metrics(raw, previous)
+            self.state["first_teacher_progress_path"] = str(current)
+            self.state["first_teacher_baseline"] = binding(baseline)
             self.state["first_teacher_active"] = raw.get("active")
             self.state.setdefault("previous_attempts", [dict(progress=binding(baseline), **{
                 key: previous.get(key) for key in ("state", "completed_camera_windows", "new_camera_windows_this_batch",
@@ -157,14 +168,22 @@ class Sequence:
                    release=binding(receipt) if receipt else None)
 
     def command(self, root, stage):
-        return [sys.executable, "-u", str(PROJ_ROOT / "tools/run_badminton_full_native.py"),
-                "--root", str(root), "--stage", stage, "--threads", str(self.threads)]
+        command = [sys.executable, "-u", str(PROJ_ROOT / "tools/run_badminton_full_native.py"),
+                   "--root", str(root), "--stage", stage, "--threads", str(self.threads)]
+        if self.paired_native_rgb and stage == "teacher":
+            from hmr4d.lidar_mocap.paired_sampling import validate_sampling_input
+            path = root / "teacher_sampling_input.json"
+            validate_sampling_input(root / "repair", path)
+            command += ["--teacher-sampling-input", str(path)]
+        return command
 
     def lease(self, root, stage, label):
         path = root / "gpu_leases" / (label + ".json")
         if path.exists():
             raise ValueError("A local lease already exists; preserve it and use a new batch")
         value = make_local_stage_lease(self.authorization, root, stage)
+        if self.paired_native_rgb:
+            value["teacher_sampling_input"] = binding(root / "teacher_sampling_input.json")
         if (datetime.fromisoformat(value["approved_deadline_utc"]) - datetime.now(timezone.utc)).total_seconds() < 600:
             raise TimeoutError("Insufficient time remains for a new CUDA stage")
         write_progress_json(path, value)
@@ -183,10 +202,19 @@ class Sequence:
             if resume is not None:
                 old_release = root / f"{stage}_batch_{index-1:02d}_release_receipt.json"
                 if not old_release.exists():
+                    pending = json.loads(resume.read_bytes())
+                    if pending.get("state") in ("running", "complete", "yielded_before_deadline", "fit_windows_complete"):
+                        self.state.update(state="waiting_for_existing_" + stage + "_batch_real_release",
+                                          root=str(root), existing_progress_path=str(resume))
+                        self.wait()
+                        continue
                     raise ValueError("Prior GPU batch lacks its real release receipt; no new lease created")
                 old = json.loads(old_release.read_bytes())
                 resume = Path(old["full_teacher_progress" if stage == "teacher" else "full_fit_progress"]["path"])
                 check_binding(old["full_teacher_progress" if stage == "teacher" else "full_fit_progress"])
+                if marker.exists() and (json.loads(marker.read_bytes()).get("complete") is True
+                                        or json.loads(marker.read_bytes()).get("state") == "complete_cpu_aggregate"):
+                    return
             progress = root / f"{stem}.batch{index:02d}.json"
             release = root / f"{stage}_batch_{index:02d}_release_receipt.json"
             lease = self.lease(root, stage, f"{stage}_batch_{index:02d}")
@@ -276,13 +304,15 @@ def main():
     parser.add_argument("--grant", type=Path, required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--paired-native-rgb", action="store_true")
     args = parser.parse_args()
     directory = args.directory.resolve()
     if not directory.is_relative_to(PROJ_ROOT / "outputs") or args.threads < 1:
         parser.error("Use an independent local output and positive threads")
     psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
     psutil.Process().cpu_affinity([0, 1])
-    sequence = Sequence(args.request.resolve(), args.grant.resolve(), directory, args.threads)
+    sequence = Sequence(args.request.resolve(), args.grant.resolve(), directory, args.threads,
+                        paired_native_rgb=args.paired_native_rgb)
     try:
         sequence.execute()
     except Exception as error:

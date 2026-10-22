@@ -49,6 +49,12 @@ without launching inference.
 approved continuous grant, start the next 1019 teacher batch and enforce the
 fixed overall deadline against only authorized CUDA process trees.
 Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
+`paired_sampling.py` freezes the adopted real-paired-RGB input; the shared
+`run_teacher` entry routes its explicit policy through `sparse_teacher.py` for
+initial and repaired contexts. Role-marked inferred temporal states retain only
+actual RGB anchors as evidence. Bounded timing/native-fit comparisons use
+`sparse_trial.py`, `sparse_trial_evaluation.py` and `sparse_backend.py` in separate
+in-run `benchmarks/` directories; default dense inference remains unchanged.
 Explicit fullraw indexes retain cloud ordinals, original packet-row objects and
 documented final unclosed scans separately. `source_membership.py` verifies a
 derived crop's exact encoded-cell members when its cloud is read. Completion,

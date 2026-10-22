@@ -87,7 +87,7 @@ def prepare_new_sources(source_root, root, *, relocations=None):
     return plan
 
 
-def initial_teacher_window(root, source, window_name, camera=None):
+def initial_teacher_window(root, source, window_name, camera=None, sampling_input=None):
     """Run only one explicit teacher window; creates no fitted or published labels."""
     from .teacher import run_teacher
     from .segmentation import court_polygon
@@ -115,6 +115,14 @@ def initial_teacher_window(root, source, window_name, camera=None):
         raise ValueError('Select one of the two frozen native cameras')
     target = (window/'teacher' if camera==settings['camera'] else
               root/'secondary_teachers'/camera/'sessions'/sid/'windows'/window.name/'teacher')
+    if sampling_input is not None:
+        from .paired_sampling import paired_teacher_rows
+        rows, origin, proof = paired_teacher_rows(root, sampling_input, session, config, camera)
+        return run_teacher(session.video_paths[camera], rows, cal.camera(camera), target,
+            batch_size=settings["batch_size"], resume=True, roi_polygon=court_polygon(cal, camera),
+            roi_margin_px=settings.get("roi_margin_px", 40), preproc_precision=settings.get("preproc_precision", "float32"),
+            sampling_policy="paired_native_rgb10_latent_v1", sampling_recipe=proof,
+            sampling_origin_common_time_us=origin)
     rows = session.teacher_rows(camera, settings["teacher_stride"], config["left_us"]-1000000,
                                 config["right_us"]+1000000)
     return run_teacher(session.video_paths[camera], rows, cal.camera(camera), target,
@@ -135,6 +143,9 @@ def native_teacher_mapping(window):
     frames = [[dict(det, replay_detection_index=i) for i, det in enumerate(frame)] for frame in cache["detections"]]
     options = manifest["provenance"]["options"]
     mode = "corners_v1" if manifest["provenance"]["algorithm_version"] == 1 else "observed_v2"
-    tracks = associate_detections(frames, prediction_mode=mode, max_track_gap_frames=options["max_track_gap_frames"])
+    from .sparse_teacher import sampling_tracking_limits
+    limits = sampling_tracking_limits(manifest["provenance"]["frame_rows"], options)
+    tracks = associate_detections(frames, prediction_mode=mode,
+                                max_track_gap_frames=limits["max_gap_frames"] if limits else options["max_track_gap_frames"])
     return np.asarray([[o["position"], o["replay_detection_index"], o.get("original_track_id", key), key]
                        for key, observations in tracks.items() for o in observations], dtype=np.int64).reshape(-1, 4)

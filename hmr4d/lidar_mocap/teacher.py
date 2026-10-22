@@ -539,10 +539,12 @@ def _preprocess_reuse(source, provenance):
         )
     detections = _read_stage(source / "detections.pt", manifest["provenance_hash"], True)
     mode = "corners_v1" if old["algorithm_version"] == 1 else "observed_v2"
-    tracks = associate_detections(
-        detections["detections"], prediction_mode=mode, max_track_gap_frames=old["options"]["max_track_gap_frames"]
-    )
-    segments, _ = _split_tracks(tracks, old["frame_rows"], old["options"]["min_track_frames"])
+    from .sparse_teacher import sampling_tracking_limits, observed_segments
+    sparse_limits = sampling_tracking_limits(old["frame_rows"], old["options"])
+    tracks = associate_detections(detections["detections"], prediction_mode=mode,
+        max_track_gap_frames=(sparse_limits["max_gap_frames"] if sparse_limits else old["options"]["max_track_gap_frames"]))
+    segments, _ = (observed_segments(tracks, old["frame_rows"], sparse_limits) if sparse_limits else
+                   _split_tracks(tracks, old["frame_rows"], old["options"]["min_track_frames"]))
     if [(s["track_id"], s["segment_id"], len(s["observations"])) for s in segments] != [
         (s["track_id"], s["segment_id"], s["frame_count"]) for s in manifest["tracks"]
     ]:
@@ -604,6 +606,9 @@ def run_teacher(
     preproc_precision="float32",
     reuse_preprocess_dir=None,
     identity_decisions=None,
+    sampling_policy=None,
+    sampling_recipe=None,
+    sampling_origin_common_time_us=None,
 ):
     """Run four GPU stages independently and save every observed athlete track.
 
@@ -616,6 +621,15 @@ def run_teacher(
     """
     import torch
 
+    if sampling_policy is not None:
+        from .sparse_teacher import run_sparse_teacher
+        return run_sparse_teacher(video_path, frame_rows, camera, output_dir, batch_size=batch_size, resume=resume,
+            min_track_frames=min_track_frames, max_track_gap_frames=max_track_gap_frames,
+            inference_window_frames=inference_window_frames, roi_polygon=roi_polygon, roi_margin_px=roi_margin_px,
+            detector_imgsz=detector_imgsz, preproc_precision=preproc_precision,
+            reuse_preprocess_dir=reuse_preprocess_dir, identity_decisions=identity_decisions,
+            sampling_policy=sampling_policy, sampling_recipe=sampling_recipe,
+            sampling_origin_common_time_us=sampling_origin_common_time_us)
     _validate_preproc_precision(preproc_precision)
     if batch_size < 1 or min_track_frames < 2 or inference_window_frames < 8:
         raise ValueError("batch_size >= 1, min_track_frames >= 2, and inference_window_frames >= 8 required")
@@ -939,6 +953,9 @@ def sample_track(track, target_times_us, max_time_error_us=18_000):
     synchronization. Callers must enforce ``valid`` before exporting labels.
     Returned numerical arrays are NumPy float32, timestamp arrays are int64.
     """
+    if track.get("inferred_temporal_state") is not None:
+        from .sparse_teacher import sample_latent_track
+        return sample_latent_track(track, target_times_us, max_time_error_us)
     if max_time_error_us <= 0:
         raise ValueError("max_time_error_us must be positive")
     if track.get("coordinate_space") != COORDINATE_SPACE:

@@ -32,6 +32,9 @@ def main(*, full_native=False):
         p.add_argument("--safety-seconds", type=int, default=300)
         p.add_argument("--progress-output", type=Path)
         p.add_argument("--resume-progress", type=Path)
+        p.add_argument("--sparse-trial-recipe", type=Path)
+        p.add_argument("--teacher-sampling-input", type=Path)
+        p.add_argument("--sparse-trial-phase", choices=("baseline30", "paired10", "backend_fit"))
     a = p.parse_args()
     if a.threads < 1:
         p.error("--threads must be positive")
@@ -62,13 +65,21 @@ def main(*, full_native=False):
             if full_native and a.stage == "teacher":
                 if a.gpu_lease is None:
                     p.error("Full teacher execution requires its separate held GPU lease")
-                from run_badminton_full_teachers import run_full_teachers
-                result = run_full_teachers(a)
+                if a.sparse_trial_recipe:
+                    from hmr4d.lidar_mocap.sparse_trial import run_trial
+                    result = run_trial(a.root, a.sparse_trial_recipe, a.sparse_trial_phase, a.gpu_lease)
+                else:
+                    from run_badminton_full_teachers import run_full_teachers
+                    result = run_full_teachers(a)
             elif full_native and a.stage == "fit":
                 if a.gpu_lease is None:
                     p.error("Full fitting requires its separate held GPU lease")
-                from run_badminton_full_fits import run_full_fits
-                result = run_full_fits(a)
+                if a.sparse_trial_recipe:
+                    from hmr4d.lidar_mocap.sparse_backend import run_backend_trial
+                    result = run_backend_trial(a.root, a.sparse_trial_recipe, a.gpu_lease)
+                else:
+                    from run_badminton_full_fits import run_full_fits
+                    result = run_full_fits(a)
             elif full_native and a.stage == "aggregate":
                 from run_badminton_full_fits import aggregate_full_fits
                 result = aggregate_full_fits(a)
@@ -76,7 +87,8 @@ def main(*, full_native=False):
                 result = run_pilot_stage(a.root, a.stage, gpu_lease=a.gpu_lease, threads=a.threads)
     except Exception as error:
         root = a.root.resolve()
-        if root.is_relative_to(PROJ_ROOT / "outputs") and (root / "pilot_input.json").is_file():
+        if (not (full_native and a.sparse_trial_recipe) and root.is_relative_to(PROJ_ROOT / "outputs")
+                and (root / "pilot_input.json").is_file()):
             progress_path = root / "pilot_progress.json"
             progress = read_json(progress_path) if progress_path.exists() else dict(
                 review_only=True, training_published=False

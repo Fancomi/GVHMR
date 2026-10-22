@@ -232,18 +232,60 @@ proves that a different output root keeps running. No scheduled task is used.
 `tools/run_badminton_full_sequence.py` continues teachers, native poses, reviewed
 identity, audited fit import, bounded fitting, CPU aggregation/native verification
 and the full viewer serially. It emits durable review events and cannot invent a
-reviewed identity decision. `live_progress.json` derives the current B02 statistics
-from the frozen 45-camera-window B01 baseline; old 17-window/1,499-second values
-remain historical, never current-batch throughput. New batch initialization now
-archives those fields under `previous_attempts`. There are 132 passing focused checks.
+reviewed identity decision. `live_progress.json` selects the latest teacher batch
+and its preceding immutable release snapshot: B03 reports baseline 79 plus its
+own nine new camera contexts. Historical timing stays under `previous_attempts`.
+A replacement CPU coordinator waits for the existing GPU batch's actual release
+before dispatching any following stage; it does not restart the CUDA tree.
 
 At the user's new paired-RGB acceleration request, the CPU sequence was explicitly
 held and B02 yielded after its current worker: 79/88 contexts, with 34 new in
 2,687.424143 s; actual CUDA release was `2026-10-22T06:26:36.187496+00:00`.
 The original local lease was retained before shortening its deadline; the active
 continuous grant is unchanged. `execution_hold.json` records the separate
-10 Hz frontend trial. The existing 30 Hz temporal contract is not relaxed, and
-no sparse policy has yet been adopted for the remaining full run.
+10 Hz frontend trial. The default native 30 Hz contract remains unchanged.
+
+The bounded trial subsequently passed three dual-camera windows, including a
+native RGB confirmed jump, and a 50-scan/two-person joint-LiDAR fitting case.
+The controlled first window used identical 40-pixel ROI margins in both arms:
+122.876 to 70.479 seconds, 1.743x. Two production-20-pixel windows reused exact
+historical baselines; their 3.10x/2.06x ratios are not controlled cold A/B estimates.
+The same 100 actual person/scan cells fit and passed QA in both backend arms.
+Visible-point surface mean was 24.408 to 24.642 mm; all 100 passed the existing
+bilateral detection rule. Original point-member and pelvis errors were zero;
+rebuilt native SMPL maximum error was 9.54e-7 m in both arms. Camera-1 fitting
+support differed in one cell because the old fallback used an adjacent real
+exposure; the common 96-cell projection mean was 7.933 to 7.963 px. These are
+pseudo-label consistency measurements, not independent anatomical ground truth.
+Receipts are under `benchmarks/paired_rgb10/` in the two authorized roots.
+
+The adopted explicit `paired_native_rgb10_latent_v1` input is frozen separately
+as each root's `teacher_sampling_input.json`, binding the original source plan
+and real backend acceptance. `paired_sampling.py` selects actual native record,
+PTS and common-clock rows from LiDAR pairs; integer first-core scan-midpoint
+subtraction precedes float seconds. The source MP4 remains 59.94 fps; paired
+RGB record steps are five/six, never an index divided by two. No raw recording,
+camera, original scan selection or global GPU deadline changes.
+
+`run_teacher` routes this explicit policy through the same initial/repaired
+teacher entry. Tracking gaps/minimum context retain their original durations.
+Real crops feed the heavy image models at about 10 Hz; role-marked near-30 Hz
+inferred states interpolate conditioning features, with virtual 2D confidence
+zero. Only actual RGB anchors remain observations. `sample_track` queries those
+inferred model states while requiring real RGB evidence within 8,500 us and
+preserving its original record/PTS/keypoints; the ordinary 36 ms bracket rule
+is unchanged. Identity mapping and exact pixel-cache reuse share that duration
+policy, so repaired contexts cannot silently rerun dense preprocessing.
+
+The continuous sequence resumed at 07:29:15 UTC with `--paired-native-rgb`.
+1019 B03 finished all nine remaining camera contexts in 415.993 s, reaching
+88/88 and releasing actual CUDA at 07:36:16.462899 UTC. Its original 79 dense
+contexts remain byte-identical. Native pose, real identity review and fitting
+follow; 1020 joint has 247 segments/25,865 scans and its own bound sampling
+input. The focused CPU suite has 159 passing checks. Whole-run delivery is
+estimated at 15–23 hours from 07:30 UTC, including CPU review/acceptance with
+some overlap, within the unchanged 2026-10-23 11:41:39.650687 UTC hard deadline.
+No new formal training release has been published.
 
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.

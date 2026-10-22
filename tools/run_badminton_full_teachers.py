@@ -59,6 +59,11 @@ def run_full_teachers(args):
     source, repair = root / "source", root / "repair"
     input_path = repair / "new_source_input.json"
     plan, input_sha = read_json(input_path), file_sha(input_path)
+    sampling_input = getattr(args, "teacher_sampling_input", None)
+    if sampling_input is not None:
+        from hmr4d.lidar_mocap.paired_sampling import validate_sampling_input
+        validate_sampling_input(repair, sampling_input)
+        sampling_proof = binding(sampling_input)
     state_path, state = load_isolated_stage_progress(root, getattr(args, "progress_output", None),
         getattr(args, "resume_progress", None), default_name="full_teacher_progress.json",
         release_pattern="teacher_batch_*_release_receipt.json", binding_key="full_teacher_progress")
@@ -82,6 +87,9 @@ def run_full_teachers(args):
                  gpu_lease=str(args.gpu_lease.resolve()), started_batch_utc=datetime.now(timezone.utc).isoformat(),
                  windows_total=len(plan["jobs"]), review_only=True, training_published=False,
                  safe_to_release_gpu=False)
+    if sampling_input is not None:
+        state["teacher_sampling_input"] = sampling_proof
+        state["existing_completed_camera_artifacts_preserved"] = True
     state["completed_camera_windows"] = sum(len(v) for v in state["windows"].values())
     progress = read_json(root / "pilot_progress.json")
     for key in ("failed_stage", "failed_command", "error_type", "error", "failed_utc", "exit_code"):
@@ -114,6 +122,9 @@ def run_full_teachers(args):
             command = [sys.executable, "-u", str(PROJ_ROOT / "tools/prepare_badminton_new_source_repair.py"),
                 "--source-root", str(source), "--root", str(repair), "--stage", "teacher",
                 "--source", sid, "--window=" + name, "--camera", camera, "--threads", str(args.threads)]
+            if sampling_input is not None:
+                check_binding(sampling_proof)
+                command += ["--teacher-sampling-input", str(sampling_input.resolve())]
             log_path = logs / f"{sid}_{name}_{camera}.log"
             execution = run_isolated_native_worker(command, cwd=PROJ_ROOT, log_path=log_path,
                 state=state, state_path=state_path, active=dict(source_id=sid, window=name, camera=camera))
@@ -161,6 +172,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--gpu-lease", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--teacher-sampling-input", type=Path)
     parser.add_argument("--safety-seconds", type=int, default=300)
     parser.add_argument("--progress-output", type=Path)
     parser.add_argument("--resume-progress", type=Path)
