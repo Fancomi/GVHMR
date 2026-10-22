@@ -75,6 +75,17 @@ def test_full_native_scope_allows_long_run_without_relaxing_short_pilot(tmp_path
     value["schema"] = "badminton-review-pilot-v1"
     with pytest.raises(ValueError, match="180"):
         validate_pilot_spec(value)
+
+
+@pytest.mark.parametrize("name", ["source_indexes", "excluded_source_indexes"])
+@pytest.mark.parametrize("entry", [dict(path="actual.json", sha256="b" * 64), dict(file="", sha256="b" * 64)])
+def test_full_native_source_indexes_use_the_existing_bound_file_contract(tmp_path, name, entry):
+    value = full_spec(tmp_path)
+    value[name] = dict(actual=entry)
+    previous = deepcopy(value)
+    with pytest.raises(ValueError, match="requires a file/sha256 binding relative to data_root"):
+        validate_full_native_spec(value)
+    assert value == previous
     with pytest.raises(ValueError):
         validate_full_native_spec(value)
 

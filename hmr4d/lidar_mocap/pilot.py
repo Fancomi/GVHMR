@@ -35,6 +35,18 @@ def validate_pilot_spec(spec):
 
 def validate_full_native_spec(spec):
     """Full execution uses its own frozen scope; the short pilot stays bounded."""
+    for name in ("source_indexes", "excluded_source_indexes"):
+        entries = spec.get(name, {})
+        if not isinstance(entries, dict):
+            raise ValueError(f"Full native {name} must be a source-to-binding mapping")
+        for sid, entry in entries.items():
+            if (not isinstance(entry, dict) or not isinstance(entry.get("file"), str)
+                    or not entry["file"].strip() or not isinstance(entry.get("sha256"), str)
+                    or not entry["sha256"].strip()):
+                raise ValueError(
+                    f"Full native {name}[{sid}] requires a file/sha256 binding relative to data_root; "
+                    "path/sha256 receipt bindings cannot be used as source indexes"
+                )
     if (
         spec.get("execution_scope") != "all_effective_native_rallies"
         or not isinstance(spec.get("user_confirmation"), str)

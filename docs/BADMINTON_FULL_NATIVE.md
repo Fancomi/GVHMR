@@ -134,7 +134,10 @@ the lease boundary. GPU release precedes separate CPU-only `--stage aggregate`,
 which also requires completed caches and cannot start new fitting/inference.
 
 1020 CPU-only watchers wait for `handoff/<sid>.full-native-rallies.json`, each
-using `outputs/badminton_1020_full_native_<sid>_v1`. The joint manifest watcher
+source index using the existing `{file, sha256, bytes}` binding with `file`
+relative to `data_root`. `{path, sha256}` is reserved for receipt/evidence
+bindings and is rejected for `source_indexes` / `excluded_source_indexes`.
+Each watcher uses `outputs/badminton_1020_full_native_<sid>_v1`. The joint manifest watcher
 remains active as well. Actual launch references are in
 `outputs/badminton_1020_full_native_v1/source_intake_watchers.json`; per-run
 `intake_watch.json` distinguishes waiting, read-only validation and actual CPU
