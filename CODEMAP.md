@@ -52,6 +52,10 @@ The audit does not import bodies or publish training data.
 `tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately
 approved continuous grant, start the next 1019 teacher batch and enforce the
 fixed overall deadline against only authorized CUDA process trees.
+`tools/run_badminton_guarded_leg.py` separately validates the issued leg-specific
+grant, frozen baseline and tested implementation. `guarded_leg_gpu.py` validates
+the exact contracts; `guarded_leg_execution.py` and `windows_gpu_job.py` own the
+suspended Windows children, independent watchdog and real deadline/exit proof.
 Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
 `paired_sampling.py` freezes the adopted real-paired-RGB input; the shared
 `run_teacher` entry routes its explicit policy through `sparse_teacher.py` for

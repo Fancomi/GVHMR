@@ -471,6 +471,52 @@ algorithm change was made. The root's current CPU allocation is recorded in a
 separate request addendum: pure producer CPU tools E26/27, BelowNormal, 1–2
 threads; CUDA proposal/application and their inherited scheduling remain 0/1.
 
+The independent executor is `tools/run_badminton_guarded_leg.py`, backed by
+`guarded_leg_gpu.py`, `guarded_leg_execution.py` and `windows_gpu_job.py`.
+It validates the bound local grant/readiness schemas offline, the unchanged
+request/runtime contract and CPU allocation, the complete parent/formal
+native/identity/body/import evidence and a tested implementation manifest.
+No inspection or preflight creates a lease or launches CUDA. Actual execution
+requires the coordinating root's new grant; the old two-root grant is unchanged.
+
+Invoke the future driver with absolute paths in this exact argument order:
+
+```powershell
+& D:/PROJECT/LABEL/GVHMR/.venv/Scripts/python.exe -u `
+  D:/PROJECT/LABEL/GVHMR/tools/run_badminton_guarded_leg.py --execute `
+  --request D:/PROJECT/LABEL/GVHMR/outputs/badminton_1019_1020_formal_v1/gpu_guarded_leg/guarded_leg_gpu_request.json `
+  --grant <absolute-path-to-the-actual-new-issued-grant>
+```
+
+The controller and independent watchdog remain on E26/27, BelowNormal. A
+private Windows Job Object owns every phase and inherited descendant. Launchers
+start suspended; their original kernel handles assign job ownership and affinity
+before resume. CUDA propose/apply use 0/1; CPU selection uses E26/27 and CUDA=-1.
+The watchdog must be live before the first phase. Both controllers enforce the
+earlier grant/local-lease deadline with a ten-second shutdown margin, including
+an independent timer thread while file checks block. Missing/revoked bindings,
+foreign GPU ownership, reused PIDs or vanished controllers stop only the owned
+job. Last-handle close also terminates the owned descendants. Existing outputs,
+leases and execution locks prohibit silent retries. Only actual empty-job proof
+permits release; post-leg native/QA/pixel/Chrome/archive checks remain separate.
+
+The future complete baseline wrapper uses schema
+`gvhmr-formal-preleg-baseline-v1`: `state=complete`, exact `source_input`
+binding, separate immutable `body_receipt` and `pose_receipt`, and
+`windows[key].report_snapshot` bindings. Store all pre-leg native/absolute-QA,
+body/pose receipt and fit-report snapshots under the readiness file's baseline
+directory; retain byte-identical report copies. The numerical importer uses
+`badminton-formal-numeric-import-v1`, exact source/calibration, complete window
+scope, `numerical_artifacts_byte_identical=true`, `qa_values_unchanged=true`,
+and each window's `original_report` / `current_report` bindings. Current reports
+must equal the baseline snapshots; original reports must match the real parent's
+native verification. The executor rechecks exact ptv3/fit artifact sets and hashes.
+The predecessor exit bundle uses
+`gvhmr-guarded-leg-predecessor-exit-bundle-v1`, `state=complete`, unchanged
+`predecessor_grant`, actual `process_identities` and `release_receipts` bindings.
+Every registered predecessor must really be gone. These interfaces describe
+future genuine completion; implementation tests do not fill those pending roles.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
