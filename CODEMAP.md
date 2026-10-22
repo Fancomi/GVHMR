@@ -45,6 +45,10 @@ native five-second previews; `tools/verify_badminton_pilot.py` checks actual Chr
 `tools/run_badminton_full_fits.py` separates bounded GPU fitting from completed-only
 CPU aggregation. `tools/watch_badminton_full_native.py` waits for real intake
 without launching inference.
+`tools/audit_badminton_formal_inputs.py` / `formal_reuse.py` compare a separate
+admitted source registry against frozen review inputs, requiring identical
+geometry/member/time contracts and actual source applicability certificates.
+The audit does not import bodies or publish training data.
 `tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately
 approved continuous grant, start the next 1019 teacher batch and enforce the
 fixed overall deadline against only authorized CUDA process trees.

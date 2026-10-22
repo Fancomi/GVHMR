@@ -399,6 +399,16 @@ seal and sequences. The final receiver rejects assembly-input contracts.
 examples and their actual field/status meanings; those examples do not admit
 the new data. Drafts and missing/mismatched new counts/publications are rejected.
 
+`tools/audit_badminton_formal_inputs.py` audits a separately prepared formal
+source root against explicit `--review-root` inputs and the frozen role draft.
+It requires identical physical camera/court/ground/ROI/timing fields, native
+session maps/clocks, original full source frames/member declarations and crop
+lineage. The formal loader verifies real applicability certificates and their
+accepted five-file bundle. Relocation is enabled only by explicit
+`--data-relocations` and `--data-relocations-sha256`; default readers and strict
+fit reuse remain unchanged. Its input-equivalence receipt grants no fit import,
+body completion, repeated full RGB pixel check or training publication.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
