@@ -372,11 +372,19 @@ Changing source-scope/admission metadata requires an explicit derived-fit
 lineage adapter: existing strict review fit-reuse validation is retained.
 Final body completion, bilateral/native/pixel checks, version-bound Chrome
 acceptance, exact expansion, archive sealing and independent consumer CPU
-admission remain separate gates. The current expansion/browser wrappers also
-need explicit support for an already-expanded multi-calibration base and the
-new seven-source scope; old 1015-specific assertions are not satisfied by
-relabeling a review receipt. Pending-runtime ranges in the readiness receipt
-are planning estimates, not measured formal-release completion.
+admission remain separate gates. The expansion loader now accepts a complete
+already-expanded base only with the consumer's explicit `old_archive` SHA,
+matching archived roles/payloads/source registry and verified per-source
+calibration snapshots. The actual 142,567-row base passes this structural and
+calibration preflight (13 sources, two calibrations). Actual assembly still
+hashes and checks every role payload/row and retains its exact tensor/metadata
+prefix. Draft or unsealed joint contracts cannot assemble the expansion.
+The expanded-dataset/pixel CPU suite passes 17 checks, including mixed old
+calibrations, unchanged prefixes, archive escapes, wrong payload hashes and
+substituted calibrations. The browser wrapper still needs the new seven-source
+scope; old 1015-specific assertions are not satisfied by relabeling a review
+receipt. Pending-runtime ranges in the readiness receipt are planning
+estimates, not measured formal-release completion.
 
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.

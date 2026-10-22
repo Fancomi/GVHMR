@@ -60,6 +60,10 @@ def source_roles(manifest):
 
 
 def validate_union_contract(old, new, contract):
+    schema = contract.get("schema", "")
+    if "draft" in schema or (schema == "expanded-1019-1020-consumer-contract/v1" and (
+            contract.get("status") != "complete" or contract.get("sealed") is not True)):
+        raise ValueError("An unsealed consumer draft cannot assemble a formal expansion")
     for manifest in (old, new):
         if manifest.get("status") != "complete" or any(manifest.get(k) != v for k, v in CONTRACT.items()):
             raise ValueError("Only complete publications with the agreed body/detection contract can be merged")
@@ -182,6 +186,77 @@ def merge_role(entries, destination, source_digests):
     return entry, rows
 
 
+def _archive_member(root, entry):
+    relative = Path(entry["path"])
+    path = (root / relative).resolve()
+    if relative.is_absolute() or not path.is_relative_to(root):
+        raise ValueError("Canonical base artifact escapes its archive")
+    if path.stat().st_size != entry["bytes"]:
+        raise ValueError("Canonical base artifact size changed")
+    return path
+
+
+def verify_expanded_base(manifest, contract):
+    """Reuse a sealed multi-calibration base; role payload hashes are checked by merge_role."""
+    archive_binding = contract.get("bindings", {}).get("old_archive")
+    if not archive_binding:
+        raise ValueError("An expanded base requires the consumer's explicit old archive binding")
+    check_binding(archive_binding)
+    archive_path = Path(archive_binding["path"]).resolve()
+    root = archive_path.parent
+    archive = read_json(archive_path)
+    if (archive.get("schema") != "lidar2smpl-release-v1" or archive.get("status") != "complete"
+            or manifest.get("training_published") is not True
+            or Path(manifest.get("canonical_archive", "")).resolve() != root
+            or archive.get("total_person_frames") != manifest["accepted"]
+            or manifest["accepted"] != contract["old_accepted"]):
+        raise ValueError("Expanded base is not the contracted complete canonical archive")
+    registry = manifest.get("source_registry", {})
+    if not registry or registry != archive.get("source_registry") or set(registry) != set(manifest["exports"]):
+        raise ValueError("Expanded base source registry differs from its canonical archive")
+    roles = source_roles(manifest)
+    for role in ROLES:
+        entry, original = manifest["suggested_session_splits"][role], archive["splits"][role]
+        if (entry["accepted"] != original["frames"] or entry["accepted"] != contract["old_split_counts"][role]
+                or entry["sessions"] != original["declared_source_sessions"]
+                or entry["sessions"] != contract["old_source_splits"][role]):
+            raise ValueError("Expanded base role membership differs from its canonical archive")
+        for field, hash_field, member in (("path", "sha256", "tensor"),
+                                           ("metadata", "metadata_sha256", "metadata")):
+            path = _archive_member(root, original[member])
+            if Path(entry[field]).resolve() != path or entry[hash_field] != original[member]["sha256"]:
+                raise ValueError("Expanded base role payload differs from its canonical archive")
+    dependencies, calibrations = [archive_binding], {}
+    for digest, reference in archive["source_calibrations"].items():
+        path = _archive_member(root, reference)
+        item = dict(path=str(path), sha256=reference["sha256"])
+        check_binding(item)
+        calibration = CalibrationSnapshot.load(path)
+        if calibration.data["snapshot_digest"] != digest or calibration.data.get("review_only"):
+            raise ValueError("Archived source calibration has a different digest or review-only scope")
+        dependencies.append(item)
+        calibrations[digest] = reference["sha256"]
+    for sid, entry in registry.items():
+        if (entry["role"] != roles[sid] or entry["accepted"] != manifest["exports"][sid]["accepted"]
+                or calibrations.get(entry["calibration_digest"]) != entry["calibration_snapshot_sha256"]):
+            raise ValueError("Expanded source count, role or calibration differs from its archive")
+        item = dict(path=entry["calibration_snapshot"], sha256=entry["calibration_snapshot_sha256"])
+        if item not in dependencies:
+            check_binding(item)
+            dependencies.append(item)
+    publications = manifest.get("source_publications", {})
+    if not publications:
+        raise ValueError("Expanded base lacks its original source-publication lineage")
+    for item in publications.values():
+        check_binding(item)
+        dependencies.append(item)
+    return registry, dict(
+        accepted=manifest["accepted"], canonical_archive=archive_binding,
+        source_calibrations=list(calibrations), source_registry_matches_archive=True,
+        role_payload_checks="Full tensor/metadata SHA and row checks performed by merge_role before assembly completes",
+    ), dependencies
+
+
 def assemble(old_path, new_path, contract_path, output_root):
     old_path, new_path, contract_path, output = map(Path, (old_path, new_path, contract_path, output_root))
     dependencies = [binding(path) for path in (old_path, new_path, contract_path)]
@@ -198,6 +273,17 @@ def assemble(old_path, new_path, contract_path, output_root):
         raise ValueError("Assembly requires an empty destination; completed and provisional runs stay immutable")
     source_registry, verification = {}, {}
     for tag, manifest, path in (("old", old, old_path), ("new", new, new_path)):
+        if tag == "old" and manifest.get("schema") in (
+                "badminton-expanded-dataset-v1", "badminton-expanded-training-v1"):
+            registry, verification[tag], base_dependencies = verify_expanded_base(manifest, contract)
+            base_run = path.resolve().parent
+            if base_run.name == "datasets":
+                base_run = base_run.parent
+            if output.resolve().is_relative_to(base_run) or base_run.is_relative_to(output.resolve()):
+                raise ValueError("Expansion output must be separate from the complete canonical base")
+            source_registry.update(registry)
+            dependencies.extend(base_dependencies)
+            continue
         source_path = Path(manifest["source_dataset_manifest"])
         if file_sha(source_path) != manifest["source_dataset_manifest_sha256"]:
             raise ValueError("Body source manifest changed")
