@@ -816,6 +816,38 @@ for source-only intakes. GPU stages require bounded per-window execution and no
 concurrent heavy jobs.
 
 
+### 1022 accepted-camera native review intake
+
+`prepare_badminton_admitted_native.py` consumes the independently completed
+strict accepted camera freeze and derives a separate review-only calibration
+snapshot. Its parent stays immutable. The derived snapshot copies every geometry,
+session, clock and artifact byte, changes only the five purpose fields, and binds
+the parent, complete native manifest, review authorization and actual freeze proof.
+The existing full-native/native-rally validators and source/body-plan builders
+remain responsible for all original windows; no artificial train/val/test split
+is introduced for the single 1022 source.
+
+The canonical-input-v2 bundle uses the existing compact-pair-map summary contract
+in `sources.frame_maps`. The source index and camera certificate retain the
+original enriched frame-map reference and packet-clock evidence. Original
+`crop-admit --accepted-calibration` creates the independently versioned index;
+candidate and accepted bundle hashes remain separate. The published 1022 camera
+result and both visual review decisions are unchanged.
+
+For the actual 26-rally/3015-scan handoff, inspection is read only:
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = '-1'
+python -B tools/prepare_badminton_admitted_native.py --manifest D:/PROJECT/LIDAR/datas/badminton/collections/gvhmr-1022-full-20261023/handoff/full-native-admitted-review-v3.json --root outputs/badminton_1022_full_native_admitted_v3 --accepted-parent outputs/badminton_1022_full_native_admitted_v3/accepted-base/calibration_snapshot.json --accepted-parent-sha256 3a7a65aed100ec327a03c1fbf614f39fc8e2868a45a7a220e04567de1e610e5e --accepted-freeze-proof D:/PROJECT/LIDAR/datas/badminton/calibration/20261022/canonical-input-v2/evidence/strict-freeze-proof-permanent-v3.json --accepted-freeze-proof-sha256 b834545e923394df51f02cb65503401bc9dae8dcbfb3c3a8e63eaa45e2bb2633 --threads 1
+```
+
+Adding `--prepare` creates the new review snapshot and invokes only the original
+CPU source and full-body planning stages. Source preparation uses the assigned
+BelowNormal CPU resources; the original body-plan stage forces affinity `[0,1]`
+and one numerical thread. Teacher, pose, fit and GPU execution require their
+separate stage authority. Camera acceptance, body QA and training publication
+remain distinct; this intake publishes no labels.
+
 ### Fresh-source native v2 body production
 
 After the independent rally prepare above, keep the same fixed cameras and run

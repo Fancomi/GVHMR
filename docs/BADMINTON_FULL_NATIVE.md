@@ -1,5 +1,64 @@
 # Full native rally fitting
 
+The optional exact-stage owner is `tools/run_badminton_owned_stage.py`. It wraps
+one existing `run_badminton_full_native.py --stage teacher|poses|fit` invocation
+in the unchanged Windows Job implementation. It does not enter the continuous
+sequence or dispatch later stages. Both the CPU controller and independent
+watchdog use E26/27, BelowNormal and CUDA=-1. The single suspended stage launcher
+receives P0/1, BelowNormal, GPU0 and one math thread before resume; every inherited
+descendant stays in its private Job. Teacher always receives the explicitly
+frozen `--teacher-sampling-input`; this interface cannot omit it for dense input.
+
+Its immutable descriptor uses `schema=gvhmr-owned-full-stage-descriptor-v1` and
+exactly these additional fields: absolute `root`, `stage`, bindings `pilot_input`,
+`manifest`, `source_input`, `teacher_sampling_input` (required for teacher, null
+otherwise), absolute future `lease_path`, `progress_output`, `resume_progress`,
+`absolute_hard_deadline_utc` and `code`. Obtain `code` from
+`owned_gpu_stage.implementation_files()` with actual path/SHA256 bindings.
+`pilot_input` is the prepared root's `pilot_input.json`; `source_input` is its
+`repair/new_source_input.json`; the manifest must equal the pilot's actual binding.
+`lease_path` is a distinct ordinary JSON name in that root's `gpu_leases/`.
+Teacher/fit progress uses a new `full_teacher_progress.<batch>.json` or
+`full_fit_progress.<batch>.json` in the root; resume is null or a separate bound
+checkpoint there. Poses retains its original progress interface, so both fields
+are null. The descriptor supplies no arbitrary executable, shell command or flags.
+
+A separately issued local lease uses
+`schema=gvhmr-owned-full-stage-local-lease-v1`, `status=held`, `owner=GVHMR`, exact
+`root`, `stage`, `manifest_sha256`, `owned_stage_descriptor` path/SHA256,
+`approved_start_utc`, `approved_deadline_utc`, `cuda_visible_devices="0"`,
+`max_concurrent_cuda_trees=1`, `training_published=false`, `desktop_allowance`
+path/SHA256 and `desktop_allowance_fixture_only=false`. Its actual UTC window must
+contain now and end within 120 minutes of its start and the descriptor's hard
+deadline. The fresh existing desktop policy binds the descriptor as `request`;
+capture it within fifteen minutes of admission and make its `valid_until_utc`
+cover the complete lease. Run-time checks retain that same bound policy through
+its stated validity. No continuous grant or unrelated native-exit list is used.
+
+Inspect without creating a Job, then use the separately reviewed local lease:
+
+```powershell
+& <python.exe> -u <absolute-run_badminton_owned_stage.py> --inspect `
+  --descriptor <absolute-descriptor.json> --descriptor-sha256 <actual-SHA256>
+& <python.exe> -u <absolute-run_badminton_owned_stage.py> --execute `
+  --descriptor <absolute-descriptor.json> --descriptor-sha256 <actual-SHA256> `
+  --lease <absolute-new-local-lease.json> --lease-sha256 <actual-SHA256>
+```
+
+The independently opened watchdog must be actually ready before the launcher
+resumes. Both processes retain immutable authority/code/source checks and kernel
+deadline timers with a ten-second shutdown margin. Controller loss, watchdog
+loss, revoked bindings, foreign GPU ownership, launcher error or expiration
+terminates only this Job and verifies it empty. Each local lease has a persistent
+single-attempt claim. Original completed checkpoints and the held authority file
+remain unchanged. A crash can leave `owned_gpu_stages/execution.lock.json`; root
+must inspect the actual Job/watchdog failure evidence before clearing that lock
+and issuing separate authority. Successful `release_receipt.json` attests CLI
+exit zero plus real owned Job exit; a teacher/fit CLI may have yielded at its
+existing safe boundary. Check its genuine stage progress before declaring the
+whole stage complete. Failure receipts never claim numerical completion or new
+training publication. The wrapper creates no descriptor, grant or local lease.
+
 The full-run entry is `tools/run_badminton_full_native.py`. It shares the existing
 native teacher, identity, v2 fitting, verification and viewer components with the
 short pilot, but requires a separate `badminton-native-rally-fit-v1` manifest.
