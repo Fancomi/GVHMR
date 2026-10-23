@@ -867,9 +867,19 @@ Before any leg output exists, `finalize_badminton_formal_cpu.py --stage prepare-
 --root <formal> --baseline <actual baseline.json> --baseline-sha256 <actual SHA>`
 installs the byte-identical frozen absolute QA as `repair/evaluation/v2_before_leg.json`.
 It refuses to reconstruct before-QA after refinement has started. After a
-separately authorized guarded execution has really exited, use the same entry
-with `--stage post-leg --leg-execution <actual attempt/completion.json>
---leg-execution-sha256 <actual SHA> --threads 1`. Historical request/grant,
+separately authorized guarded execution has really exited, distinct proposal,
+selection and apply producer fingerprints use the source-bound compatibility entry:
+`python -B tools/finalize_badminton_formal_cpu_compat.py --root <formal>
+--baseline <actual baseline.json> --baseline-sha256 <actual baseline SHA>
+--leg-execution <actual attempt/completion.json> --leg-execution-sha256 <actual execution SHA>
+--compatibility-implementation <actual source-bound implementation.json>
+--compatibility-implementation-sha256 <actual implementation SHA> --threads 1`.
+The implementation binds the exact tested compatibility source and test evidence;
+it cannot be replaced by a flag or an arbitrary successful report. Adding
+`--metadata-only` checks only the actual typed producer metadata: it performs no
+native/body QA and cannot serve as the postleg completion or training admission.
+The original `finalize_badminton_formal_cpu.py --stage post-leg` remains available
+for its unchanged legacy fingerprint contract. Historical request/grant,
 baseline, nonce, phase commands/outputs and actual private-Job/GPU exit must
 match; expiration of the historical grant does not prevent this CPU check or
 authorize another CUDA launch. The adapter runs only the existing full native
@@ -878,6 +888,84 @@ QA comparison against the genuine before snapshot, preserving person-frame
 membership. Its `repair/evaluation/formal_postleg_cpu_receipt.json` explicitly
 leaves bilateral/native-pixel/Chrome/sequence/archive and consumer admission
 pending. It never calls the older automatic CUDA completion path.
+
+### Explicit incremental formal release policy v2
+
+An independent single-source review run can prepare a separate formal increment
+after the preceding complete archive and its actual final consumer audit exist.
+Use `python -B tools/prepare_badminton_formal_increment.py --release-policy
+<frozen policy.json> --release-policy-sha256 <actual SHA> --root <fresh formal root>
+--threads 1`. The closed `badminton-incremental-release-policy-v2` binds a root-reviewed
+scope and five actual `parent_release` bindings: `archive_manifest`,
+`dataset_manifest`, `training_manifest`, `final_consumer_contract` and
+`final_consumer_audit`. The parent archive must be complete and its final contract
+sealed. The audit must have status `final_cpu_validation_passed_no_training_started`,
+`validation_stage=final` and the exact final-contract path/SHA. That contract's
+three `final_delivery` bindings must equal the policy's archive/dataset/training
+bindings, with the actual seal and archive verification checked in turn. Inherit
+`provenance/model_bridge.json` from that real archive; do not create a substitute
+historical runtime receipt. The policy also binds the original accepted
+camera/source review lineage. It never binds a future
+formal registry or guessed admitted counts, avoiding a creation dependency cycle.
+The immutable native28/guard8 sources and the original review run remain unchanged.
+
+For the requested 1022 increment the explicit whole-source roles are
+`train=[20261022_161632], val=[], test=[]` and only the new train partition must
+be nonempty. The complete old base and final union retain all three nonempty
+roles. The adapter verifies the original accepted/review snapshot derivation,
+loads the actual admitted source with its original strict certificate checker,
+retains every native window/settings/scan address, and invokes only the original
+CPU body-plan preparation. Its metadata receipt leaves body import, native/QA,
+guarded execution, complete bilateral observations and every publication gate pending.
+
+Actual input equivalence and numeric import then permit one policy-bound completed
+review parent, preserving all original teacher, numerical, identity and membership
+checks. The old two-parent/three-new-nonempty-role behavior remains the default.
+The v2 assembly entry additionally requires `--release-policy <same file>
+--release-policy-sha256 <same SHA>` and a sealed
+`expanded-source-increment-assembly-input/v2`. Its actual source registry,
+source/body input, calibration, postleg/bilateral completion and admitted counts
+must agree with that policy and the real new canonical publication. Every old
+tensor value and raw metadata byte stays a prefix, with old registry lineage
+retained except for the derived `generation=old` classification. A role with zero
+new rows receives independent byte copies of its parent tensor and metadata;
+both complete SHA values must remain identical to the parent. Re-serializing an
+equal tensor does not satisfy this contract. The assembly remains provisional
+and binds that exact policy explicitly.
+
+The explicit contract `canonical_mode` selects `reviewed_cuts` or
+`reviewed_no_changes`. The cut route keeps the original reviewed-cut publication
+and requires its top-level `release_policy` to match the explicit pair. The
+no-change route requires the closed v2 publication and
+`badminton-canonical-no-change-verification-v2` proof, verified by
+`verify_no_change_publication` with that same policy path/SHA. Its root review
+must cover every flag in the genuine full-body continuity audit using native
+and both-camera evidence; zero review cases are valid only when the original
+audit has no flags. The proof binds the actual bilateral publication and source
+completion, preserves the original full audit's `body_manifest`, and checks
+unchanged identity/numerical values for the exact admitted bilateral subset.
+`full_accepted` and bilateral `accepted` remain distinct counts. A mode string
+or reviewer flag alone cannot admit a publication.
+
+After those real prerequisites exist, use
+`python -B tools/publish_badminton_canonical_no_change.py --source-manifest
+<formal>/repair_paired/datasets/dataset_manifest.json --reviewed-continuity
+<actual root-reviewed no-change.json> --output-root
+<formal>/repair/canonical_no_change_v2 --release-policy <same policy.json>
+--release-policy-sha256 <same actual SHA>` for a genuinely unchanged result.
+The output stays inside that repair root and references unchanged payloads.
+Assembly, fresh-playback and seal recheck the typed proof rather than treating
+publication as final visual or archive acceptance.
+
+Consumer v2 selection uses the same explicit policy path/SHA. A successful previous
+final audit is checked through its exact final contract and sealed archive, without
+inventing the historical runtime receipt. Full-union train/val sequence preparation
+retains the unchanged continuous twelve-frame algorithm; retained old val supplies
+real validation windows. Final pixel/browser/continuity, independent archive seal,
+consumer validation and any later training authorization remain separate actions.
+For the 1022 increment, the preceding seven-source release must first have its
+real seal and final consumer audit; passing synthetic CPU tests creates none of
+these production policies, publications or acceptance receipts.
 
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.

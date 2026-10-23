@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -42,7 +43,158 @@ def future_binding(path, payload):
     return dict(path=str(Path(path).resolve()), sha256=hashlib.sha256(payload).hexdigest())
 
 
-def validate_acceptance(assembly_path, browser_path, continuity_path, pixels_path):
+def _release_context(assembly, *, release_policy=None, release_policy_sha256=None):
+    """Resolve only an explicitly selected v2 policy; legacy keeps its own route."""
+    if (release_policy is None) != (release_policy_sha256 is None):
+        raise ValueError("Release policy path and SHA256 must be supplied together")
+    contract = None
+    if assembly.get("consumer_contract"):
+        check_binding(assembly["consumer_contract"])
+        contract = read_json(assembly["consumer_contract"]["path"])
+    if not contract or contract.get("schema") != "expanded-source-increment-assembly-input/v2":
+        if release_policy is not None or "release_policy" in assembly:
+            raise ValueError("Legacy sealing cannot override its release policy")
+        return None, contract
+    if release_policy is None:
+        raise ValueError("V2 sealing requires an explicit release policy path and SHA256")
+    from hmr4d.lidar_mocap.incremental_release import load_release_policy, validate_contract
+
+    policy = load_release_policy(release_policy, release_policy_sha256)
+    validate_contract(contract, policy)
+    if (
+        assembly.get("release_policy") != policy.binding
+        or assembly.get("training_published") is not False
+        or assembly["source_publications"]["old"] != policy.parent["bindings"]["dataset_manifest"]
+        or assembly["source_publications"]["new"] != contract["bindings"]["producer_joint_manifest"]
+        or type(assembly.get("old_accepted")) is not int
+        or assembly["old_accepted"] != policy.parent["total"]
+        or type(assembly.get("new_accepted")) is not int
+        or assembly["new_accepted"] != contract["new_final_admitted_counts"]["total"]
+        or type(assembly.get("accepted")) is not int
+        or assembly["accepted"] != assembly["old_accepted"] + assembly["new_accepted"]
+    ):
+        raise ValueError("V2 assembly differs from its explicit policy, parent or current publication")
+    for role in ("train", "val", "test"):
+        entry = assembly["suggested_session_splits"][role]
+        if (
+            type(entry.get("accepted")) is not int
+            or entry["accepted"] != policy.parent["counts"][role] + contract["new_final_admitted_counts"][role]
+            or entry["sessions"] != policy.parent["roles"][role] + policy.roles[role]
+        ):
+            raise ValueError("V2 assembly changes a complete union source role or count")
+    policy.recheck()
+    return policy, contract
+
+
+def _validate_incremental_browser(browser, publication, policy, mode):
+    if (
+        browser.get("schema") != "badminton-fresh-browser-acceptance-v1"
+        or browser.get("release_policy") != policy.binding
+        or browser.get("canonical_mode") != mode
+    ):
+        raise ValueError("V2 browser acceptance uses another explicit policy or canonical mode")
+    check_binding(browser["clip_plan"])
+    check_binding(browser["viewer_manifest"])
+    plan = read_json(browser["clip_plan"]["path"])
+    viewer = read_json(browser["viewer_manifest"]["path"])
+    if (
+        plan.get("schema") != "badminton-fresh-browser-clips-v1"
+        or plan.get("release_policy") != policy.binding
+        or plan.get("canonical_mode") != mode
+        or plan.get("canonical_publication") != publication
+        or plan.get("source_completion") != browser.get("source_completion")
+        or plan.get("frozen_source_coverage") != browser.get("frozen_source_coverage")
+        or not isinstance(plan.get("clips"), list)
+        or len(plan["clips"]) != len(browser["results"])
+    ):
+        raise ValueError("V2 browser plan differs from its actual receipt, source or explicit policy")
+    for planned, result in zip(plan["clips"], browser["results"]):
+        if (
+            not isinstance(planned, dict)
+            or type(planned.get("duration_seconds")) not in (int, float)
+            or planned["duration_seconds"] != 5
+            or type(planned.get("rally_index")) is not int
+            or type(planned.get("begin")) not in (int, float)
+            or not math.isfinite(planned["begin"])
+            or not all(result.get(name) == value for name, value in planned.items())
+        ):
+            raise ValueError("V2 browser result differs from its frozen genuine five-second clip plan")
+        rallies = viewer.get("sources", {}).get(planned.get("source_id"), {}).get("rallies", [])
+        matching = [rally for rally in rallies if rally.get("index") == planned["rally_index"]]
+        if (
+            len(matching) != 1
+            or not matching[0]["begin"] <= planned["begin"]
+            or not planned["begin"] + 5 <= matching[0]["end"]
+            or matching[0]["end"] - matching[0]["begin"] < 5.5
+        ):
+            raise ValueError("V2 browser clip is outside its actual frozen native rally")
+        if not all(
+            type(result.get(name)) in (int, float) and math.isfinite(result[name])
+            for name in ("actual_begin", "actual_end")
+        ):
+            raise ValueError("V2 browser playback requires finite actual source times")
+        samples = result.get("samples")
+        if not isinstance(samples, list) or not samples:
+            raise ValueError("V2 browser playback lacks actual native mesh/projection samples")
+        for sample in samples:
+            if (
+                not isinstance(sample, dict)
+                or type(sample.get("scan")) is not int
+                or type(sample.get("sceneScan")) is not int
+                or sample["scan"] != sample.get("sceneScan")
+                or sample.get("webglError")
+                or not isinstance(sample.get("athleteIds"), list)
+                or type(sample.get("meshCount")) is not int
+                or sample["meshCount"] != len(sample["athleteIds"])
+                or type(sample.get("vertexCount")) is not int
+                or sample["vertexCount"] != sample["meshCount"] * 6890
+                or not isinstance(sample.get("projections"), list)
+                or len(sample["projections"]) != 2
+                or not all(
+                    isinstance(p, dict)
+                    and type(p.get("scan")) is int
+                    and p["scan"] == sample["scan"]
+                    and not p.get("error")
+                    for p in sample["projections"]
+                )
+            ):
+                raise ValueError("V2 browser native cloud, full meshes and both projections are not synchronized")
+        scans = {sample["scan"] for sample in samples}
+        labelled = {sample["scan"] for sample in samples if sample["meshCount"] > 0}
+        if (
+            len(scans) < 20
+            or len(labelled) < 20
+            or type(result.get("unique_committed_scans")) is not int
+            or result["unique_committed_scans"] != len(scans)
+            or type(result.get("labelled_scans")) is not int
+            or result["labelled_scans"] != len(labelled)
+        ):
+            raise ValueError("V2 browser clip lacks twenty actual committed labelled native scans")
+        for name in ("initial_visible_rgb", "final_visible_rgb"):
+            views = result.get(name)
+            if (
+                not isinstance(views, list)
+                or len(views) != 2
+                or not all(isinstance(view, dict) for view in views)
+                or {view.get("camera") for view in views} != {"cam1", "cam2"}
+                or not all(
+                    view.get("visible") is True
+                    and type(view.get("different_rgba_components")) is int
+                    and view["different_rgba_components"] == 0
+                    for view in views
+                )
+            ):
+                raise ValueError("V2 browser endpoints lack both exact PTS-bound visible RGB checks")
+        check_binding(result["screenshot"])
+    if mode == "reviewed_no_changes" and plan.get("canonical_no_change_proof") != browser.get(
+        "canonical_no_change_proof"
+    ):
+        raise ValueError("V2 browser plan names another no-change verification")
+
+
+def validate_acceptance(
+    assembly_path, browser_path, continuity_path, pixels_path, *, release_policy=None, release_policy_sha256=None
+):
     frozen = {
         name: binding(path)
         for name, path in dict(
@@ -63,24 +215,56 @@ def validate_acceptance(assembly_path, browser_path, continuity_path, pixels_pat
         )
     ):
         raise ValueError("Exact original sample retention is not proved")
+    policy, contract = _release_context(
+        assembly, release_policy=release_policy, release_policy_sha256=release_policy_sha256
+    )
     for item in assembly["source_publications"].values():
         check_binding(item)
+    new = read_json(assembly["source_publications"]["new"]["path"])
+    no_changes = policy is not None and contract["canonical_mode"] == "reviewed_no_changes"
+    if new.get("schema") == "badminton-canonical-bilateral-publication-v2" and not no_changes:
+        raise ValueError("A no-change publication requires its explicit reviewed v2 contract mode")
+    if (
+        policy is not None
+        and not no_changes
+        and (
+            contract["canonical_mode"] != "reviewed_cuts"
+            or new.get("schema") != "badminton-canonical-bilateral-publication-v1"
+            or new.get("release_policy") != policy.binding
+        )
+    ):
+        raise ValueError("V2 cut mode requires the actual reviewed cut publication")
     validate_browser_source_acceptance(browser, assembly["source_publications"]["new"])
     if browser.get("canonical_publication") != assembly["source_publications"]["new"]:
         raise ValueError("Browser acceptance uses another canonical publication")
-    if not browser.get("native_boundary_regressions") or not all(
-        c["passed"] for c in browser["native_boundary_regressions"]
-    ):
-        raise ValueError("Native identity boundary browser regressions are missing")
-    if (
-        continuity.get("state") != "complete"
-        or continuity.get("reviewed_continuity_passed") is not True
-        or continuity.get("unresolved_jump_candidates")
-        or continuity.get("mutual_swap_candidates")
-    ):
-        raise ValueError("Post-revision native continuity review remains unresolved")
-    if continuity["body_manifest"] != assembly["source_publications"]["new"]:
-        raise ValueError("Continuity audit uses another canonical publication")
+    if policy is not None:
+        _validate_incremental_browser(
+            browser, assembly["source_publications"]["new"], policy, contract["canonical_mode"]
+        )
+    if no_changes:
+        from hmr4d.lidar_mocap.canonical_no_change import validate_no_change_acceptance
+
+        validate_no_change_acceptance(
+            new,
+            frozen["continuity"],
+            browser,
+            release_policy=release_policy,
+            release_policy_sha256=release_policy_sha256,
+        )
+    else:
+        if not browser.get("native_boundary_regressions") or not all(
+            c["passed"] for c in browser["native_boundary_regressions"]
+        ):
+            raise ValueError("Native identity boundary browser regressions are missing")
+        if (
+            continuity.get("state") != "complete"
+            or continuity.get("reviewed_continuity_passed") is not True
+            or continuity.get("unresolved_jump_candidates")
+            or continuity.get("mutual_swap_candidates")
+        ):
+            raise ValueError("Post-revision native continuity review remains unresolved")
+        if continuity["body_manifest"] != assembly["source_publications"]["new"]:
+            raise ValueError("Continuity audit uses another canonical publication")
     if (
         pixels.get("status") != "complete"
         or pixels.get("all_person_admissions_unchanged") is not True
@@ -135,6 +319,8 @@ def validate_acceptance(assembly_path, browser_path, continuity_path, pixels_pat
         check_binding(browser[name])
     for item in frozen.values():
         check_binding(item)
+    if policy is not None:
+        policy.recheck()
     return frozen, assembly, pixels
 
 
@@ -190,8 +376,54 @@ class Archive:
         return dict(path=str(self.final / ref["path"]), sha256=ref["sha256"])
 
 
+def _archive_release_provenance(archive, contract, policy):
+    if policy is None:
+        parent_receipt = read_json(contract["bindings"]["parent_receipt"]["path"])
+        bridge = parent_receipt["model_bridge"]
+        archive.copy(bridge["path"], "provenance/model_bridge.json", bridge["sha256"])
+        return
+    policy.recheck()
+    for name, item in dict(
+        release_policy=policy.binding,
+        model_bridge=policy.parent["model_bridge"],
+        reviewed_scope=policy.data["reviewed_scope"],
+    ).items():
+        archive.copy(item["path"], "provenance/" + name + ".json", item["sha256"])
+    for name, item in policy.parent["bindings"].items():
+        archive.copy(item["path"], "provenance/parent_release/" + name + ".json", item["sha256"])
+    policy.recheck()
+
+
+def _archive_canonical_evidence(archive, new, continuity, policy, contract):
+    marker = new["canonical_identity_revision"]
+    if policy is None or contract["canonical_mode"] == "reviewed_cuts":
+        review = marker["reviewed_boundaries"]
+        archive.copy(review["path"], "provenance/reviewed_track_boundaries.json", review["sha256"])
+        return
+    proof = read_json(marker["verification"]["path"])
+    for name, item in dict(
+        canonical_no_change_verification=marker["verification"],
+        reviewed_continuity=marker["reviewed_continuity"],
+        full_continuity_audit=proof["continuity_audit"],
+        full_body_manifest=continuity["body_manifest"],
+        native_verification=proof["native_verification"],
+        original_bilateral_publication=proof["source_publication"],
+        source_completion=proof["source_completion"],
+    ).items():
+        archive.copy(item["path"], "provenance/" + name + ".json", item["sha256"])
+
+
 def seal(args):
-    frozen, assembly, pixels = validate_acceptance(args.assembly, args.browser, args.continuity, args.pixels)
+    selected_policy = dict(
+        release_policy=getattr(args, "release_policy", None),
+        release_policy_sha256=getattr(args, "release_policy_sha256", None),
+    )
+    frozen, assembly, pixels = validate_acceptance(
+        args.assembly, args.browser, args.continuity, args.pixels, **selected_policy
+    )
+    policy, contract = _release_context(assembly, **selected_policy)
+    if policy is not None and Path(args.data_root).resolve() != Path(policy.data["canonical_data_root"]).resolve():
+        raise ValueError("V2 archive must use the exact canonical data root from its explicit policy")
     output = Path(args.assembly).resolve().parent
     formal_dataset = output / "datasets/dataset_manifest.json"
     formal_training = output / "training_manifest.json"
@@ -199,6 +431,12 @@ def seal(args):
         raise ValueError("A formal publication already exists; never rewrite it")
     sequence_binding = binding(args.sequence_report)
     sequences = read_json(args.sequence_report)
+    if policy is not None and (
+        sequences.get("release_policy") != policy.binding
+        or sequences.get("assembly") != frozen["assembly"]
+        or sequences.get("frozen_contract") != assembly["consumer_contract"]
+    ):
+        raise ValueError("V2 rollout sequences require this exact assembly input and release policy")
     archive = Archive(args.data_root, args.release_id)
     catalog_path = archive.base / "dataset_catalog.json"
     catalog = read_json(catalog_path)
@@ -246,9 +484,7 @@ def seal(args):
         "provenance/consumer_contract.json",
         assembly["consumer_contract"]["sha256"],
     )
-    parent_receipt = read_json(contract["bindings"]["parent_receipt"]["path"])
-    bridge = parent_receipt["model_bridge"]
-    archive.copy(bridge["path"], "provenance/model_bridge.json", bridge["sha256"])
+    _archive_release_provenance(archive, contract, policy)
     for name, item in frozen.items():
         archive.copy(item["path"], "provenance/" + name + ".json", item["sha256"])
         value = read_json(item["path"])
@@ -257,9 +493,9 @@ def seal(args):
     for name, item in assembly["source_publications"].items():
         archive.copy(item["path"], "provenance/" + name + "_source_publication.json", item["sha256"])
     new = read_json(assembly["source_publications"]["new"]["path"])
-    review = new["canonical_identity_revision"]["reviewed_boundaries"]
-    archive.copy(review["path"], "provenance/reviewed_track_boundaries.json", review["sha256"])
-    native_contract = read_json(args.continuity)["aggregate_native_contract"]
+    continuity = read_json(args.continuity)
+    _archive_canonical_evidence(archive, new, continuity, policy, contract)
+    native_contract = continuity["aggregate_native_contract"]
     archive.copy(native_contract["path"], "provenance/native_aggregate_contract.json", native_contract["sha256"])
     producer = archive.copy(__file__, "provenance/seal_producer.py")
     calibrations = {}
@@ -387,6 +623,13 @@ def seal(args):
         check_binding(item)
     check_binding(sequence_binding)
     check_binding(catalog_frozen)
+    if policy is not None:
+        policy.recheck()
+        check_binding(assembly["consumer_contract"])
+        if contract["canonical_mode"] == "reviewed_no_changes":
+            from hmr4d.lidar_mocap.canonical_no_change import validate_no_change_acceptance
+
+            validate_no_change_acceptance(new, frozen["continuity"], read_json(args.browser), **selected_policy)
     # This is our own new staging tree, resolved inside the explicitly named data root.
     if (
         archive.stage.resolve().parent != archive.parent
@@ -462,7 +705,11 @@ def main():
         help="Canonical release archive root (default: %(default)s)",
     )
     parser.add_argument("--release-id", required=True)
+    parser.add_argument("--release-policy", type=Path, help="Explicit frozen v2 release policy")
+    parser.add_argument("--release-policy-sha256", help="Exact SHA256 of the explicit v2 policy")
     args = parser.parse_args()
+    if (args.release_policy is None) != (args.release_policy_sha256 is None):
+        parser.error("--release-policy and --release-policy-sha256 must be supplied together")
     if not args.assembly.resolve().is_relative_to(PROJ_ROOT / "outputs"):
         parser.error("Select an explicit project assembly output")
     torch.set_num_threads(1)

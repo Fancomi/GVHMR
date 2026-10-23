@@ -22,8 +22,62 @@ from verify_badminton_viewer import visible_rgb_checks
 from badminton_viewer_contracts import check_viewer_coverage, complete_clip_plan
 
 
-def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
+def _canonical_context(root, canonical_path, *, release_policy=None, release_policy_sha256=None):
+    """Check a real canonical view before any browser or boundary planning."""
+    if (release_policy is None) != (release_policy_sha256 is None):
+        raise ValueError("Release policy path and SHA256 must be supplied together")
     root = Path(root).resolve()
+    input_path = root / "new_source_input.json"
+    current = read_json(input_path) if input_path.is_file() else {}
+    policy = None
+    if current.get("release_policy") is not None or release_policy is not None:
+        if release_policy is None:
+            raise ValueError("V2 playback requires an explicit release policy path and SHA256")
+        from hmr4d.lidar_mocap.incremental_release import load_release_policy
+
+        policy = load_release_policy(release_policy, release_policy_sha256)
+        if current.get("release_policy") != policy.binding:
+            raise ValueError("Playback source input differs from its explicit release policy")
+        if canonical_path is None:
+            raise ValueError("V2 playback requires its actual reviewed canonical publication")
+    if canonical_path is None:
+        return None, None, policy, None
+    selected = binding(canonical_path)
+    canonical = read_json(selected["path"])
+    proof = None
+    if canonical.get("schema") == "badminton-canonical-bilateral-publication-v2":
+        if policy is None:
+            raise ValueError("A no-change publication requires the explicit v2 release policy")
+        from hmr4d.lidar_mocap.canonical_no_change import verify_no_change_publication
+
+        proof = verify_no_change_publication(
+            canonical, release_policy=release_policy, release_policy_sha256=release_policy_sha256
+        )
+    elif (
+        canonical.get("schema") != "badminton-canonical-bilateral-publication-v1"
+        or canonical.get("canonical_identity_revision", {}).get("mode") == "reviewed_no_changes"
+    ):
+        raise ValueError("Select the exact reviewed cut or typed no-change canonical publication")
+    if policy is not None:
+        body = binding(root / "final_labels/datasets/dataset_manifest.json")
+        if (
+            canonical.get("release_policy") != policy.binding
+            or canonical.get("source_dataset_manifest") != body["path"]
+            or canonical.get("source_dataset_manifest_sha256") != body["sha256"]
+        ):
+            raise ValueError("V2 playback canonical view uses another current full-body publication")
+        policy.recheck()
+    check_binding(selected)
+    return selected, canonical, policy, proof
+
+
+def verify(
+    root, url, canonical_path=None, output_root=None, *, cdp_url, release_policy=None, release_policy_sha256=None
+):
+    root = Path(root).resolve()
+    selected_policy = dict(release_policy=release_policy, release_policy_sha256=release_policy_sha256)
+    canonical_binding, canonical, policy, no_change_proof = _canonical_context(root, canonical_path, **selected_policy)
+    no_changes = no_change_proof is not None
     output = Path(output_root).resolve() if output_root else root / "browser_acceptance"
     output.mkdir(parents=True, exist_ok=True)
     frozen = binding(root / "new_source_completion_receipt.json")
@@ -45,12 +99,11 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
     served_manifest_path = output / "served_viewer_manifest.json"
     write_json(served_manifest_path, manifest)
     clips = []
-    canonical_binding, boundary_rows, boundary_results = None, {}, []
+    boundary_rows, boundary_results = {}, []
     if canonical_path:
-        canonical_binding = binding(canonical_path)
         if manifest.get("canonical_publication") != canonical_binding:
             raise ValueError("Browser is not serving the selected canonical publication")
-        canonical = read_json(canonical_path)
+    if canonical_path and not no_changes:
         review_binding = canonical["canonical_identity_revision"]["reviewed_boundaries"]
         cuts = checked_review(review_binding["path"])
         review = read_json(review_binding["path"])
@@ -108,13 +161,19 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
         canonical_publication=canonical_binding,
         selection=(
             "Native identity-boundary regressions plus temporally diverse original rallies across every nonempty source"
-            if canonical_path
+            if canonical_path and not no_changes
             else "First and last sufficiently long original rally of each nonempty source"
         ),
         clips=clips,
         declared_empty_sources=manifest["empty_sources"],
         frozen_source_coverage=coverage,
     )
+    if policy is not None:
+        plan.update(
+            release_policy=policy.binding, canonical_mode="reviewed_no_changes" if no_changes else "reviewed_cuts"
+        )
+        if no_changes:
+            plan["canonical_no_change_proof"] = canonical["canonical_identity_revision"]["verification"]
     write_json(output / "clip_plan.json", plan)
     errors, results = [], []
     with sync_playwright() as playwright:
@@ -133,8 +192,7 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
             initial_rgb = visible_rgb_checks(page)
             assert all(r["visible"] and r["different_rgba_components"] == 0 for r in initial_rgb), initial_rgb
             page.locator("#fitView").click()
-            page.evaluate(
-                """()=>{
+            page.evaluate("""()=>{
                 window.freshSamples=[];
                 window.freshSampler=setInterval(()=>{
                     if(frameBusy||!playing||!committedPairedFrame)return;
@@ -145,8 +203,7 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
                         projections:projectionStates.map(p=>({scan:p.scan,error:p.webglError})),
                         athleteIds:lastPairedFrame.athletes.map(a=>a.motion_id||a.id)});
                 },40);
-            }"""
-            )
+            }""")
             page.locator("#loop").uncheck()
             page.locator("#play").click()
             page.wait_for_function("playing && !preparing", timeout=180000)
@@ -226,7 +283,7 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
                 ),
                 flush=True,
             )
-        if canonical_path:
+        if canonical_path and not no_changes:
             for case in review["cases"]:
                 event = case["event"]
                 sid = event["source_id"]
@@ -299,6 +356,19 @@ def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
             "Scans with no admitted body remain explicitly empty; no geometry or labels are interpolated.",
         ],
     )
+    if policy is not None:
+        receipt.update(
+            release_policy=policy.binding, canonical_mode="reviewed_no_changes" if no_changes else "reviewed_cuts"
+        )
+        policy.recheck()
+        for path, sha in source["evidence"].items():
+            check_binding(dict(path=path, sha256=sha))
+        check_binding(canonical_binding)
+        if no_changes:
+            from hmr4d.lidar_mocap.canonical_no_change import validate_no_change_acceptance
+
+            receipt["canonical_no_change_proof"] = canonical["canonical_identity_revision"]["verification"]
+            validate_no_change_acceptance(canonical, no_change_proof["continuity_audit"], receipt, **selected_policy)
     write_json(output / "acceptance.json", receipt)
     return receipt
 
@@ -311,7 +381,11 @@ def main():
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--cdp-url", help=argparse.SUPPRESS)
     parser.add_argument("--browser-session-helper", type=Path, help="Existing dedicated Chrome lifecycle helper")
+    parser.add_argument("--release-policy", type=Path, help="Explicit frozen v2 release policy")
+    parser.add_argument("--release-policy-sha256", help="Exact SHA256 of the explicit v2 policy")
     args = parser.parse_args()
+    if (args.release_policy is None) != (args.release_policy_sha256 is None):
+        parser.error("--release-policy and --release-policy-sha256 must be supplied together")
     if not args.root.resolve().is_relative_to(PROJ_ROOT / "outputs"):
         parser.error("Select an explicit fresh production outputs root")
     if args.output_root and not args.output_root.resolve().is_relative_to(args.root.resolve()):
@@ -320,13 +394,26 @@ def main():
         node = shutil.which("node")
         if node is None:
             parser.error("Node is required to run the shared dedicated Chrome lifecycle helper")
-        command = [node, str(Path(__file__).with_name("check_badminton_fresh_playback.mjs")),
-                   "--python", sys.executable, *sys.argv[1:]]
+        command = [
+            node,
+            str(Path(__file__).with_name("check_badminton_fresh_playback.mjs")),
+            "--python",
+            sys.executable,
+            *sys.argv[1:],
+        ]
         raise SystemExit(subprocess.run(command, check=False).returncode)
     parsed = urlsplit(args.cdp_url)
     if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
         parser.error("CDP must use the dedicated loopback browser endpoint")
-    receipt = verify(args.root, args.url, args.canonical_manifest, args.output_root, cdp_url=args.cdp_url)
+    receipt = verify(
+        args.root,
+        args.url,
+        args.canonical_manifest,
+        args.output_root,
+        cdp_url=args.cdp_url,
+        release_policy=args.release_policy,
+        release_policy_sha256=args.release_policy_sha256,
+    )
     print(json.dumps(dict(passed=receipt["passed"], clips=receipt["clips"], played_sources=receipt["played_sources"])))
 
 

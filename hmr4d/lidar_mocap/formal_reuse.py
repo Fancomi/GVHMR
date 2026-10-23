@@ -49,8 +49,16 @@ def validate_formal_source(previous, current):
             raise ValueError("Formal reuse changed original crop lineage: " + name)
 
 
-def audit_formal_inputs(review_roots, formal_source_root, role_contract_path, *,
-                        data_relocations=None, data_relocations_sha256=None):
+def audit_formal_inputs(
+    review_roots,
+    formal_source_root,
+    role_contract_path,
+    *,
+    data_relocations=None,
+    data_relocations_sha256=None,
+    release_policy=None,
+    release_policy_sha256=None,
+):
     from .calibration import CalibrationSnapshot
     from .expanded_dataset import binding, check_binding
     from .rally_pipeline import load_run_session, read_json, validate_session_splits
@@ -64,14 +72,37 @@ def audit_formal_inputs(review_roots, formal_source_root, role_contract_path, *,
     calibration = CalibrationSnapshot.load(calibration_path)
     if registry.get("review_only") is True or calibration.data.get("review_only") is True:
         raise ValueError("Actual formal source registry and snapshot are required")
-    roles = read_json(role_contract_path)["new_source_splits"]
-    validate_session_splits(roles, registry["sources"])
+    role_contract = read_json(role_contract_path)
+    roles = role_contract["new_source_splits"]
+    from .incremental_release import POLICY, load_release_policy, validate_roles
+
+    incremental = None
+    if role_contract.get("schema") == POLICY:
+        if release_policy is None or release_policy_sha256 is None:
+            raise ValueError("V2 formal audit requires an explicit release policy path and SHA256")
+        incremental = load_release_policy(release_policy, release_policy_sha256)
+        if binding(role_contract_path) != incremental.binding or registry.get("release_policy") != incremental.binding:
+            raise ValueError("Formal audit differs from its explicit incremental policy")
+        validate_roles(roles, registry["sources"], incremental.required)
+        if {str(Path(root).resolve()) for root in review_roots} != {
+            str(Path(item["review_root"]).resolve()) for item in incremental.scope["review_sources"].values()
+        }:
+            raise ValueError("Formal audit review roots differ from the reviewed incremental scope")
+    else:
+        if release_policy is not None or release_policy_sha256 is not None:
+            raise ValueError("Legacy formal audit cannot select an incremental policy")
+        validate_session_splits(roles, registry["sources"])
     if read_json(formal / "session_splits.json") != roles:
         raise ValueError("Formal role assignment differs from the frozen whole-source draft")
     resolver = load_run_relocations(formal, data_relocations, data_relocations_sha256)
     validate_run_relocations(registry, calibration.data, resolver)
-    evidence = dict(formal_registry=binding(registry_path), formal_calibration=binding(calibration_path),
-                    role_contract=binding(role_contract_path))
+    evidence = dict(
+        formal_registry=binding(registry_path),
+        formal_calibration=binding(calibration_path),
+        role_contract=binding(role_contract_path),
+    )
+    if incremental is not None:
+        evidence["release_policy"] = incremental.binding
     if resolver is not None:
         evidence["formal_data_relocations"] = binding(resolver.root / resolver.binding["file"])
     results = {}
@@ -114,6 +145,8 @@ def audit_formal_inputs(review_roots, formal_source_root, role_contract_path, *,
         raise ValueError("Review evidence does not cover every actual formal source")
     for item in evidence.values():
         check_binding(item)
+    if incremental is not None:
+        incremental.recheck()
     return dict(schema="badminton-review-formal-input-equivalence-v1", state="complete", evidence=evidence,
         sources=results, geometry_fields=list(GEOMETRY_FIELDS), source_fields=list(SOURCE_FIELDS),
         role_assignment=roles, training_published=False, fitted_tensors_imported=False,

@@ -87,6 +87,14 @@ fixed overall deadline against only authorized CUDA process trees.
 grant, frozen baseline and tested implementation. `guarded_leg_gpu.py` validates
 the exact contracts; `guarded_leg_execution.py` and `windows_gpu_job.py` own the
 suspended Windows children, independent watchdog and real deadline/exit proof.
+The explicit incremental entry `tools/prepare_badminton_formal_increment.py` uses
+`formal_incremental_intake.py` / `incremental_release.py` with a frozen policy
+path/SHA and the previous sealed release's five actual parent bindings, including
+its successful final consumer audit. It supports a new train-only source while
+preserving the full old train/val/test prefixes. Later canonical stages require
+genuine reviewed cuts or the typed `canonical_no_change.py` proof; neither route
+replaces native, bilateral, browser, archive or consumer acceptance. Commands and
+contracts: [incremental policy v2](docs/BADMINTON_FULL_NATIVE.md#explicit-incremental-formal-release-policy-v2).
 Full-run contract, commands and real progress: [docs/BADMINTON_FULL_NATIVE.md](docs/BADMINTON_FULL_NATIVE.md).
 `paired_sampling.py` freezes the adopted real-paired-RGB input; the shared
 `run_teacher` entry routes its explicit policy through `sparse_teacher.py` for

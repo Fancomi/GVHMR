@@ -17,11 +17,22 @@ def main():
     parser.add_argument("--consumer-contract", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--release-policy", type=Path)
+    parser.add_argument("--release-policy-sha256")
     args = parser.parse_args()
+    if (args.release_policy is None) != (args.release_policy_sha256 is None):
+        parser.error("--release-policy and --release-policy-sha256 must be supplied together")
     if args.threads < 1 or not args.output_root.resolve().is_relative_to(PROJ_ROOT / "outputs"):
         parser.error("Use a positive thread count and a separate outputs/ destination")
     torch.set_num_threads(args.threads)
-    manifest = assemble(args.old_manifest, args.new_manifest, args.consumer_contract, args.output_root)
+    manifest = assemble(
+        args.old_manifest,
+        args.new_manifest,
+        args.consumer_contract,
+        args.output_root,
+        release_policy=args.release_policy,
+        release_policy_sha256=args.release_policy_sha256,
+    )
     print(json.dumps(dict(status=manifest["status"], accepted=manifest["accepted"], training_published=False)))
 
 

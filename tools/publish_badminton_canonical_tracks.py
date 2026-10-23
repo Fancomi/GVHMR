@@ -15,11 +15,21 @@ def main():
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--reviewed-boundaries", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--release-policy", type=Path)
+    parser.add_argument("--release-policy-sha256")
     args = parser.parse_args()
+    if (args.release_policy is None) != (args.release_policy_sha256 is None):
+        parser.error("Supply --release-policy and --release-policy-sha256 together")
     if not args.output_root.resolve().is_relative_to(PROJ_ROOT / "outputs"):
         parser.error("Use a separate explicit outputs/ destination")
     torch.set_num_threads(1)
-    manifest = publish_canonical_view(args.source_manifest, args.reviewed_boundaries, args.output_root)
+    manifest = publish_canonical_view(
+        args.source_manifest,
+        args.reviewed_boundaries,
+        args.output_root,
+        release_policy=args.release_policy,
+        release_policy_sha256=args.release_policy_sha256,
+    )
     print(
         json.dumps(
             dict(

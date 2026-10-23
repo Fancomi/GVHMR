@@ -5,6 +5,7 @@ be completed before either consumer-facing manifest is published.
 """
 
 from collections import Counter, defaultdict
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -26,6 +27,7 @@ ROLES = ("train", "val", "test")
 JOINT_CONTRACTS = (
     "expanded-1019-1020-assembly-input/v1",
     "expanded-1019-1020-consumer-contract/v1",
+    "expanded-source-increment-assembly-input/v2",
 )
 CONTRACT = dict(
     qualification_policy="bilateral_detection",
@@ -47,7 +49,7 @@ def check_binding(entry):
         raise ValueError("Frozen dependency changed: " + entry["path"])
 
 
-def source_roles(manifest):
+def source_roles(manifest, *, required_nonempty=ROLES):
     roles = {}
     if set(manifest["suggested_session_splits"]) != set(ROLES):
         raise ValueError("Exactly train, val and test are required")
@@ -57,7 +59,7 @@ def source_roles(manifest):
                 raise ValueError("A source is assigned more than once: " + sid)
             roles[sid] = role
         count = sum(manifest["exports"][sid]["accepted"] for sid in entry["sessions"])
-        if count != entry["accepted"] or count < 1:
+        if count != entry["accepted"] or (role in required_nonempty and count < 1):
             raise ValueError("Partition count differs from source counts or is empty: " + role)
     if set(roles) != set(manifest["exports"]):
         raise ValueError("Every declared source, including zero sources, needs a role")
@@ -66,15 +68,27 @@ def source_roles(manifest):
     return roles
 
 
-def validate_union_contract(old, new, contract):
+def validate_union_contract(old, new, contract, *, incremental=None):
     schema = contract.get("schema", "")
-    if not isinstance(schema, str) or "draft" in schema or (schema in JOINT_CONTRACTS and (
-            contract.get("status") != "complete" or contract.get("sealed") is not True)):
+    if (
+        not isinstance(schema, str)
+        or "draft" in schema
+        or (schema in JOINT_CONTRACTS and (contract.get("status") != "complete" or contract.get("sealed") is not True))
+    ):
         raise ValueError("An unsealed consumer draft cannot assemble a formal expansion")
     for manifest in (old, new):
         if manifest.get("status") != "complete" or any(manifest.get(k) != v for k, v in CONTRACT.items()):
             raise ValueError("Only complete publications with the agreed body/detection contract can be merged")
-    old_roles, new_roles = source_roles(old), source_roles(new)
+    if schema == "expanded-source-increment-assembly-input/v2":
+        if incremental is None:
+            raise ValueError("V2 assembly requires its explicitly selected release policy")
+        from .incremental_release import validate_contract
+
+        validate_contract(contract, incremental)
+    elif incremental is not None or schema == "expanded-source-increment-consumer-contract/v2":
+        raise ValueError("Select an explicit v2 assembly input, never a final contract or legacy policy override")
+    old_roles = source_roles(old)
+    new_roles = source_roles(new, required_nonempty=incremental.required if incremental is not None else ROLES)
     if set(old_roles).intersection(new_roles):
         raise ValueError("Old and new publications contain overlapping sources")
     if old["accepted"] != contract["old_accepted"]:
@@ -136,7 +150,7 @@ def load_export(entry):
     return data, rows
 
 
-def merge_role(entries, destination, source_digests):
+def merge_role(entries, destination, source_digests, *, preserve_old_bytes=False):
     """Append exact new rows after the full old role, preserving metadata bytes."""
     parts, rows, keys = [], [], set()
     for entry in entries:
@@ -151,12 +165,26 @@ def merge_role(entries, destination, source_digests):
             keys.add(key)
         parts.append(data)
         rows.extend(local)
-    merged = {name: torch.cat([part[name] for part in parts]) for name in FIELDS}
-    merged["motion_id"] = [m for part in parts for m in part["motion_id"]]
+    if preserve_old_bytes:
+        if (
+            len(entries) != 2
+            or entries[1]["accepted"] != 0
+            or parts[1]["motion_id"]
+            or len(rows) != entries[0]["accepted"]
+            or Path(entries[1]["metadata"]).stat().st_size != 0
+        ):
+            raise ValueError("An unchanged role requires an actually empty new tensor and metadata")
+        merged = parts[0]
+    else:
+        merged = {name: torch.cat([part[name] for part in parts]) for name in FIELDS}
+        merged["motion_id"] = [m for part in parts for m in part["motion_id"]]
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".pth.tmp")
-    joblib.dump(merged, temporary)
+    if preserve_old_bytes:
+        shutil.copyfile(entries[0]["path"], temporary)
+    else:
+        joblib.dump(merged, temporary)
     temporary.replace(destination)
     metadata = destination.with_suffix(".metadata.jsonl")
     temporary = metadata.with_suffix(".jsonl.tmp")
@@ -187,6 +215,13 @@ def merge_role(entries, destination, source_digests):
             dict(tensor=binding(e["path"]), metadata=binding(e["metadata"]), accepted=e["accepted"]) for e in entries
         ],
     )
+    if preserve_old_bytes and (
+        entry["sha256"] != entries[0]["sha256"]
+        or entry["metadata_sha256"] != entries[0]["metadata_sha256"]
+        or destination.samefile(entries[0]["path"])
+        or metadata.samefile(entries[0]["metadata"])
+    ):
+        raise ValueError("An unchanged role must independently preserve both complete parent payload bytes")
     check, check_rows = load_export(entry)
     offset = 0
     for part in parts:
@@ -380,8 +415,42 @@ def _validate_new_completion(repair, completion, parent_publication, publication
         after=repair / "evaluation/v2_after_leg.json",
         comparison=repair / "evaluation/v2_leg_comparison.json",
     )
+    compatibility_role = "policy_fingerprint_compatibility"
+    has_compatibility = compatibility_role in receipt.get("evidence", {})
+    if has_compatibility:
+        expected_evidence[compatibility_role] = Path(bound(receipt["evidence"][compatibility_role])["path"])
     if set(receipt.get("evidence", {})) != set(expected_evidence):
         raise ValueError("Formal postleg CPU receipt is missing its actual verification evidence")
+    if has_compatibility:
+        from .formal_completion_policy_compat import validate_compatibility_receipt
+
+        proof = validate_compatibility_receipt(repair.parent, receipt)
+
+        def proof_bindings(value):
+            if isinstance(value, dict):
+                if set(value) == {"path", "sha256"}:
+                    bound(value)
+                else:
+                    for item in value.values():
+                        proof_bindings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    proof_bindings(item)
+
+        proof_bindings(proof)
+        implementation_binding = proof["compatibility_implementation"]
+        payload = Path(implementation_binding["path"]).read_bytes()
+        if hashlib.sha256(payload).hexdigest() != implementation_binding["sha256"]:
+            raise ValueError("The verified compatibility implementation changed while reading")
+        implementation = json.loads(payload)
+        for item in (
+            *implementation["code_archive"].values(),
+            implementation["test_execution"],
+            *implementation["test_outputs"].values(),
+            *(entry["archived"] for entry in implementation["test_sources"]),
+            implementation["original_checker"]["archived"],
+        ):
+            bound(item)
     for name, path in expected_evidence.items():
         item = bound(receipt["evidence"][name], path)
         if name in ("before", "native", "leg_receipt", "after", "comparison") and completed(path) != item:
@@ -432,10 +501,20 @@ def _validate_new_completion(repair, completion, parent_publication, publication
     return dependencies
 
 
-def assemble(old_path, new_path, contract_path, output_root):
+def assemble(old_path, new_path, contract_path, output_root, *, release_policy=None, release_policy_sha256=None):
     old_path, new_path, contract_path, output = map(Path, (old_path, new_path, contract_path, output_root))
     dependencies = [binding(path) for path in (old_path, new_path, contract_path)]
     old, new, contract = map(read_json, (old_path, new_path, contract_path))
+    incremental = None
+    if contract.get("schema") == "expanded-source-increment-assembly-input/v2":
+        if release_policy is None or release_policy_sha256 is None:
+            raise ValueError("V2 assembly requires both explicit release policy path and SHA256")
+        from .incremental_release import load_release_policy
+
+        incremental = load_release_policy(release_policy, release_policy_sha256)
+        dependencies.extend(incremental.dependencies)
+    elif release_policy is not None or release_policy_sha256 is not None:
+        raise ValueError("Legacy assembly cannot override its policy")
     old_binding = contract["bindings"]["old_dataset_manifest"]
     check_binding(old_binding)
     if old_path.resolve() != Path(old_binding["path"]).resolve():
@@ -443,7 +522,32 @@ def assemble(old_path, new_path, contract_path, output_root):
     check_binding(contract["bindings"]["new_source_input"])
     check_binding(contract["bindings"]["new_source_splits"])
     dependencies.extend(contract["bindings"][name] for name in ("new_source_input", "new_source_splits"))
-    roles = validate_union_contract(old, new, contract)
+    roles = validate_union_contract(old, new, contract, incremental=incremental)
+    if incremental is not None:
+        repair = Path(contract["new_repair_root"]).resolve()
+        if new.get("release_policy") != incremental.binding:
+            raise ValueError("V2 publication differs from the explicitly selected release policy")
+        if contract["canonical_mode"] == "reviewed_cuts":
+            if new.get("schema") != "badminton-canonical-bilateral-publication-v1" or not new.get(
+                "canonical_identity_revision"
+            ):
+                raise ValueError("V2 cut mode requires the actual verified canonical bilateral publication")
+        source_binding = contract["bindings"]["new_source_input"]
+        registry_binding = contract["bindings"]["new_source_registry"]
+        source_input, current_registry = map(read_json, (source_binding["path"], registry_binding["path"]))
+        if (
+            Path(source_binding["path"]).resolve() != repair / "new_source_input.json"
+            or Path(registry_binding["path"]).resolve() != repair.parent / "source/source_registry.json"
+            or Path(source_input.get("source_root", "")).resolve() != repair.parent / "source"
+            or source_input.get("source_registry_sha256") != registry_binding["sha256"]
+            or source_input.get("release_policy") != incremental.binding
+            or current_registry.get("release_policy") != incremental.binding
+            or source_input.get("session_splits") != incremental.roles
+            or source_input.get("required_nonempty_splits") != incremental.required
+            or set(current_registry.get("sources", {})) != set(incremental.scope["review_sources"])
+        ):
+            raise ValueError("V2 assembly source input/registry differs from its exact current policy")
+        dependencies.extend(contract["bindings"].values())
     if contract.get("schema") in JOINT_CONTRACTS:
         for name in ("producer_joint_manifest", "producer_confirmation"):
             item = contract["bindings"].get(name)
@@ -452,15 +556,17 @@ def assemble(old_path, new_path, contract_path, output_root):
             check_binding(item)
             dependencies.append(item)
             if name == "producer_joint_manifest" and (
-                    Path(item["path"]).resolve() != new_path.resolve()
-                    or item["sha256"] != dependencies[1]["sha256"]):
+                Path(item["path"]).resolve() != new_path.resolve() or item["sha256"] != dependencies[1]["sha256"]
+            ):
                 raise ValueError("Joint input names a different new publication")
     if output.exists() and any(output.iterdir()):
         raise ValueError("Assembly requires an empty destination; completed and provisional runs stay immutable")
     source_registry, verification = {}, {}
     for tag, manifest, path in (("old", old, old_path), ("new", new, new_path)):
         if tag == "old" and manifest.get("schema") in (
-                "badminton-expanded-dataset-v1", "badminton-expanded-training-v1"):
+            "badminton-expanded-dataset-v1",
+            "badminton-expanded-training-v1",
+        ):
             registry, verification[tag], base_dependencies = verify_expanded_base(manifest, contract)
             base_run = path.resolve().parent
             if base_run.name == "datasets":
@@ -486,15 +592,69 @@ def assemble(old_path, new_path, contract_path, output_root):
         if revision:
             if tag != "new":
                 raise ValueError("The complete old publication remains immutable")
-            from .canonical_tracks import verify_canonical_publication
+            if incremental is not None and contract["canonical_mode"] == "reviewed_no_changes":
+                from .canonical_no_change import verify_no_change_publication
 
-            for name in ("source_publication", "reviewed_boundaries", "verification"):
-                check_binding(revision[name])
-                dependencies.append(revision[name])
-            verification[tag] = verify_canonical_publication(manifest)
+                for name in ("source_publication", "reviewed_continuity", "verification"):
+                    check_binding(revision[name])
+                    dependencies.append(revision[name])
+                proof = verify_no_change_publication(
+                    manifest,
+                    release_policy=incremental.binding["path"],
+                    release_policy_sha256=incremental.binding["sha256"],
+                )
+                if (
+                    proof["release_policy"] != incremental.binding
+                    or proof["source_completion"] != contract["bindings"]["producer_confirmation"]
+                    or proof["source_publication"] != revision["source_publication"]
+                    or proof["accepted"] != manifest["accepted"]
+                ):
+                    raise ValueError("No-change proof differs from this exact assembly source/completion/policy")
+                for item in (
+                    proof["producer"],
+                    *proof["verifiers"].values(),
+                    *(
+                        proof[name]
+                        for name in (
+                            "source_completion",
+                            "continuity_audit",
+                            "native_verification",
+                            "aggregate_native_contract",
+                        )
+                    ),
+                    *(
+                        session[name]
+                        for session in proof["sessions"].values()
+                        for name in ("source_tensor", "source_metadata", "body_tensor", "body_metadata")
+                    ),
+                ):
+                    check_binding(item)
+                    if item not in dependencies:
+                        dependencies.append(item)
+                verification[tag] = proof
+            else:
+                from .canonical_tracks import verify_canonical_publication
+
+                for name in ("source_publication", "reviewed_boundaries", "verification"):
+                    check_binding(revision[name])
+                    dependencies.append(revision[name])
+                verification[tag] = verify_canonical_publication(manifest)
         else:
             verification[tag] = _verify_export_data(manifest)
         for sid, export in manifest["exports"].items():
+            if tag == "new" and incremental is not None:
+                declared = contract["new_sources"][sid]
+                reviewed = incremental.scope["review_sources"][sid]
+                if (
+                    declared.get("formal_body_input") != contract["bindings"]["new_source_input"]
+                    or Path(declared.get("repair_root", "")).resolve() != Path(contract["new_repair_root"]).resolve()
+                    or declared.get("admitted_source_index") != reviewed["admitted_source_index"]
+                    or declared.get("camera_applicability") != reviewed["camera_applicability"]
+                    or declared.get("calibration_snapshot") != binding(calibration_path)
+                    or declared.get("calibration_digest") != calibration.data["snapshot_digest"]
+                    or current_registry["sources"][sid].get("source_index") != reviewed["admitted_source_index"]
+                ):
+                    raise ValueError("V2 actual source/calibration/admission lineage differs from its reviewed scope")
             source_registry[sid] = dict(
                 role=roles[sid],
                 accepted=export["accepted"],
@@ -535,11 +695,12 @@ def assemble(old_path, new_path, contract_path, output_root):
     digests = {sid: e["calibration_digest"] for sid, e in source_registry.items()}
     splits, sequences = {}, {}
     for role in ROLES:
-        entry, rows = merge_role(
-            [manifest["suggested_session_splits"][role] for manifest in (old, new)],
-            output / "datasets" / (role + ".pth"),
-            digests,
-        )
+        entries = [manifest["suggested_session_splits"][role] for manifest in (old, new)]
+        destination = output / "datasets" / (role + ".pth")
+        if incremental is not None and contract["new_final_admitted_counts"][role] == 0:
+            entry, rows = merge_role(entries, destination, digests, preserve_old_bytes=True)
+        else:
+            entry, rows = merge_role(entries, destination, digests)
         counts = Counter(row["session_id"] for row in rows)
         if any(counts[sid] != source_registry[sid]["accepted"] for sid in entry["sessions"]):
             raise ValueError("Merged role does not retain every qualified source sample")
@@ -571,6 +732,8 @@ def assemble(old_path, new_path, contract_path, output_root):
         all_metadata_bytes_equal_ordered_source_concatenation=True,
         split_limit="Whole sources disjoint; cross-source physical identities are unverified",
     )
+    if incremental is not None:
+        result["release_policy"] = incremental.binding
     for entry in dependencies:
         check_binding(entry)
     write_json(output / "assembly_manifest.json", result)

@@ -211,8 +211,20 @@ def audit_formal_numeric_import(formal_root, input_equivalence_binding, parent_r
     parents = [Path(p).resolve() for p in parent_roots]
     outputs = (PROJ_ROOT / "outputs").resolve()
     _require(root != outputs and root.is_relative_to(outputs), "Formal import needs a separate project outputs root")
+    from .incremental_release import POLICY, policy_from_binding, validate_roles
+
+    incremental = None
+    if len(parents) != 2:
+        _checked(input_equivalence_binding)
+        initial_proof = read_json(input_equivalence_binding["path"])
+        role_binding = initial_proof.get("evidence", {}).get("role_contract")
+        if isinstance(role_binding, dict):
+            _checked(role_binding)
+            if read_json(role_binding["path"]).get("schema") == POLICY:
+                incremental = policy_from_binding(role_binding)
     _require(
-        len(parents) == 2 and len(set(parents)) == 2, "Exactly two explicit distinct review parent roots are required"
+        bool(parents) and len(set(parents)) == len(parents) and (len(parents) == 2 or incremental is not None),
+        "Exactly two explicit distinct review parent roots are required",
     )
     for parent in parents:
         _require(
@@ -224,7 +236,7 @@ def audit_formal_numeric_import(formal_root, input_equivalence_binding, parent_r
             "Formal output cannot nest within or overwrite a parent root",
         )
     _require(
-        not parents[0].is_relative_to(parents[1]) and not parents[1].is_relative_to(parents[0]),
+        all(not left.is_relative_to(right) for left in parents for right in parents if left != right),
         "Review parent roots cannot nest",
     )
     # This barrier precedes all reads/hashes of numerical assets, including teachers.
@@ -257,12 +269,27 @@ def audit_formal_numeric_import(formal_root, input_equivalence_binding, parent_r
     _matches(proof["evidence"]["formal_calibration"], source / "calibration/calibration_snapshot.json")
     for entry in proof["evidence"].values():
         _checked(entry)
+    role_binding = proof["evidence"]["role_contract"]
+    if read_json(role_binding["path"]).get("schema") == POLICY:
+        incremental = incremental or policy_from_binding(role_binding)
+    if incremental is not None:
+        _require(
+            proof["evidence"].get("release_policy") == incremental.binding
+            and registry.get("release_policy") == incremental.binding
+            and set(map(str, parents))
+            == {str(Path(item["review_root"]).resolve()) for item in incremental.scope["review_sources"].values()},
+            "Formal numeric parents or source registry differ from the exact v2 policy",
+        )
     roles = read_json(source / "session_splits.json")
     _require(
         roles == proof["role_assignment"] == read_json(proof["evidence"]["role_contract"]["path"])["new_source_splits"],
         "Formal source roles changed",
     )
-    validate_session_splits(roles, registry["sources"])
+    if incremental is None:
+        validate_session_splits(roles, registry["sources"])
+    else:
+        validate_roles(roles, registry["sources"], incremental.required)
+        _require(roles == incremental.roles, "Formal numeric source roles differ from the v2 policy")
     _checked(registry["intake"])
     _checked(registry["camera_admission_handoff"])
     intake = read_json(registry["intake"]["path"])
@@ -273,8 +300,16 @@ def audit_formal_numeric_import(formal_root, input_equivalence_binding, parent_r
         "Formal manifest/intake changed",
     )
     _checked(intake["prepared_ranges"])
+    if incremental is not None:
+        _require(intake.get("release_policy") == incremental.binding, "Formal intake changed its v2 policy")
     plan, body_plan = read_json(repair / "new_source_input.json"), read_json(repair / "final_labels/repair_plan.json")
     _plan_contract(root, plan, body_plan, calibration, registry)
+    if incremental is not None:
+        _require(
+            plan.get("release_policy") == incremental.binding
+            and plan.get("required_nonempty_splits") == incremental.required,
+            "Formal body input changed its explicit v2 policy/nonempty roles",
+        )
     _require(
         plan.get("purpose") == "formal_native_rally_derivation"
         and plan.get("review_only") is not True
@@ -483,6 +518,8 @@ def audit_formal_numeric_import(formal_root, input_equivalence_binding, parent_r
             original_fit_algorithm_digest=digest,
             current_fit_algorithm_digest=current_digest,
         )
+    if incremental is not None:
+        incremental.recheck()
     return dict(
         schema="badminton-formal-numeric-import-audit-v1",
         state="eligible_parent_complete_not_imported",
