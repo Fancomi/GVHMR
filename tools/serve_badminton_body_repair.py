@@ -12,8 +12,10 @@ from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.pipeline import write_json
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
-from hmr4d.lidar_mocap.rally_viewer import ViewerData, load_display_bbox, serve_viewer, write_viewer_runtime_relocations
-from hmr4d.lidar_mocap.relocations import load_run_relocations
+from hmr4d.lidar_mocap.rally_viewer import (
+    ViewerData, load_display_bbox, prepare_viewer, serve_viewer, write_viewer_runtime_relocations,
+)
+from badminton_viewer_contracts import viewer_relocations
 
 
 def main():
@@ -28,10 +30,36 @@ def main():
     args = parser.parse_args()
     root = args.repair_root.resolve()
     try:
-        relocations = load_run_relocations(root, args.data_relocations, args.data_relocations_sha256)
+        relocations = viewer_relocations(root, args.data_relocations, args.data_relocations_sha256)
     except ValueError as exc:
         parser.error(str(exc))
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
+    registry = read_json(root / "source_registry.json")
+    if registry.get("schema") == "badminton-formal-derived-source-registry-v1":
+        data = prepare_viewer(
+            root, root, args.display_crop, relocations=relocations, viewer_output=args.viewer_output,
+        )
+        output = data.viewer_output
+        state = {}
+        for sid, source in data.manifest["sources"].items():
+            reports = [read_json(path) for path in (root / "sessions" / sid / "windows").glob("*/fit_report.json")]
+            source["baseline"] = False
+            state[sid] = dict(
+                baseline=False, state="repair_candidate", fitted=sum(r["fitted"] for r in reports),
+                accepted=sum(r["accepted"] for r in reports),
+            )
+        data.manifest.update(review_only=True, training_published=False)
+        write_json(output / "manifest.json", data.manifest)
+        write_json(output / "build_status.json", dict(
+            state="repair_candidate", sources=state, training_published=False,
+            body_qa_accepted=sum(item["accepted"] for item in state.values()),
+        ))
+        html = (output / "index.html").read_text(encoding="utf-8")
+        (output / "index.html").write_text(
+            html.replace("羽毛球 · 双机 / SMPL 检查", "SMPL 修复候选 · 未发布"), encoding="utf-8",
+        )
+        serve_viewer(data, port=args.port)
+        return
     manifest = copy.deepcopy(read_json(args.source_root / "viewer/manifest.json"))
     if manifest["calibration_digest"] != calibration.data["snapshot_digest"]:
         raise ValueError("Repair and original viewer cameras differ")

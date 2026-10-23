@@ -22,8 +22,13 @@ def main():
     parser.add_argument("--grant", type=Path)
     parser.add_argument("--context", type=Path)
     parser.add_argument("--context-sha256")
+    parser.add_argument("--pregrant", type=Path,
+                        help="CPU-only bound inputs; the same live driver waits for a separately issued fresh grant")
+    parser.add_argument("--pregrant-sha256")
     args = parser.parse_args()
     cpu_only()
+    if bool(args.pregrant) != bool(args.pregrant_sha256) or (args.pregrant and not args.execute):
+        parser.error("Use --pregrant and --pregrant-sha256 together, only with the actual --execute driver")
     if args.watchdog:
         if not args.context or not args.context_sha256:
             parser.error("Independent watchdog requires an exact bound context")
@@ -38,7 +43,8 @@ def main():
             load_authorization(args.request, args.grant)
             print(dict(state="actual_grant_and_readiness_verified_no_cuda_launched", gpu_started=False))
         else:
-            print(execute(args.request, args.grant)["state"])
+            print(execute(args.request, args.grant, pregrant_path=args.pregrant,
+                          pregrant_sha256=args.pregrant_sha256)["state"])
 
 
 if __name__ == "__main__":

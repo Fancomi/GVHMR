@@ -37,7 +37,8 @@ def stage(tmp_path, monkeypatch, request):
     source = put(root / "new_source_input.json", dict(schema="test-source-only"))
     keys = ["20261019_152542:rally_1", "20261020_182854:rally_2"]
     jobs = [dict(source_id=k.split(":")[0], source_window="source/" + k.split(":")[1]) for k in keys]
-    plan = put(root / "final_labels/repair_plan.json", dict(jobs=jobs, source_union_sha256=source["sha256"],
+    plan = put(root / "final_labels/repair_plan.json", dict(jobs=jobs, source_union=source["path"],
+                                                          source_union_sha256=source["sha256"],
                                                           calibration_digest="c" * 64))
     code = {}
     for name, path in auth.implementation_files().items():

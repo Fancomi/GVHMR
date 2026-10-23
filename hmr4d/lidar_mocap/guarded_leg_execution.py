@@ -1,6 +1,8 @@
 """Independent Windows job/watchdog execution of the three fixed leg phases."""
 
 from datetime import datetime, timedelta, timezone
+import ctypes
+from ctypes import wintypes
 import json
 import math
 import os
@@ -25,6 +27,65 @@ from .windows_gpu_job import WindowsGPUJob
 DESKTOP_ALLOWANCE = None  # Each actual driver/watchdog loads the issued manifest's fresh binding.
 
 
+class _UnicodeString(ctypes.Structure):
+    _fields_ = [("length", wintypes.USHORT), ("maximum", wintypes.USHORT), ("buffer", ctypes.c_void_p)]
+
+
+class _ProcessImage(ctypes.Structure):
+    _fields_ = [("pid", wintypes.HANDLE), ("image", _UnicodeString)]
+
+
+def _kernel_process_executable(pid):
+    """Read the actual kernel image name when OpenProcess denies image queries."""
+    if os.name != "nt":
+        raise OSError("Windows kernel process image queries require Windows")
+    query = ctypes.WinDLL("ntdll").NtQuerySystemInformation
+    query.argtypes = [ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+    query.restype = ctypes.c_long
+    buffer = ctypes.create_unicode_buffer(32760)
+    item = _ProcessImage(pid=pid, image=_UnicodeString(
+        maximum=ctypes.sizeof(buffer) - 2, buffer=ctypes.addressof(buffer)))
+    status = query(88, ctypes.byref(item), ctypes.sizeof(item), None)
+    if (status or not item.image.length or item.image.length % 2
+            or item.image.length > item.image.maximum or item.image.buffer != ctypes.addressof(buffer)):
+        raise OSError("Kernel process image query failed: " + hex(status & 0xffffffff))
+    native = ctypes.wstring_at(buffer, item.image.length // 2)
+    if "\0" in native or not native.casefold().startswith("\\device\\"):
+        raise ValueError("Kernel process image has an unknown native path prefix")
+    devices = ctypes.WinDLL("kernel32", use_last_error=True).QueryDosDeviceW
+    devices.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    devices.restype = wintypes.DWORD
+    choices = []
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        mapped = ctypes.create_unicode_buffer(32768)
+        if devices(letter + ":", mapped, len(mapped)):
+            prefix = mapped.value
+            if prefix and native.casefold().startswith(prefix.casefold() + "\\"):
+                choices.append((prefix, letter + ":"))
+    if not choices:
+        raise ValueError("No actual DOS device mapping exists for the kernel process image")
+    prefix, drive = max(choices, key=lambda pair: len(pair[0]))
+    path = drive + native[len(prefix):]
+    if not Path(path).is_absolute() or ".." in Path(path).parts or ":" in path[2:]:
+        raise ValueError("Kernel process image did not resolve to an ordinary absolute executable path")
+    return path
+
+
+def process_executable(pid, *, expected_create_time=None):
+    """Return a real image path, rechecking PID identity across either query."""
+    process = psutil.Process(pid)
+    created = process.create_time()
+    if expected_create_time is not None and created != expected_create_time:
+        raise psutil.NoSuchProcess(pid, msg="Process creation time changed before its image query")
+    try:
+        executable = process.exe()
+    except psutil.AccessDenied:
+        executable = _kernel_process_executable(pid)
+    if psutil.Process(pid).create_time() != created:
+        raise psutil.NoSuchProcess(pid, msg="Process creation time changed during its image query")
+    return executable
+
+
 def cpu_only():
     os.environ.update(CUDA_VISIBLE_DEVICES="-1", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="1")
     process = psutil.Process()
@@ -33,10 +94,12 @@ def cpu_only():
 
 
 def configure_desktop_allowance(checked):
-    implementation = bound_json(checked["authorization"]["grant"]["independent_guard"])
-    allowance = implementation.get("desktop_allowance")
+    grant = checked["authorization"]["grant"]
+    implementation = bound_json(grant["independent_guard"])
+    source = grant if "desktop_allowance" in grant else implementation
+    allowance = source.get("desktop_allowance")
     policy = bound_json(allowance)
-    if implementation.get("desktop_allowance_fixture_only") is not False:
+    if source.get("desktop_allowance_fixture_only") is not False:
         raise ValueError("A machine fixture cannot authorize actual guarded execution")
     if policy.get("request") != checked["request_binding"]:
         raise ValueError("Desktop evidence belongs to another actual guarded request")
@@ -84,9 +147,10 @@ def gpu_process_observation(desktop_allowance=None):
         try:
             process = psutil.Process(pid)
             if (process.create_time() == original["create_time"]
-                    and os.path.normcase(process.exe()) == os.path.normcase(original["executable"])):
+                    and os.path.normcase(process_executable(pid, expected_create_time=original["create_time"]))
+                    == os.path.normcase(original["executable"])):
                 ignored.append(original)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
             pass  # Unknown/inaccessible/reused/stale identities remain blocking.
     return dict(schema="gvhmr-gpu-process-classification-v1", observed_utc=datetime.now(timezone.utc).isoformat(),
                 raw_wddm_compute_pids=sorted(raw), frozen_desktop_exclusions=ignored,
@@ -134,7 +198,8 @@ def _use_lease_deadline(checked, lease):
 def validate_context(context, context_path, checked):
     directory = Path(context_path).resolve().parent
     command = context["driver"]["command"]
-    canonical = len(command) == 8 and [command[i] for i in (1, 3, 4, 6)] == [
+    readpass = checked["authorization"]["grant"].get("verified_read_pass")
+    canonical = len(command) == (12 if readpass else 8) and [command[i] for i in (1, 3, 4, 6)] == [
         "-u", "--execute", "--request", "--grant"]
     if canonical:
         for index, expected in ((2, PROJ_ROOT / "tools/run_badminton_guarded_leg.py"),
@@ -147,6 +212,9 @@ def validate_context(context, context_path, checked):
             or not canonical
             or context["immutable_bindings"] != immutable_anchors(checked)):
         raise ValueError("Watchdog context leaves its exact owner, command or stage bindings")
+    if readpass:
+        from .verified_read_pass import validate_live_receipt
+        validate_live_receipt(checked, context["driver"])
 
 
 def foreign_compute_pids(current, members, observed):
@@ -286,10 +354,31 @@ def _assert_clean_outputs(root):
             raise ValueError("Preserve previous leg outputs; this separate authorization permits one fresh attempt")
 
 
-def execute(request_path, grant_path):
+def execute(request_path, grant_path, *, pregrant_path=None, pregrant_sha256=None):
     cpu_only()
+    if pregrant_path is None:
+        if pregrant_sha256 is not None:
+            raise ValueError("A CPU pregrant SHA requires its exact explicit bundle")
+        return _execute(request_path, grant_path)
+    from .verified_read_pass import VerifiedReadPass
+    with VerifiedReadPass.prepare(request_path, pregrant_path, pregrant_sha256) as read_pass:
+        grant_path = Path(grant_path).resolve()
+        while not grant_path.exists():
+            if datetime.now(timezone.utc) >= read_pass.wait_deadline:
+                raise TimeoutError("No actual grant arrived before the separate CPU waiting deadline")
+            time.sleep(.5)
+        return _execute(request_path, grant_path, read_pass=read_pass)
+
+
+def _execute(request_path, grant_path, *, read_pass=None):
     request_path, grant_path = Path(request_path).resolve(), Path(grant_path).resolve()
-    checked = load_authorization(request_path, grant_path)
+    checked = load_authorization(request_path, grant_path, deep=read_pass is None)
+    grant = checked["authorization"]["grant"]
+    if read_pass is None and grant.get("verified_read_pass"):
+        raise ValueError("This grant requires the same actual live CPU pregrant driver and held read capability")
+    if read_pass is not None:
+        checked["readiness"] = read_pass.validate_grant(checked)
+        read_pass.check_baseline(checked)
     configure_desktop_allowance(checked)
     _assert_time(checked, first=True)
     _assert_clean_outputs(checked["root"])
@@ -347,7 +436,9 @@ def execute(request_path, grant_path):
                 raise RuntimeError("Independent guard process/context is not actually ready")
             for item in checked["commands"]:
                 phase, cuda = item["phase"], item["cuda"]
-                fresh = load_authorization(request_path, grant_path, deep=phase == "apply")
+                fresh = load_authorization(request_path, grant_path, deep=phase == "apply" and read_pass is None)
+                if read_pass is not None:
+                    read_pass.validate_grant(fresh)
                 fresh["deadline"] = min(fresh["deadline"], checked["deadline"])
                 _anchors(context)
                 _assert_time(fresh, first=phase == "propose")
@@ -357,6 +448,11 @@ def execute(request_path, grant_path):
                     raise RuntimeError("Previous phase descendants have not actually exited")
                 if cuda and compute_pids():
                     raise RuntimeError("GPU-0 is not actually free before the next leg phase")
+                if read_pass is not None and phase == "apply":
+                    released = read_pass.before_apply(fresh)
+                    write_progress_json(directory / "read_pass_apply_release.json", dict(
+                        state="apply_invalidated", cpu_read_pass=read_pass.receipt, exact_write_paths=released))
+                    _assert_time(fresh)
                 environment = dict(os.environ, CUDA_VISIBLE_DEVICES="0" if cuda else "-1",
                                    OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="1")
                 affinity = [0, 1] if cuda else [26, 27]

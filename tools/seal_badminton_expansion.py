@@ -24,6 +24,7 @@ from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
+from badminton_viewer_contracts import validate_browser_source_acceptance
 
 
 def encode(value):
@@ -57,13 +58,7 @@ def validate_acceptance(assembly_path, browser_path, continuity_path, pixels_pat
         raise ValueError("Exact original sample retention is not proved")
     for item in assembly["source_publications"].values():
         check_binding(item)
-    if (
-        browser.get("passed") is not True
-        or browser.get("clips") != 10
-        or browser.get("minimum_clip_seconds", 0) < 5
-        or browser.get("page_errors")
-    ):
-        raise ValueError("Ten real continuous native browser clips must pass")
+    validate_browser_source_acceptance(browser, assembly["source_publications"]["new"])
     if browser.get("canonical_publication") != assembly["source_publications"]["new"]:
         raise ValueError("Browser acceptance uses another canonical publication")
     if not browser.get("native_boundary_regressions") or not all(
@@ -349,7 +344,9 @@ def seal(args):
         release_id=args.release_id,
         status="complete",
         created_utc=datetime.now(timezone.utc).isoformat(),
-        description="Complete old qualified pool plus native-reviewed 1015 data with conservative canonical identity cuts",
+        description=(
+            "Complete old qualified pool plus the admitted native-reviewed sources with conservative identity cuts"
+        ),
         total_person_frames=assembly["accepted"],
         splits=archive_splits,
         rollout_sequences=archive_sequences,

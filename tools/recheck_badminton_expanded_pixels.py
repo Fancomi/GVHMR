@@ -21,6 +21,7 @@ from hmr4d.lidar_mocap.dual_view import DualViewGate
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json
 from hmr4d.lidar_mocap.repair_execution import require_gpu_lease, write_progress_json as write_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.rgb_observations import RGBKeypointChecker
 from audit_badminton_native_pixels import compare_admissions
 
@@ -64,7 +65,7 @@ def recheck(audit_path, output, lease_path, device):
                 reports[sid, cam] = dict(path=view["report_path"], sha256=view["report_sha256"])
     if not scans:
         raise ValueError("No changed native images belong to admitted test scans")
-    sessions, calibrations = {}, {}
+    sessions, calibrations, resolvers = {}, {}, {}
     captures = {}
     source_videos = {}
     for sid in sorted({sid for sid, _ in scans}):
@@ -73,7 +74,11 @@ def recheck(audit_path, output, lease_path, device):
         if calibration.data["snapshot_digest"] != source["calibration_digest"]:
             raise ValueError("Source camera snapshot changed")
         calibrations[sid] = calibration
-        sessions[sid] = load_run_session(Path(source["source_run"]), calibration, sid)
+        run = Path(source["source_run"]).resolve()
+        run_key = run, calibration.data["snapshot_digest"]
+        if run_key not in resolvers:
+            resolvers[run_key] = load_pilot_run_relocations(run, calibration.data)
+        sessions[sid] = load_run_session(run, calibration, sid, relocations=resolvers[run_key])
         for cam in ("cam1", "cam2"):
             source_videos[sid + ":" + cam] = binding(sessions[sid].video_paths[cam])
             selected = requests[sid, cam]

@@ -11,6 +11,7 @@ from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.expanded_dataset import binding
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json, read_rows
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 from hmr4d.lidar_mocap.teacher import _undistorter
 
 
@@ -20,13 +21,14 @@ def render(root):
     audit = read_json(audit_path)
     labels = root / "final_labels"
     cal = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
+    relocations = load_pilot_run_relocations(labels, cal.data)
     sessions = {}
     out = root / "continuity_audit/previews"
     out.mkdir(parents=True, exist_ok=True)
     for index, event in enumerate(audit["pelvis_jump_candidates"]):
         sid = event["source_id"]
         if sid not in sessions:
-            sessions[sid] = load_run_session(labels, cal, sid)
+            sessions[sid] = load_run_session(labels, cal, sid, relocations=relocations)
         rows = read_rows(labels / "sessions" / sid / "windows" / event["window"] / "quality.jsonl")
         selected = [
             next(r for r in rows if r["motion_id"] == event["motion_id"] and r["lidar_index"] == event[key])

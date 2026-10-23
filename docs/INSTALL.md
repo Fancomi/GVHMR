@@ -857,6 +857,56 @@ Actual browser playback still requires separate verification; the completion rec
 explicitly keeps browser_playback_verified=false. Old-source finish behavior and
 its ten-clip comparison remain unchanged.
 
+Separately admitted formal runs reuse only an already completed, explicitly
+hash-bound post-leg CPU receipt:
+
+```powershell
+uv run --no-sync python tools/finish_badminton_body_repair.py --root <formal-run>/repair --threads 1 --formal-postleg-cpu-receipt <formal-run>/repair/evaluation/formal_postleg_cpu_receipt.json --formal-postleg-cpu-receipt-sha256 <actual-sha256>
+```
+
+The formal branch calls the unchanged strict CPU completion verifier against that
+existing receipt. It revalidates actual guarded exit, native/dataset evidence and
+same-person pre/post QA; it does not launch another native/dataset/leg pass or
+rewrite the original QA snapshots. Missing or foreign receipts fail. Complete
+bilateral observations are required independently: until then, finish writes
+`completion_progress.json` with `bilateral_observation_pending` and starts no
+observer. Run the observer explicitly, choosing its device:
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = '-1'
+uv run --no-sync python tools/observe_badminton_dual_view.py --source-root <formal-run>/repair/final_labels --output-root <formal-run>/repair_paired --device cpu --threads 1
+```
+
+The observer reuses the declared initial teacher and existing secondary-camera
+teacher detections only at exact native records with matching PTS, common time,
+source frame, camera and video identity. Formal reuse additionally requires the
+prepared input's frozen physical-input/calibration equivalence proof. Interpolated
+or nearby teacher frames do not count as detections; missing cache records require
+actual detection on the explicitly selected device. Both teacher cache inventories
+are bound into resumable observation identity. The original observer CLI device
+default remains unchanged, so always pass `--device cpu` for this CPU route.
+
+After standard bilateral finalize/verify and typed viewer preparation succeed,
+formal fresh completion records `bilateral_labels_published=true` while retaining
+`training_published=false`, `archive_published=false`, `consumer_admitted=false`
+and `browser_playback_verified=false`. The receipt binds the existing formal CPU
+receipt, complete observations, export verification and prepared viewer manifest.
+Formal archive publication and consumer acceptance remain later gates.
+
+Use `serve_badminton_body_repair.py --repair-root <formal-run>/repair/final_labels`
+for candidate playback, or `serve_badminton_canonical_tracks.py --manifest
+<canonical-publication>` for the admitted identity view. Both use the explicit typed
+formal relocation/intake contract. Run `verify_badminton_fresh_playback.py --root
+<formal-run>/repair --url <viewer-url> --canonical-manifest <canonical-publication>`
+after bilateral completion. Its dedicated Chrome for Testing session uses
+`tools/check_badminton_fresh_playback.mjs` and the existing LiDAR
+`scripts/checks/lib/browser_session.mjs` helper; `--browser-session-helper` selects
+an explicit installed helper. Coverage comes from frozen sources/ranges: this
+seven-source formal run requires at least two genuine five-second clips per source
+(at least fourteen total), plus every reviewed canonical boundary regression.
+The complete native-pixel audit covers all images in the held-out **test split**;
+it does not claim coverage of all train/validation images.
+
 
 Fresh-source identity evidence uses the existing command names with a source-bound
 inventory, without the historical 64-case assumptions or manual exceptions:

@@ -7,8 +7,8 @@ from pathlib import Path
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import read_json, read_rows
 from hmr4d.lidar_mocap.rally_viewer import ViewerData, prepare_viewer, serve_viewer
-from hmr4d.lidar_mocap.relocations import load_run_relocations
 from hmr4d.lidar_mocap.track_colors import track_color_registry
+from badminton_viewer_contracts import viewer_relocations
 
 
 class CanonicalViewer(ViewerData):
@@ -68,7 +68,7 @@ def main():
         raise ValueError("Native body source changed")
     root = body_path.parent.parent
     try:
-        relocations = load_run_relocations(root, args.data_relocations, args.data_relocations_sha256)
+        relocations = viewer_relocations(root, args.data_relocations, args.data_relocations_sha256)
     except ValueError as exc:
         parser.error(str(exc))
     data = prepare_viewer(root, root, relocations=relocations, viewer_output=args.viewer_output)

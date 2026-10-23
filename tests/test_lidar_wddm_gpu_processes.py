@@ -1,7 +1,9 @@
 """The real WDDM failure must not weaken foreign-CUDA/PID-reuse exclusion."""
 
 from datetime import datetime, timedelta, timezone
+import ctypes
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,6 +99,102 @@ def test_unverifiable_or_stale_gui_identity_remains_blocking(desktop, monkeypatc
 def test_windows_executable_path_case_is_normalized(desktop):
     desktop.process.exe = lambda: "c:/WINDOWS/Explorer.exe"
     assert execution.compute_pids() == {200}
+
+
+@pytest.mark.parametrize("kernel_path", ["C:/Windows/explorer.exe", "C:/Other/explorer.exe", "C:/Python/python.exe"])
+def test_access_denied_uses_actual_kernel_image_but_still_requires_exact_frozen_executable(
+        desktop, monkeypatch, kernel_path):
+    def denied():
+        raise psutil.AccessDenied(100)
+
+    desktop.process.exe = denied
+    queries = []
+    monkeypatch.setattr(execution, "_kernel_process_executable", lambda pid: queries.append(pid) or kernel_path)
+    expected = {200} if kernel_path == desktop.entry["executable"] else {100, 200}
+    assert execution.compute_pids() == expected and queries == [100]
+
+
+@pytest.mark.parametrize("error", [OSError("unknown NTSTATUS"), ValueError("unmapped device prefix")])
+def test_unverifiable_kernel_image_remains_a_blocking_gpu_identity(desktop, monkeypatch, error):
+    def denied():
+        raise psutil.AccessDenied(100)
+
+    def failed(pid):
+        raise error
+
+    desktop.process.exe = denied
+    monkeypatch.setattr(execution, "_kernel_process_executable", failed)
+    assert execution.compute_pids() == {100, 200}
+
+
+def test_readable_process_image_preserves_psutil_path_without_kernel_fallback(monkeypatch):
+    process = SimpleNamespace(create_time=lambda: 50.0, exe=lambda: "C:/Windows/explorer.exe")
+    monkeypatch.setattr(execution.psutil, "Process", lambda pid: process)
+
+    def forbidden(pid):
+        pytest.fail("Readable process paths must keep the ordinary image query")
+
+    monkeypatch.setattr(execution, "_kernel_process_executable", forbidden)
+    assert execution.process_executable(100, expected_create_time=50.0) == "C:/Windows/explorer.exe"
+
+
+@pytest.mark.parametrize("created", [49.0, 51.0])
+def test_process_image_rechecks_fresh_pid_creation_time_and_rejects_reuse(monkeypatch, created):
+    original = SimpleNamespace(create_time=lambda: 50.0, exe=lambda: "C:/Windows/explorer.exe")
+    replacement = SimpleNamespace(create_time=lambda: created)
+    processes = iter([original, replacement])
+    monkeypatch.setattr(execution.psutil, "Process", lambda pid: next(processes))
+    with pytest.raises(psutil.NoSuchProcess, match="during its image query"):
+        execution.process_executable(100, expected_create_time=50.0)
+
+
+def test_wrong_expected_creation_time_is_rejected_before_any_image_read(monkeypatch):
+    process = SimpleNamespace(create_time=lambda: 51.0, exe=lambda: pytest.fail("Stale PID must not be read"))
+    monkeypatch.setattr(execution.psutil, "Process", lambda pid: process)
+    with pytest.raises(psutil.NoSuchProcess, match="before its image query"):
+        execution.process_executable(100, expected_create_time=50.0)
+
+
+@pytest.mark.parametrize("problem", [None, "status", "empty", "prefix", "unmapped", "odd_length"])
+def test_kernel_image_requires_actual_successful_query_and_exact_device_mapping(monkeypatch, problem):
+    native = r"\Device\Volume7\Windows\explorer.exe"
+    if problem == "prefix":
+        native = r"\Unknown\Volume7\Windows\explorer.exe"
+
+    class Query:
+        def __call__(self, information_class, pointer, size, returned):
+            assert information_class == 88 and size == ctypes.sizeof(execution._ProcessImage)
+            item = ctypes.cast(pointer, ctypes.POINTER(execution._ProcessImage)).contents
+            assert item.pid == 100
+            encoded = native.encode("utf-16-le")
+            ctypes.memmove(item.image.buffer, encoded, len(encoded))
+            item.image.length = 0 if problem == "empty" else len(encoded) - (problem == "odd_length")
+            return -1 if problem == "status" else 0
+
+    class Devices:
+        def __call__(self, drive, buffer, length):
+            if drive == "R:" and problem != "unmapped":
+                buffer.value = r"\Device\Volume7"
+                return len(buffer.value) + 2
+            return 0
+
+    libraries = dict(ntdll=SimpleNamespace(NtQuerySystemInformation=Query()),
+                     kernel32=SimpleNamespace(QueryDosDeviceW=Devices()))
+    monkeypatch.setattr(execution.ctypes, "WinDLL", lambda name, **kwargs: libraries[name])
+    if problem is None:
+        assert execution._kernel_process_executable(100) == r"R:\Windows\explorer.exe"
+    else:
+        with pytest.raises((OSError, ValueError)):
+            execution._kernel_process_executable(100)
+
+
+def test_actual_windows_kernel_image_query_matches_current_real_process_image():
+    if os.name != "nt":
+        pytest.skip("Actual kernel image query requires Windows")
+    process = psutil.Process()
+    actual = execution._kernel_process_executable(process.pid)
+    assert os.path.normcase(actual) == os.path.normcase(process.exe())
+    assert execution.process_executable(process.pid, expected_create_time=process.create_time()) == process.exe()
 
 
 @pytest.mark.parametrize("change", ["python", "reused_allowed", "expired", "wrong_request", "duplicate", "invalid_pid"])
@@ -218,4 +316,38 @@ def test_desktop_policy_must_cover_the_complete_approved_leg_window(desktop):
         ),
     )
     with pytest.raises(ValueError, match="entire approved"):
+        execution.configure_desktop_allowance(checked)
+
+
+def test_fresh_grant_desktop_binding_can_follow_a_long_cpu_pass_without_rewriting_implementation(desktop):
+    path = desktop.folder / "implementation_old_snapshot.json"
+    path.write_text(json.dumps(dict(desktop_allowance=dict(path="old", sha256="0" * 64),
+                                   desktop_allowance_fixture_only=True)), encoding="utf-8")
+    before = path.read_bytes()
+    checked = dict(request_binding=desktop.policy["request"], authorization=dict(grant=dict(
+        independent_guard=binding(path), desktop_allowance=binding(desktop.path),
+        desktop_allowance_fixture_only=False,
+        approved_deadline_utc=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat())))
+    execution.configure_desktop_allowance(checked)
+    assert execution.DESKTOP_ALLOWANCE == binding(desktop.path)
+    assert path.read_bytes() == before
+    assert execution.compute_pids() == {200}
+
+
+@pytest.mark.parametrize("change", ["fixture", "stale", "short_deadline", "wrong_request"])
+def test_independent_grant_desktop_still_requires_real_fresh_exact_full_window_evidence(desktop, change):
+    implementation = desktop.folder / "implementation.json"
+    implementation.write_text("{}", encoding="utf-8")
+    if change == "stale":
+        desktop.policy["observed_utc"] = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
+    if change == "short_deadline":
+        desktop.policy["valid_until_utc"] = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    if change == "wrong_request":
+        desktop.policy["request"] = dict(path="wrong", sha256="0" * 64)
+    desktop.put()
+    checked = dict(request_binding=binding(desktop.request), authorization=dict(grant=dict(
+        independent_guard=binding(implementation), desktop_allowance=binding(desktop.path),
+        desktop_allowance_fixture_only=change == "fixture",
+        approved_deadline_utc=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat())))
+    with pytest.raises(ValueError):
         execution.configure_desktop_allowance(checked)

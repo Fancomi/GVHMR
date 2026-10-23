@@ -1,11 +1,14 @@
-"""Verify ten real five-second native dual-camera/SMPL/cloud clips in Chrome."""
+"""Verify all declared sources through real five-second native playback clips."""
 
 import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import time
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 
 from playwright.sync_api import sync_playwright
@@ -16,9 +19,10 @@ from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
 from verify_badminton_viewer import visible_rgb_checks
+from badminton_viewer_contracts import check_viewer_coverage, complete_clip_plan
 
 
-def verify(root, url, canonical_path=None, output_root=None):
+def verify(root, url, canonical_path=None, output_root=None, *, cdp_url):
     root = Path(root).resolve()
     output = Path(output_root).resolve() if output_root else root / "browser_acceptance"
     output.mkdir(parents=True, exist_ok=True)
@@ -37,10 +41,9 @@ def verify(root, url, canonical_path=None, output_root=None):
             if attempt == 119:
                 raise
             time.sleep(0.5)
-    if manifest.get("declared_source_count") != 6 or set(manifest.get("empty_sources", {})) != {"20261015_164748"}:
-        raise ValueError("Fresh viewer must explicitly retain the declared zero source without synthetic playback")
-    if len(manifest["sources"]) != 5 or not all(s["baseline"] for s in manifest["sources"].values()):
-        raise ValueError("Every nonempty fresh source must expose actual stored body labels")
+    coverage = check_viewer_coverage(root / "final_labels", manifest)
+    served_manifest_path = output / "served_viewer_manifest.json"
+    write_json(served_manifest_path, manifest)
     clips = []
     canonical_binding, boundary_rows, boundary_results = None, {}, []
     if canonical_path:
@@ -95,58 +98,29 @@ def verify(root, url, canonical_path=None, output_root=None):
                 )
             )
             focused.add(key)
-    for sid, item in manifest["sources"].items():
-        rallies = [r for r in item["rallies"] if r["end"] - r["begin"] >= 5.5]
-        if len(rallies) < 2:
-            raise ValueError("Each source needs two genuine continuous five-second native clips")
-        selected_rallies = (
-            (
-                max(
-                    rallies,
-                    key=lambda r: min(
-                        [abs((r["begin"] + r["end"]) / 2 - c["begin"]) for c in clips if c["source_id"] == sid] or [1]
-                    ),
-                ),
-            )
-            if canonical_path
-            else (rallies[0], rallies[-1])
-        )
-        for rally in selected_rallies:
-            clips.append(
-                dict(source_id=sid, rally_index=rally["index"], begin=rally["begin"] + 0.2, duration_seconds=5)
-            )
-    if canonical_path and len(clips) < 10:
-        for sid, item in manifest["sources"].items():
-            for rally in item["rallies"]:
-                if len(clips) == 10:
-                    break
-                if rally["end"] - rally["begin"] >= 5.5 and not any(
-                    c["source_id"] == sid and c["rally_index"] == rally["index"] for c in clips
-                ):
-                    clips.append(
-                        dict(source_id=sid, rally_index=rally["index"], begin=rally["begin"] + 0.2, duration_seconds=5)
-                    )
-    if len(clips) != 10:
-        raise ValueError("Exactly ten genuine five-second clips are required")
+    clips = complete_clip_plan(manifest, clips)
+    required_clips = len(clips)
+    if required_clips < coverage["minimum_clips"]:
+        raise ValueError("Every source needs two genuine five-second clips")
     plan = dict(
         schema="badminton-fresh-browser-clips-v1",
         source_completion=frozen,
         canonical_publication=canonical_binding,
         selection=(
-            "Native identity-boundary regressions plus temporally diverse original rallies across all five nonempty sources"
+            "Native identity-boundary regressions plus temporally diverse original rallies across every nonempty source"
             if canonical_path
-            else "First and last sufficiently long original rally of each nonempty source; all five sources covered"
+            else "First and last sufficiently long original rally of each nonempty source"
         ),
         clips=clips,
         declared_empty_sources=manifest["empty_sources"],
+        frozen_source_coverage=coverage,
     )
     write_json(output / "clip_plan.json", plan)
     errors, results = [], []
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(
-            channel="chrome", headless=True, args=["--autoplay-policy=no-user-gesture-required"]
-        )
-        page = browser.new_page(viewport=dict(width=1366, height=768))
+        browser = playwright.chromium.connect_over_cdp(cdp_url)
+        context = browser.new_context(viewport=dict(width=1366, height=768))
+        page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_function("window.viewerReady === true", timeout=180000)
@@ -288,10 +262,15 @@ def verify(root, url, canonical_path=None, output_root=None):
                     dict(case=case["case"], verdict=case["verdict"], passed=True, observations=observed)
                 )
         version = browser.version
-        browser.close()
-    if errors or len(results) != 10:
-        raise ValueError("Browser reported errors or did not complete ten clips: " + str(errors))
+        context.close()
+    if errors or len(results) != required_clips:
+        raise ValueError("Browser reported errors or did not complete the frozen-source clip plan: " + str(errors))
     check_binding(frozen)
+    for evidence in coverage["evidence"]:
+        check_binding(evidence)
+    with urlopen(url + "api/manifest", timeout=10) as response:
+        if json.load(response) != manifest:
+            raise ValueError("The served viewer manifest changed during actual browser acceptance")
     producer = output / "producer.py"
     shutil.copyfile(__file__, producer)
     receipt = dict(
@@ -303,11 +282,12 @@ def verify(root, url, canonical_path=None, output_root=None):
         native_boundary_regressions=boundary_results,
         producer=binding(producer),
         clip_plan=binding(output / "clip_plan.json"),
-        viewer_manifest=binding(root / "final_labels/viewer/manifest.json"),
+        viewer_manifest=binding(served_manifest_path),
         url=url,
         browser_version=version,
-        declared_source_count=6,
-        played_sources=5,
+        declared_source_count=coverage["declared_source_count"],
+        played_sources=len({clip["source_id"] for clip in results}),
+        frozen_source_coverage=coverage,
         clips=len(results),
         minimum_clip_seconds=5,
         results=results,
@@ -329,12 +309,24 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8773/")
     parser.add_argument("--canonical-manifest", type=Path)
     parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--cdp-url", help=argparse.SUPPRESS)
+    parser.add_argument("--browser-session-helper", type=Path, help="Existing dedicated Chrome lifecycle helper")
     args = parser.parse_args()
     if not args.root.resolve().is_relative_to(PROJ_ROOT / "outputs"):
         parser.error("Select an explicit fresh production outputs root")
     if args.output_root and not args.output_root.resolve().is_relative_to(args.root.resolve()):
         parser.error("Fresh acceptance evidence must stay inside its repair run")
-    receipt = verify(args.root, args.url, args.canonical_manifest, args.output_root)
+    if not args.cdp_url:
+        node = shutil.which("node")
+        if node is None:
+            parser.error("Node is required to run the shared dedicated Chrome lifecycle helper")
+        command = [node, str(Path(__file__).with_name("check_badminton_fresh_playback.mjs")),
+                   "--python", sys.executable, *sys.argv[1:]]
+        raise SystemExit(subprocess.run(command, check=False).returncode)
+    parsed = urlsplit(args.cdp_url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
+        parser.error("CDP must use the dedicated loopback browser endpoint")
+    receipt = verify(args.root, args.url, args.canonical_manifest, args.output_root, cdp_url=args.cdp_url)
     print(json.dumps(dict(passed=receipt["passed"], clips=receipt["clips"], played_sources=receipt["played_sources"])))
 
 

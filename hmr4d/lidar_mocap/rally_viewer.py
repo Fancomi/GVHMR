@@ -233,15 +233,69 @@ def write_viewer_runtime_relocations(root, calibration, relocations, sessions, o
     return binding(path)
 
 
+def load_viewer_intake(run_root):
+    """Read the frozen source scope, deriving formal display counts from real ranges."""
+    root = Path(run_root).resolve()
+    evidence = []
+
+    def document(path, expected=None, *, rows=False):
+        path = Path(path).resolve()
+        payload = path.read_bytes()
+        sha = hashlib.sha256(payload).hexdigest()
+        if expected is not None and sha != expected:
+            raise ValueError("Frozen viewer intake/ranges SHA256 mismatch")
+        evidence.append(dict(path=str(path), sha256=sha))
+        text = payload.decode("utf-8-sig")
+        return [json.loads(line) for line in text.splitlines() if line] if rows else json.loads(text)
+
+    registry = document(root / "source_registry.json")
+    intake = document(registry["intake"]["path"], registry["intake"]["sha256"])
+    ranges = intake["prepared_ranges"]
+    rallies = document(ranges["path"], ranges["sha256"], rows=True)
+    declared = set(registry["sources"])
+    if any(row["source_id"] not in declared for row in rallies):
+        raise ValueError("Viewer ranges include an undeclared source")
+    if registry.get("schema") == "badminton-formal-derived-source-registry-v1":
+        if intake.get("schema") != "badminton-formal-derived-intake-v1":
+            raise ValueError("Formal viewer requires its derived intake")
+        selected = {sid: set() for sid in declared}
+        duration_us = 0
+        for row in rallies:
+            indices = row["eligible_paired_png_indices"]
+            if (any(type(index) is not int or index < 0 for index in indices)
+                    or len(set(indices)) != len(indices)
+                    or len(indices) != row["source_frame_count"]):
+                raise ValueError("Formal viewer range has invalid paired scan membership")
+            selected[row["source_id"]].update(indices)
+            duration = row["last_scan_mid_us"] - row["first_scan_mid_us"]
+            if duration < 0:
+                raise ValueError("Formal viewer range ends before it begins")
+            duration_us += duration
+        counts = {sid: len(indices) for sid, indices in selected.items()}
+        if len(rallies) != intake["rallies"] or sum(counts.values()) != intake["selected_scans"]:
+            raise ValueError("Formal viewer ranges disagree with the frozen intake totals")
+        minutes = duration_us / 60e6
+    else:
+        if set(intake["sources"]) != declared:
+            raise ValueError("Viewer registry and intake source coverage differ")
+        counts = {sid: item["paired_unique_png_frames"] for sid, item in intake["sources"].items()}
+        minutes = intake["effective_window_minutes"]
+    empty = {sid for sid, count in counts.items() if count == 0}
+    ranged = {row["source_id"] for row in rallies}
+    if empty & ranged or declared - empty != ranged:
+        raise ValueError("Viewer empty-source declaration disagrees with actual selected ranges")
+    return registry, intake, rallies, dict(
+        paired_scans=counts, empty_sources=sorted(empty), rally_window_minutes=minutes, evidence=evidence,
+    )
+
+
 def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=None, viewer_output=None):
     root = Path(run_root).resolve()
     baseline = Path(baseline_root).resolve()
     calibration = CalibrationSnapshot.load(root / "calibration/calibration_snapshot.json")
     viewer_bbox, display_evidence = load_display_bbox(calibration, display_crop)
-    registry = read_json(root / "source_registry.json")
+    registry, intake, rallies, coverage = load_viewer_intake(root)
     validate_run_relocations(registry, calibration.data, relocations)
-    intake = read_json(registry["intake"]["path"])
-    rallies = read_rows(intake["prepared_ranges"]["path"])
     sources = {}
     empty_sources = {}
     sessions = {}
@@ -251,7 +305,7 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
     if body and body.get("calibration_digest") != calibration.data["snapshot_digest"]:
         raise ValueError("Viewer body labels and source calibration disagree")
     for sid, entry in registry["sources"].items():
-        if not any(r["source_id"] == sid for r in rallies) and intake["sources"][sid]["paired_unique_png_frames"] == 0:
+        if sid in coverage["empty_sources"]:
             empty_sources[sid] = dict(reason="no_selected_paired_scans", paired_scans=0, fitted_person_frames=0)
             continue
         session = load_run_session(root, calibration, sid, relocations=relocations)
@@ -303,8 +357,8 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
         declared_source_count=len(registry["sources"]),
         empty_sources=empty_sources,
         rally_count=len(rallies),
-        rally_window_minutes=intake["effective_window_minutes"],
-        unique_paired_input_scans=sum(s["paired_unique_png_frames"] for s in intake["sources"].values()),
+        rally_window_minutes=coverage["rally_window_minutes"],
+        unique_paired_input_scans=sum(coverage["paired_scans"].values()),
         sources=sources,
         calibration_digest=calibration.data["snapshot_digest"],
         edges=EDGES,

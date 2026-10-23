@@ -21,7 +21,7 @@ from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import load_run_session, read_json, read_rows
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
-
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
 
 NATIVE_FIELDS = ("record_index", "media_pts_us", "common_time_us", "source_frame_no")
 
@@ -152,6 +152,7 @@ def audit(assembly_path, output, correction_path=None):
         historical_supplement=binding(correction_path) if correction_path else None,
     )
     reports, used = set(), set()
+    resolvers, sessions = {}, {}
     journal_path = output / "native_pixels.jsonl"
     with journal_path.open("w", encoding="utf-8") as journal:
         for (sid, cam), group in requests.items():
@@ -161,7 +162,14 @@ def audit(assembly_path, output, correction_path=None):
             cal = CalibrationSnapshot.load(source["calibration_snapshot"])
             if cal.data["snapshot_digest"] != source["calibration_digest"]:
                 raise ValueError("Source registry and calibration disagree")
-            session = load_run_session(Path(source["source_run"]), cal, sid)
+            run = Path(source["source_run"]).resolve()
+            run_key = run, cal.data["snapshot_digest"]
+            if run_key not in resolvers:
+                resolvers[run_key] = load_pilot_run_relocations(run, cal.data)
+            session_key = run_key, sid
+            if session_key not in sessions:
+                sessions[session_key] = load_run_session(run, cal, sid, relocations=resolvers[run_key])
+            session = sessions[session_key]
             native_rows, checked, applied = session.camera_rows(cam), set(), 0
             for index, bgr in session.iter_video_frames(cam, sorted(group)):
                 request = group[index]

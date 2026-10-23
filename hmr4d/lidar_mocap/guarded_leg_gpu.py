@@ -151,6 +151,7 @@ def implementation_files():
         common_authorization="hmr4d/lidar_mocap/gpu_handoff.py",
         native_witness="hmr4d/lidar_mocap/native_witness.py",
         native_derivation="hmr4d/lidar_mocap/formal_native_derive.py",
+        verified_read_pass="hmr4d/lidar_mocap/verified_read_pass.py",
     ).items()}
 
 
@@ -251,15 +252,20 @@ def _reviewed_identity(value, keys, source_sha, calibration):
 
 
 def validate_readiness(checked, grant):
+    return validate_readiness_inputs(checked, grant["readiness"], grant["independent_guard"])
+
+
+def validate_readiness_inputs(checked, readiness_binding, implementation_binding):
+    """The identical full CPU predicate, usable before a GPU grant exists."""
     request, root = checked["request"], checked["root"]
-    ready = bound_json(grant["readiness"])
+    ready = bound_json(readiness_binding)
     schema_check(ready, bound_json(checked["runtime"]["readiness_schema"]))
     plan = read_json(root / "final_labels/repair_plan.json")
     keys = {j["source_id"] + ":" + Path(j["source_window"]).name for j in plan["jobs"]}
     if len(keys) != checked["configuration"]["planned_windows"]:
         raise ValueError("Actual formal body plan is incomplete")
     evidence = {role: bound_json(item) for role, item in ready["evidence"].items()}
-    baseline_dir = Path(grant["readiness"]["path"]).resolve().parent
+    baseline_dir = Path(readiness_binding["path"]).resolve().parent
     for role in ("formal_preleg_native_verification", "formal_preleg_qa", "formal_complete_baseline"):
         if not Path(ready["evidence"][role]["path"]).resolve().is_relative_to(baseline_dir):
             raise ValueError("Authorization requires immutable separate pre-leg evidence snapshots")
@@ -346,7 +352,7 @@ def validate_readiness(checked, grant):
         raise ValueError("A predecessor process is still alive")
     guard = evidence["independent_guard_ready"]
     if (guard.get("schema") != "gvhmr-guarded-leg-guard-readiness-v1" or guard.get("state") != "implementation_tested"
-            or guard.get("implementation") != grant["independent_guard"]):
+            or guard.get("implementation") != implementation_binding):
         raise ValueError("Independent tested guard implementation is missing")
     return ready
 
@@ -394,9 +400,13 @@ def immutable_anchors(checked):
     values += list(request["scope"][0]["existing_input_and_code_bindings"].values())
     implementation = bound_json(grant["independent_guard"])
     values += list(implementation["code"].values()) + [implementation["test_execution"]]
-    if implementation.get("desktop_allowance"):
-        check_binding(implementation["desktop_allowance"])
-        values.append(implementation["desktop_allowance"])
+    desktop = grant.get("desktop_allowance", implementation.get("desktop_allowance"))
+    if desktop:
+        check_binding(desktop)
+        values.append(desktop)
+    if grant.get("verified_read_pass"):
+        receipt = bound_json(grant["verified_read_pass"])
+        values += [grant["verified_read_pass"], receipt["pregrant"], receipt["read_set"]]
     values += bound_json(implementation["test_execution"])["test_files"]
     from .formal_native_derive import native_derivation_anchors
     values += native_derivation_anchors(bound_json(ready["evidence"]["formal_preleg_native_verification"]))

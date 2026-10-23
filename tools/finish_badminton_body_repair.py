@@ -29,16 +29,33 @@ def main():
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--observer-max-new-frames", type=int, default=500)
+    p.add_argument(
+        "--formal-postleg-cpu-receipt",
+        type=Path,
+        help="Reuse this existing bound formal CPU completion; no native, dataset, leg or observer pass is launched",
+    )
+    p.add_argument("--formal-postleg-cpu-receipt-sha256")
     args = p.parse_args()
     if args.threads < 1 or args.observer_max_new_frames < 1:
         p.error("Thread and observer limits must be positive")
+    if (args.formal_postleg_cpu_receipt is None) != (args.formal_postleg_cpu_receipt_sha256 is None):
+        p.error("--formal-postleg-cpu-receipt and --formal-postleg-cpu-receipt-sha256 must be supplied together")
     root = args.root.resolve()
     labels = root / "final_labels"
     input_plan = read_json(labels / "repair_plan.json")
     if read_json(input_plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
         from hmr4d.lidar_mocap.new_source_completion import finish_new_sources
-        finish_new_sources(root, threads=args.threads, observer_max_new_frames=args.observer_max_new_frames)
+
+        finish_new_sources(
+            root,
+            threads=args.threads,
+            observer_max_new_frames=args.observer_max_new_frames,
+            formal_postleg_cpu_receipt=args.formal_postleg_cpu_receipt,
+            formal_postleg_cpu_receipt_sha256=args.formal_postleg_cpu_receipt_sha256,
+        )
         return
+    if args.formal_postleg_cpu_receipt is not None:
+        p.error("Formal postleg completion requires an explicit prepared fresh-source input")
     expected = len(read_json(labels / "repair_plan.json")["jobs"])
     while True:
         paths = [

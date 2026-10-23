@@ -570,6 +570,65 @@ CPU allocation and tested implementation bindings for a new authorization;
 preserve the expired request and its evidence. Selecting another contract cannot
 extend an old deadline or satisfy missing readiness, desktop or private Job gates.
 
+The optional live CPU read-pass mode keeps the expensive complete native/input
+preflight outside the separately issued GPU window. Its independent CPU-only
+bundle has exactly these fields: `schema=gvhmr-guarded-leg-pregrant-v1`,
+`state=cpu_inputs_only_not_authorized`, exact `request`, `runtime_contract`,
+`readiness` and `independent_guard` path/SHA256 bindings, an explicit
+`cpu_wait_deadline_utc` no later than the request's absolute hard deadline, and
+`gpu_started=false`, `training_published=false`. It grants no CUDA time. Append
+`--pregrant <absolute-bundle-path> --pregrant-sha256 <actual-bundle-SHA256>` to
+the exact `--execute --request ... --grant <future-new-grant-path>` command below.
+The same driver completes the unchanged full readiness predicate before waiting
+for that new grant; no lease, GPU inspection or private Job starts while waiting.
+
+`verified_read_pass.py` retains real, noninheritable Windows read handles for
+every observed deep-read input, every indexed original/admitted PNG and fullraw
+member map, and the native runtime/model inventory. Leaf handles deny write and
+delete; ordinary ancestors deny rename while permitting the existing atomic
+progress/lease writer. The live capability rejects every input reparse/junction
+alias: Windows attribute-only handles can alter a junction despite its sharing
+flags, so change detection alone cannot prove which object the first deep pass
+actually read. Use the canonical entity Python interpreter with the unchanged
+project and `.venv/Lib/site-packages` on `PYTHONPATH`, and the existing
+`.venv/Library/bin` at the front of `PATH` for the same CPU DLL dependencies.
+Its `sys.base_prefix` must name the canonical entity directory. The native
+inventory must match the frozen runtime by actual file SHA and versions.
+The canonical driver executable is bound in its live receipt; the three approved
+phase commands retain their original `.venv/Scripts/python.exe` argv. The ordinary
+legacy invocation below is unchanged. The synthetic junction probe records the
+actual limitation; it does not authorize an unlocked alias fallback.
+All source SHA/numerical comparisons still run in the original deep predicate
+with those handles held. Stat-only declarations acquire locks without adding a
+full PNG/video read. `read_set.json` reports real paths, file IDs, sizes and lock
+coverage, including the declared/locked stat-only difference; it does not claim
+additional per-file content hashes. `cpu_read_passes/<nonce>/cpu_ready.json`
+binds that exact inventory, the inputs and tested implementation, and the actual
+driver PID/create-time/command/nonce. This receipt cannot restore a capability
+in another process or after its locks close.
+
+The actual fresh grant must additionally bind that receipt as
+`verified_read_pass`, and a fresh independent `desktop_allowance` with
+`desktop_allowance_fixture_only=false`. Its approved start must follow CPU
+completion; the desktop capture must be at most fifteen minutes old and cover
+the entire approved deadline. This avoids rewriting the frozen implementation
+after a long CPU preflight. The bound grant schema must allow/require these new
+fields for this mode. Legacy invocation retains the implementation's desktop
+binding and its complete startup/apply preflight. Neither mode renews an old
+request or expands the thirty-minute grant, local lease or hard deadline.
+
+After the grant, startup and pre-apply checks still read/hash every actual current
+baseline report/artifact. The live capability replaces only repeated deep
+context reconstruction; runtime membership, algorithm provenance, predecessor
+identity, exact bindings, available time, watchdog, foreign GPU and private Job
+checks remain active. Immediately before apply it releases only the selected
+current FORMAL fit/export/report/review paths and exact aggregate outputs. A
+file-ID alias with any parent, original, unselected current or other immutable
+input rejects release. The capability becomes unusable across this mutation;
+all other input locks remain until the existing Job cleanup finishes. A stopped
+driver requires a new complete CPU pass and separately issued authority. This
+interface does not attest a production leg or replace any original native witness.
+
 Invoke the future driver with absolute paths in this exact argument order:
 
 ```powershell
@@ -577,6 +636,19 @@ Invoke the future driver with absolute paths in this exact argument order:
   D:/PROJECT/LABEL/GVHMR/tools/run_badminton_guarded_leg.py --execute `
   --request D:/PROJECT/LABEL/GVHMR/outputs/badminton_1019_1020_formal_v1/gpu_guarded_leg/guarded_leg_gpu_request.json `
   --grant <absolute-path-to-the-actual-new-issued-grant>
+```
+
+For the optional read-pass, use the verified canonical interpreter instead of
+the venv launcher, retaining the original approved phase commands:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$env:PYTHONPATH = 'D:/PROJECT/LABEL/GVHMR;D:/PROJECT/LABEL/GVHMR/.venv/Lib/site-packages'
+$env:PATH = 'D:/PROJECT/LABEL/GVHMR/.venv/Library/bin;' + $env:PATH
+& <absolute-canonical-python.exe> -u `
+  D:/PROJECT/LABEL/GVHMR/tools/run_badminton_guarded_leg.py --execute `
+  --request <absolute-new-request> --grant <absolute-future-fresh-grant> `
+  --pregrant <absolute-CPU-only-bundle> --pregrant-sha256 <actual-bundle-SHA256>
 ```
 
 The controller and independent watchdog remain on E26/27, BelowNormal. A
@@ -615,6 +687,13 @@ The execution guard now retains the raw list and exempts only an explicitly
 bound desktop snapshot's exact PID, creation time and executable identities.
 Unknown/new/reused/inaccessible identities remain blocking, including idle
 Python CUDA workers. No external process is stopped to clear that list.
+The shared `process_executable(pid, expected_create_time=...)` helper first uses
+the ordinary process image query. On AccessDenied it reads the real kernel image
+with `NtQuerySystemInformation(SystemProcessIdInformation)` and converts its
+device prefix using the actual `QueryDosDeviceW` mappings. Fresh creation-time
+checks bracket the image query. Unknown status, empty/unmapped paths and reused
+PIDs remain blocking. This adds no program-name exception or alternative desktop
+identity type; both paths require the same exact frozen executable and time.
 `implementation_wddm_v2/actual_gpu_process_observation.json` records the real
 29-entry observation: 28 independently observed GUI identities plus one actual
 1020 CUDA worker, which correctly remained blocking. The new 23-case focused
