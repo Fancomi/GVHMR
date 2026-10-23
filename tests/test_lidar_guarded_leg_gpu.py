@@ -26,7 +26,8 @@ def constants(value):
 
 
 @pytest.fixture
-def stage(tmp_path, monkeypatch):
+def stage(tmp_path, monkeypatch, request):
+    runtime_name = getattr(request, "param", None)
     for module in (auth, execution, gpu_handoff):
         monkeypatch.setattr(module, "PROJ_ROOT", tmp_path)
     root = tmp_path / "outputs/formal/repair"
@@ -63,6 +64,8 @@ def stage(tmp_path, monkeypatch):
         sports_stop_receipt=sports, predecessor_continuous_grant=predecessor,
         scope=[dict(root=str(root), manifest=source, stage="guarded_leg", configuration=config,
                     existing_input_and_code_bindings=inputs, commands=commands)])
+    if runtime_name is not None:
+        request["issuer_runtime_checks_file"] = runtime_name
     request_binding = put(request_path, request)
     cpu = put(folder / "cpu.json", dict(request=request_binding, pure_cpu_phases=dict(affinity=[26, 27]),
                                       cuda_propose_and_apply=dict(affinity=[0, 1])))
@@ -111,7 +114,8 @@ def stage(tmp_path, monkeypatch):
     for name in ("readiness", "independent_guard"):
         grant_schema["required"].append(name)
         grant_schema["properties"][name] = dict(type="object", required=["path", "sha256"])
-    runtime = put(folder / "issuer_runtime_checks.json", dict(request=request_binding, cpu_allocation=cpu,
+    runtime = put(folder / (runtime_name or "issuer_runtime_checks.json"), dict(
+        request=request_binding, cpu_allocation=cpu,
         grant_schema=put(folder / "grant.schema.json", grant_schema), readiness_schema=ready_schema_binding))
     test_file = put(tmp_path / "tests/test_guard.py", dict(synthetic_test_source=True))
     tested = put(folder / "cpu_tests.json", dict(schema="gvhmr-guarded-leg-cpu-test-v1", state="passed", passed=1,
@@ -161,8 +165,159 @@ def test_real_bindings_complete_before_authorization_and_no_lease_side_effect(st
     checked = stage.checked()
     assert checked["root"] == stage.root
     assert [x["cuda"] for x in checked["commands"]] == [True, False, True]
+    assert checked["runtime_binding"] == binding(stage.folder / "issuer_runtime_checks.json")
+    assert auth.bound_json(stage.grant["independent_guard"])["runtime_contract"] == checked["runtime_binding"]
     assert not (stage.folder / "guarded_leg_stage_lease.json").exists()
     assert auth.immutable_anchors(checked)
+
+
+@pytest.mark.parametrize("stage", ["issuer_runtime_checks_v2.json"], indirect=True)
+def test_explicit_runtime_contract_binds_actual_request_implementation_and_anchors(stage):
+    selected = stage.folder / stage.request["issuer_runtime_checks_file"]
+    legacy_request = deepcopy(stage.request)
+    legacy_request.pop("issuer_runtime_checks_file")
+    old_request = put(stage.folder / "legacy_request.json", legacy_request)
+    legacy_contract = dict(auth.read_json(selected), request=old_request)
+    default = stage.folder / "issuer_runtime_checks.json"
+    old_contract = put(default, legacy_contract)
+    old_bytes = default.read_bytes()
+
+    checked = stage.checked()
+    assert checked["request_binding"] == binding(stage.request_path)
+    assert checked["runtime"]["request"] == checked["request_binding"]
+    assert checked["runtime_binding"] == binding(selected)
+    implementation = auth.verify_implementation(stage.grant["independent_guard"], checked)
+    assert implementation["runtime_contract"] == binding(selected)
+    anchors = auth.immutable_anchors(checked)
+    assert binding(selected) in anchors
+    assert old_contract not in anchors
+    assert default.read_bytes() == old_bytes
+
+    implementation["runtime_contract"] = old_contract
+    mixed = put(stage.folder / "mixed_implementation.json", implementation)
+    with pytest.raises(ValueError, match="issued target contract"):
+        auth.verify_implementation(mixed, checked)
+
+
+@pytest.mark.parametrize("stage", ["issuer_runtime_checks_v2.json"], indirect=True)
+@pytest.mark.parametrize("change", ["path", "sha256", "request_bytes"])
+def test_selected_runtime_contract_requires_exact_request_path_and_sha(stage, change):
+    selected = stage.folder / stage.request["issuer_runtime_checks_file"]
+    runtime = auth.read_json(selected)
+    if change == "path":
+        alias = stage.folder / "same_bytes_request.json"
+        alias.write_bytes(stage.request_path.read_bytes())
+        runtime["request"] = binding(alias)
+    elif change == "sha256":
+        runtime["request"]["sha256"] = "f" * 64
+    else:
+        put(stage.request_path, dict(stage.request, note="new request bytes need their own authority"))
+    put(selected, runtime)
+    with pytest.raises(ValueError, match="Runtime contract uses another request"):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("stage", ["issuer_runtime_checks_v2.json"], indirect=True)
+def test_selected_runtime_contract_change_cannot_be_rebound_after_inspection(stage):
+    checked = stage.checked()
+    selected = stage.folder / stage.request["issuer_runtime_checks_file"]
+    put(selected, dict(checked["runtime"], changed_after_inspection=True))
+    with pytest.raises(ValueError, match="Pilot input changed"):
+        auth.verify_implementation(stage.grant["independent_guard"], checked)
+    with pytest.raises(ValueError, match="Pilot input changed"):
+        auth.immutable_anchors(checked)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [None, False, 7, [], {}, "", " ", "/outside.json", "C:\\outside.json", "C:outside.json",
+     "../outside.json", "..\\outside.json", "sub/contract.json", "sub\\contract.json",
+     "contract..json", "contract.txt", "contract\x00.json"],
+)
+def test_runtime_contract_field_rejects_nonfilenames_before_reading(stage, name):
+    put(stage.request_path, dict(stage.request, issuer_runtime_checks_file=name))
+    with pytest.raises(ValueError, match="plain same-directory JSON filename"):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_explicit_runtime_contract_requires_regular_file_without_legacy_fallback(stage, kind):
+    name = kind + ".json"
+    if kind == "directory":
+        (stage.folder / name).mkdir()
+    put(stage.request_path, dict(stage.request, issuer_runtime_checks_file=name))
+    assert (stage.folder / "issuer_runtime_checks.json").is_file()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("outside", [False, True], ids=["same-directory-link", "escaping-link"])
+def test_runtime_contract_symlinks_are_rejected(stage, outside):
+    destination = stage.folder.parent if outside else stage.folder
+    target = destination / "symlink_target.json"
+    put(target, auth.read_json(stage.folder / "issuer_runtime_checks.json"))
+    link = stage.folder / "linked_runtime.json"
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        pytest.skip("Actual symlink creation unavailable: " + str(error))
+    put(stage.request_path, dict(stage.request, issuer_runtime_checks_file=link.name))
+    with pytest.raises(ValueError, match="regular JSON file in the request directory"):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "resolved_escape"])
+def test_runtime_contract_rejects_simulated_symlink_and_resolved_escape(stage, monkeypatch, kind):
+    """Exercise both refusal branches even when actual Windows symlink creation is unavailable."""
+    target = stage.folder / "simulated_runtime.json"
+    put(target, auth.read_json(stage.folder / "issuer_runtime_checks.json"))
+    put(stage.request_path, dict(stage.request, issuer_runtime_checks_file=target.name))
+    if kind == "symlink":
+        is_symlink = Path.is_symlink
+        monkeypatch.setattr(Path, "is_symlink", lambda path: path == target or is_symlink(path))
+    else:
+        resolve = Path.resolve
+        outside = stage.folder.parent / target.name
+
+        def resolved_path(path, *args, **kwargs):
+            return outside if path == target else resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolved_path)
+    with pytest.raises(ValueError, match="regular JSON file in the request directory"):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("change", ["binding_escape", "link_after_read"])
+def test_runtime_contract_path_is_rechecked_after_simulated_binding_or_read_replacement(stage, monkeypatch, change):
+    target = stage.folder / "issuer_runtime_checks.json"
+    if change == "binding_escape":
+        outside = stage.folder.parent / "outside_runtime.json"
+        put(outside, auth.read_json(target))
+        original_binding = auth.binding
+        monkeypatch.setattr(auth, "binding", lambda path: original_binding(outside if Path(path) == target else path))
+        expected = "path changed during inspection"
+    else:
+        linked = [False]
+        original_read = auth.bound_json
+        is_symlink = Path.is_symlink
+
+        def read_then_replace(item):
+            result = original_read(item)
+            if Path(item["path"]) == target:
+                linked[0] = True
+            return result
+
+        monkeypatch.setattr(auth, "bound_json", read_then_replace)
+        monkeypatch.setattr(Path, "is_symlink", lambda path: (path == target and linked[0]) or is_symlink(path))
+        expected = "regular JSON file in the request directory"
+    with pytest.raises(ValueError, match=expected):
+        auth.inspect_request(stage.request_path)
+
+
+@pytest.mark.parametrize("stage", ["issuer_runtime_checks_v2.json"], indirect=True)
+def test_versioned_runtime_contract_cannot_extend_an_expired_grant(stage):
+    with pytest.raises(ValueError, match="real fixed time window"):
+        auth.load_authorization(stage.request_path, stage.grant_path, now=stage.start + timedelta(minutes=30))
 
 
 def test_missing_grant_cannot_probe_gpu_create_lease_or_launch(stage, monkeypatch):

@@ -154,12 +154,24 @@ def implementation_files():
     ).items()}
 
 
+def _runtime_contract_path(request_path, request):
+    name = request.get("issuer_runtime_checks_file", "issuer_runtime_checks.json")
+    if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*\.json", name)
+            or ".." in name):
+        raise ValueError("Runtime contract must use a plain same-directory JSON filename")
+    target = request_path.parent / name
+    resolved = target.resolve(strict=True)
+    if resolved.parent != request_path.parent or target.is_symlink() or not resolved.is_file():
+        raise ValueError("Runtime contract must be a regular JSON file in the request directory")
+    return resolved
+
+
 def verify_implementation(item, checked):
     implementation = bound_json(item)
+    check_binding(checked["runtime_binding"])
     if (implementation.get("schema") != "gvhmr-guarded-leg-implementation-v1"
             or implementation.get("request") != checked["request_binding"]
-            or implementation.get("runtime_contract") != binding(
-                Path(checked["request_binding"]["path"]).parent / "issuer_runtime_checks.json")):
+            or implementation.get("runtime_contract") != checked["runtime_binding"]):
         raise ValueError("This independent guard is not bound to the issued target contract")
     expected = {name: binding(path) for name, path in implementation_files().items()}
     if implementation.get("code") != expected:
@@ -178,7 +190,8 @@ def verify_implementation(item, checked):
 
 def inspect_request(path):
     path = Path(path).resolve()
-    request = read_json(path)
+    request_binding = binding(path)
+    request = bound_json(request_binding)
     if (request.get("schema") != "gvhmr-continuous-production-gpu-request-v1"
             or request.get("authorized_stages_requested") != ["guarded_leg"]
             or request.get("requested_local_stage_lease_limits_minutes") != {"guarded_leg": 30}
@@ -197,15 +210,21 @@ def inspect_request(path):
         check_binding(item)
     if configuration.get("code_and_inputs") != scope["existing_input_and_code_bindings"]:
         raise ValueError("Guarded policy description differs from actual code/input bindings")
-    contract = read_json(path.parent / "issuer_runtime_checks.json")
-    if contract.get("request") != binding(path):
+    runtime_path = _runtime_contract_path(path, request)
+    runtime_binding = binding(runtime_path)
+    if Path(runtime_binding["path"]) != runtime_path:
+        raise ValueError("Runtime contract path changed during inspection")
+    contract = bound_json(runtime_binding)
+    if _runtime_contract_path(path, request) != runtime_path:
+        raise ValueError("Runtime contract path changed during inspection")
+    if contract.get("request") != request_binding:
         raise ValueError("Runtime contract uses another request")
     cpu = bound_json(contract["cpu_allocation"])
-    if (cpu.get("request") != binding(path) or cpu["pure_cpu_phases"]["affinity"] != [26, 27]
+    if (cpu.get("request") != request_binding or cpu["pure_cpu_phases"]["affinity"] != [26, 27]
             or cpu["cuda_propose_and_apply"]["affinity"] != [0, 1]):
         raise ValueError("Explicit CPU/CUDA affinity allocation differs")
     return dict(request=request, root=root, commands=commands, configuration=configuration,
-                runtime=contract, cpu=cpu, request_binding=binding(path))
+                runtime=contract, runtime_binding=runtime_binding, cpu=cpu, request_binding=request_binding)
 
 
 def _complete_native(value, keys, *, source_sha=None, calibration=None, repair=None):
@@ -361,9 +380,10 @@ def load_authorization(request_path, grant_path, *, now=None, deep=True):
 def immutable_anchors(checked):
     grant, request = checked["authorization"]["grant"], checked["request"]
     ready = bound_json(grant["readiness"])
+    check_binding(checked["runtime_binding"])
     values = [checked["request_binding"], checked["authorization"]["binding"],
         grant["readiness"], grant["configuration"], grant["cpu_allocation"], grant["independent_guard"],
-        binding(Path(checked["request_binding"]["path"]).parent / "issuer_runtime_checks.json"),
+        checked["runtime_binding"],
         checked["runtime"]["grant_schema"], checked["runtime"]["readiness_schema"]]
     values += list(ready["evidence"].values())
     baseline = bound_json(ready["evidence"]["formal_complete_baseline"])

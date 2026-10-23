@@ -558,6 +558,18 @@ native/identity/body/import evidence and a tested implementation manifest.
 No inspection or preflight creates a lease or launches CUDA. Actual execution
 requires the coordinating root's new grant; the old two-root grant is unchanged.
 
+A new request may explicitly set `issuer_runtime_checks_file` to a separate JSON
+filename in that same `gpu_guarded_leg` directory. Omission retains the legacy
+`issuer_runtime_checks.json` default. The name must start with an ASCII letter,
+digit, `_` or `-`, contain only those characters plus `.`, end in `.json` and
+contain no `..`; paths, symlinks and nonregular files are rejected. The selected
+contract must bind the exact new request path and SHA256. Its actual file binding
+is also required by `implementation.runtime_contract` and retained among the
+immutable execution anchors. Issue separate request, runtime contract, schemas,
+CPU allocation and tested implementation bindings for a new authorization;
+preserve the expired request and its evidence. Selecting another contract cannot
+extend an old deadline or satisfy missing readiness, desktop or private Job gates.
+
 Invoke the future driver with absolute paths in this exact argument order:
 
 ```powershell
