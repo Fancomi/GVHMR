@@ -125,6 +125,11 @@ the client buffers complete native RGB/mesh/cloud bundles and defaults to the
 native badminton Region-minus-Ignore display filter. `tools/verify_badminton_viewer.py`
 exercises real Chrome; `tools/benchmark_badminton_playback.py` measures actual
 complete commits, buffer waits, decoder seeks and visible RGB identity.
+An explicitly bound `--display-crop` background-ground sidecar can raise only
+the ground Ignore used for a review preview. It protects each scan's exact stored
+fit members, retains original person/mesh projections and leaves the producer
+crop unchanged. Use a separate `--viewer-output`; the sidecar binds the actual
+review dataset, source scope and original bbox SHA. It grants no training admission.
 `tools/report_badminton_rally_delivery.py` adds a hash-bound quality receipt to
 an already verified publication without rewriting its manifest or tensors.
 `tools/build_badminton_reference_union.py` verifies the old full data plus four

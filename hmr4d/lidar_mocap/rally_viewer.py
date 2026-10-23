@@ -164,6 +164,92 @@ def apply_display_net_extension(bbox, settings, base_sha256):
     return result
 
 
+GROUND_DISPLAY_SCHEMA = "badminton-background-ground-display-v1"
+
+
+def apply_display_ground_extension(bbox, settings, base_sha256):
+    """Raise only the background ground Ignore top; retain the original Region."""
+    expected = {
+        "schema",
+        "sport",
+        "scope",
+        "source_ids",
+        "base_bbox_sha256",
+        "ground_ignore_id",
+        "ground_positive_local_z_extension_m",
+        "dataset_manifest",
+        "preview_only",
+        "formal_crop_unchanged",
+    }
+    binding = settings.get("dataset_manifest")
+    sources = settings.get("source_ids")
+    if (
+        set(settings) != expected
+        or settings["schema"] != GROUND_DISPLAY_SCHEMA
+        or settings["sport"] != "badminton"
+        or settings["scope"] != "background_display_only"
+        or settings["base_bbox_sha256"] != base_sha256
+        or settings["preview_only"] is not True
+        or settings["formal_crop_unchanged"] is not True
+        or not isinstance(binding, dict)
+        or set(binding) != {"path", "sha256"}
+        or not isinstance(binding["path"], str)
+        or not Path(binding["path"]).is_absolute()
+        or not isinstance(binding["sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", binding["sha256"]) is None
+        or not isinstance(sources, list)
+        or not sources
+        or any(not isinstance(s, str) or re.fullmatch(r"\d{8}_\d{6}", s) is None for s in sources)
+        or len(sources) != len(set(sources))
+    ):
+        raise ValueError("Background ground display schema/scope/bindings mismatch")
+    extension = settings["ground_positive_local_z_extension_m"]
+    if (
+        isinstance(extension, bool)
+        or not isinstance(extension, (int, float))
+        or not np.isfinite(extension)
+        or extension < 0
+    ):
+        raise ValueError("Background ground extension must be finite and nonnegative")
+    original = bbox.get("boxes", [])
+    if (
+        len(original) < 2
+        or original[0].get("id") != settings["ground_ignore_id"]
+        or original[0]["type"].lower() != "ignore"
+        or not original[0].get("enabled", True)
+    ):
+        raise ValueError("Background ground display must identify the original first ground Ignore")
+    result = copy.deepcopy(badminton_detection_bbox(bbox))
+    ground = result["boxes"][0]
+    direction = bbox_rotation_float32(ground.get("rotation_deg", [0, 0, 0]))[:, 2].astype(np.float64)
+    ground["center"] = (np.asarray(ground["center"], np.float64) + direction * (float(extension) * 0.5)).tolist()
+    ground["size"][2] = float(ground["size"][2]) + float(extension)
+    if not np.isfinite(np.asarray(ground["center"] + ground["size"], np.float32)).all():
+        raise ValueError("Background ground display exceeds finite Float32")
+    return result
+
+
+def validate_ground_display_parent(root, baseline, registry, body, evidence, viewer_output):
+    """Bind this explicit preview to the actual parent dataset, before any writes."""
+    settings = evidence["settings"]
+    binding = settings["dataset_manifest"]
+    path = root / "datasets/dataset_manifest.json"
+    blob = path.read_bytes()
+    if (
+        root != baseline
+        or Path(binding["path"]).resolve() != path.resolve()
+        or hashlib.sha256(blob).hexdigest() != binding["sha256"]
+        or json.loads(blob) != body
+        or body.get("review_only") is not True
+        or body.get("training_published") is not False
+        or set(settings["source_ids"]) != set(body.get("exports", {}))
+        or set(settings["source_ids"]) != set(registry["sources"])
+    ):
+        raise ValueError("Background ground display parent dataset/source binding mismatch")
+    if viewer_output is None or Path(viewer_output).resolve().is_relative_to(root):
+        raise ValueError("Background ground preview requires a separate explicit viewer output")
+
+
 def load_display_bbox(calibration, path=None):
     bbox = calibration.data["bbox"]
     if path is None:
@@ -182,7 +268,12 @@ def load_display_bbox(calibration, path=None):
     base_blob = (calibration.snapshot_json.parent / artifacts[0]["path"]).read_bytes()
     if hashlib.sha256(base_blob).hexdigest() != base_sha or json.loads(base_blob) != bbox:
         raise ValueError("Display crop base bbox bytes/geometry mismatch")
-    adjusted = apply_display_net_extension(bbox, settings, base_sha)
+    ground_display = settings.get("schema") == GROUND_DISPLAY_SCHEMA
+    adjusted = (
+        apply_display_ground_extension(bbox, settings, base_sha)
+        if ground_display
+        else apply_display_net_extension(bbox, settings, base_sha)
+    )
     evidence = dict(
         path=str(path),
         sha256=hashlib.sha256(blob).hexdigest(),
@@ -190,7 +281,7 @@ def load_display_bbox(calibration, path=None):
         original_inputs_unchanged=True,
         arithmetic="Float64 original center + Float32 native rotation column * Float64 half-extension, then Float32 crop",
     )
-    return badminton_detection_bbox(adjusted), evidence
+    return adjusted if ground_display else badminton_detection_bbox(adjusted), evidence
 
 
 def write_viewer_runtime_relocations(root, calibration, relocations, sessions, output):
@@ -215,18 +306,24 @@ def write_viewer_runtime_relocations(root, calibration, relocations, sessions, o
             if declared.get("sha256") != session.source_index_sha256:
                 raise ValueError("Frozen source registry changed during runtime preparation")
             readers[sid] = dict(
-                reader="source_index", source_index_sha256=session.source_index_sha256,
+                reader="source_index",
+                source_index_sha256=session.source_index_sha256,
                 source_index_path=str(session.source_index_path),
                 source_index_logical_path=str(session.source_index_logical_path),
             )
         else:
             readers[sid] = session.relocation_legacy_audit
     receipt = dict(
-        schema="gvhmr-viewer-runtime-relocations-v1", data_root=str(relocations.root),
-        data_relocations=dict(relocations.binding), source_registry=binding(registry_path),
+        schema="gvhmr-viewer-runtime-relocations-v1",
+        data_root=str(relocations.root),
+        data_relocations=dict(relocations.binding),
+        source_registry=binding(registry_path),
         calibration_snapshot=binding(calibration.snapshot_json),
-        calibration_digest=calibration.data["snapshot_digest"], readers=readers,
-        original_registry_modified=False, original_calibration_modified=False, original_data_modified=False,
+        calibration_digest=calibration.data["snapshot_digest"],
+        readers=readers,
+        original_registry_modified=False,
+        original_calibration_modified=False,
+        original_data_modified=False,
     )
     path = output / "runtime_relocations.json"
     write_json(path, receipt)
@@ -262,9 +359,11 @@ def load_viewer_intake(run_root):
         duration_us = 0
         for row in rallies:
             indices = row["eligible_paired_png_indices"]
-            if (any(type(index) is not int or index < 0 for index in indices)
-                    or len(set(indices)) != len(indices)
-                    or len(indices) != row["source_frame_count"]):
+            if (
+                any(type(index) is not int or index < 0 for index in indices)
+                or len(set(indices)) != len(indices)
+                or len(indices) != row["source_frame_count"]
+            ):
                 raise ValueError("Formal viewer range has invalid paired scan membership")
             selected[row["source_id"]].update(indices)
             duration = row["last_scan_mid_us"] - row["first_scan_mid_us"]
@@ -284,8 +383,16 @@ def load_viewer_intake(run_root):
     ranged = {row["source_id"] for row in rallies}
     if empty & ranged or declared - empty != ranged:
         raise ValueError("Viewer empty-source declaration disagrees with actual selected ranges")
-    return registry, intake, rallies, dict(
-        paired_scans=counts, empty_sources=sorted(empty), rally_window_minutes=minutes, evidence=evidence,
+    return (
+        registry,
+        intake,
+        rallies,
+        dict(
+            paired_scans=counts,
+            empty_sources=sorted(empty),
+            rally_window_minutes=minutes,
+            evidence=evidence,
+        ),
     )
 
 
@@ -304,6 +411,11 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
     body = read_json(body_path) if root == baseline and body_path.exists() else {}
     if body and body.get("calibration_digest") != calibration.data["snapshot_digest"]:
         raise ValueError("Viewer body labels and source calibration disagree")
+    ground_display = (
+        display_evidence is not None and display_evidence["settings"].get("schema") == GROUND_DISPLAY_SCHEMA
+    )
+    if ground_display:
+        validate_ground_display_parent(root, baseline, registry, body, display_evidence, viewer_output)
     for sid, entry in registry["sources"].items():
         if sid in coverage["empty_sources"]:
             empty_sources[sid] = dict(reason="no_selected_paired_scans", paired_scans=0, fitted_person_frames=0)
@@ -378,6 +490,19 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
         boxes=viewer_bbox["boxes"],
         display_crop=display_evidence,
     )
+    if ground_display:
+        manifest.update(
+            review_only=body["review_only"],
+            training_published=body["training_published"],
+            preview_only=True,
+            formal_crop_unchanged=True,
+        )
+        manifest["point_filter"].update(
+            rule="Original Region/net with background-only raised ground top; every stored fit source member protected",
+            base_boxes=badminton_detection_bbox(calibration.data["bbox"])["boxes"],
+            preview_only=True,
+            formal_crop_unchanged=True,
+        )
     output = Path(viewer_output).resolve() if viewer_output is not None else root / "viewer"
     output.mkdir(parents=True, exist_ok=True)
     runtime_binding = write_viewer_runtime_relocations(root, calibration, relocations, sessions, output)
@@ -386,11 +511,29 @@ def prepare_viewer(run_root, baseline_root, display_crop=None, *, relocations=No
         manifest["data_relocations"] = dict(relocations.binding)
     write_json(output / "manifest.json", manifest)
     template = Path(__file__).with_name("rally_viewer.html").read_text(encoding="utf-8")
+    if ground_display:
+        template = (
+            template.replace(
+                '<div class="counts">',
+                '<div class="counts"><span>仅背景显示预览 · 原始裁剪与人物不变 · 未发布训练</span>',
+            )
+            .replace(
+                "本页展示密封回合子集，合格人帧包含旧场次的回合复用和新增场次，不代表所有历史数据累计量。",
+                f'背景地面上沿显示调整{display_evidence["settings"]["ground_positive_local_z_extension_m"] * 1000:g}毫米；'
+                "保留全部已存拟合成员，可能仍有低点残留。仅评审，未发布训练。",
+            )
+            .replace("7 来源 · 204 回合", f'{manifest["source_count"]} 来源 · {manifest["rally_count"]} 回合')
+            .replace("7 来源 / 204 回合", f'{manifest["source_count"]} 来源 / {manifest["rally_count"]} 回合')
+            .replace("回合版人帧", "候选人帧")
+            .replace("回合版数据", "背景预览数据")
+        )
     (output / "index.html").write_text(template, encoding="utf-8")
     (output / "viewer.js").write_bytes(Path(__file__).with_name("rally_viewer_client.js").read_bytes())
     for name in ("review.js", "review.css"):
         (output / name).write_bytes((Path(__file__).with_name("review_assets") / name).read_bytes())
-    return ViewerData(root, baseline, calibration, manifest, sessions, media, viewer_bbox=viewer_bbox, viewer_output=output)
+    return ViewerData(
+        root, baseline, calibration, manifest, sessions, media, viewer_bbox=viewer_bbox, viewer_output=output
+    )
 
 
 class ViewerData:
@@ -413,6 +556,11 @@ class ViewerData:
             if viewer_bbox is not None
             else (badminton_detection_bbox(calibration.data["bbox"]) if calibration is not None else dict(boxes=[]))
         )
+        display = (manifest or {}).get("point_filter", {}).get("display_crop")
+        self.ground_display = (
+            display if display and display["settings"].get("schema") == GROUND_DISPLAY_SCHEMA else None
+        )
+        self.base_bbox = badminton_detection_bbox(calibration.data["bbox"]) if self.ground_display else self.viewer_bbox
         self._native_images = OrderedDict()
         self._native_lock = threading.RLock()
         self.preview_decoder = PreviewDecoder()
@@ -432,10 +580,16 @@ class ViewerData:
                 raise ValueError("Published viewer status manifest SHA256 mismatch")
             publication = json.loads(blob)
             state = dict(
-                state="complete", status_source="canonical_publication", paired_accepted=publication["accepted"],
+                state="complete",
+                status_source="canonical_publication",
+                paired_accepted=publication["accepted"],
                 sources={
-                    sid: dict(baseline=source["baseline"], state="complete", rallies=len(source["rallies"]),
-                              accepted=publication["exports"][sid]["accepted"])
+                    sid: dict(
+                        baseline=source["baseline"],
+                        state="complete",
+                        rallies=len(source["rallies"]),
+                        accepted=publication["exports"][sid]["accepted"],
+                    )
                     for sid, source in self.manifest["sources"].items()
                 },
             )
@@ -538,10 +692,28 @@ class ViewerData:
         pair = session.pairs()[result["lidar_index"]]
         cloud = session.read_cloud(pair)
         raw_count = len(cloud)
-        if scope == "roi":
-            cloud = cloud[crop_viewer_points(cloud, self.viewer_bbox)]
-        sampled = cloud[:: max(1, (len(cloud) + 24999) // 25000)]
         rows = self.quality_rows(sid).get(pair["lidar_index"], [])
+        ground_counts = None
+        if scope == "roi":
+            keep = crop_viewer_points(cloud, self.viewer_bbox)
+            if self.ground_display:
+                old_keep = crop_viewer_points(cloud, self.base_bbox)
+                protected = self.protected_source_members(sid, pair["lidar_index"], cloud, rows)
+                if np.any(protected & ~old_keep):
+                    raise ValueError("Original bbox excludes a protected stored fit source member")
+                removed = old_keep & ~keep & ~protected
+                keep = old_keep & ~removed
+                ground_counts = dict(
+                    preview_only=True,
+                    formal_crop_unchanged=True,
+                    sidecar_sha256=self.ground_display["sha256"],
+                    old_points=int(old_keep.sum()),
+                    protected_members=int(protected.sum()),
+                    removed_background_points=int(removed.sum()),
+                    removed_fit_members=int(np.count_nonzero(removed & protected)),
+                )
+            cloud = cloud[keep]
+        sampled = cloud[:: max(1, (len(cloud) + 24999) // 25000)]
         athletes = []
         for row in rows:
             asset = self.render_fit(row["fit_path"], scope)
@@ -570,6 +742,8 @@ class ViewerData:
             displayed_background_points=len(sampled),
             athletes=athletes,
         )
+        if ground_counts is not None:
+            result["frame"]["background_filter"] = ground_counts
         result["native_images"] = {
             cam: self.native_image(sid, cam, pair["cameras"][cam]["record_index"]) for cam in ("cam1", "cam2")
         }
@@ -687,6 +861,44 @@ class ViewerData:
         return self.render_fit(path, scope)["cameras"]
 
     @lru_cache(maxsize=128)
+    def fit_source_members(self, path, mtime_ns, size):
+        """Cache only actual source-member arrays, invalidated by the fit signature."""
+        with np.load(path, allow_pickle=False) as fit:
+            return fit["source_indices"].copy(), fit["source_cloud"].copy()
+
+    def protected_source_members(self, sid, scan, cloud, rows):
+        protected = np.zeros(len(cloud), dtype=bool)
+        if sid not in self.ground_display["settings"]["source_ids"]:
+            raise ValueError("Background ground display source mismatch")
+        directory = (
+            (self.baseline if self.manifest["sources"][sid]["baseline"] else self.root) / "sessions" / sid / "windows"
+        )
+        for row in rows:
+            path = Path(row["fit_path"]).resolve()
+            if (
+                type(row["lidar_index"]) is not int
+                or row["lidar_index"] != scan
+                or not row["motion_id"].startswith(sid + ":")
+                or not path.is_relative_to(directory.resolve())
+            ):
+                raise ValueError("Background ground stored fit source/scan mismatch")
+            stat = path.stat()
+            indices, points = self.fit_source_members(path, stat.st_mtime_ns, stat.st_size)
+            if (
+                indices.ndim != 1
+                or indices.dtype != np.dtype("int64")
+                or points.shape != (len(indices), 3)
+                or points.dtype != np.dtype("float32")
+                or not np.isfinite(points).all()
+                or np.any(indices < 0)
+                or np.any(indices >= len(cloud))
+                or cloud[indices].tobytes() != points.tobytes()
+            ):
+                raise ValueError("Background ground stored source indices/cloud mismatch")
+            protected[indices] = True
+        return protected
+
+    @lru_cache(maxsize=128)
     def render_fit(self, path, scope="roi"):
         result = {}
         with np.load(path) as fit:
@@ -696,7 +908,7 @@ class ViewerData:
                 cloud=fit["source_cloud"],
             )
         if scope == "roi":
-            arrays["cloud"] = arrays["cloud"][crop_viewer_points(arrays["cloud"], self.viewer_bbox)]
+            arrays["cloud"] = arrays["cloud"][crop_viewer_points(arrays["cloud"], self.base_bbox)]
         asset = dict(vertices=packed(arrays["mesh"]), joints=packed(arrays["joints"]), cloud=packed(arrays["cloud"]))
         arrays["cloud"] = arrays["cloud"][:: max(1, len(arrays["cloud"]) // 900)]
         for cam in ("cam1", "cam2"):
@@ -758,8 +970,12 @@ def serve_viewer(data, host="127.0.0.1", port=8767):
                     return self.blob(data.manifest, "application/json", head)
                 if path == "/viewer.js":
                     return self.blob((data.viewer_output / "viewer.js").read_bytes(), "application/javascript", head)
-                if path == '/projection.js':
-                    return self.blob((Path(__file__).with_name('review_assets')/'projection.js').read_bytes(), 'application/javascript', head)
+                if path == "/projection.js":
+                    return self.blob(
+                        (Path(__file__).with_name("review_assets") / "projection.js").read_bytes(),
+                        "application/javascript",
+                        head,
+                    )
                 if path == "/api/status":
                     return self.blob(data.status(), "application/json", head)
                 if path == "/api/overlay":

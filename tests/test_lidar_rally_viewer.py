@@ -1,4 +1,5 @@
 import base64
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,9 @@ from hmr4d.lidar_mocap.rally_viewer import (
     crop_viewer_points,
     bbox_rotation_float32,
     apply_display_net_extension,
+    apply_display_ground_extension,
+    load_display_bbox,
+    validate_ground_display_parent,
 )
 
 
@@ -44,19 +48,26 @@ class PublishedStatusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             publication_path = root / "canonical-publication.json"
-            publication_path.write_text(json.dumps(dict(
-                accepted=7, exports=dict(s=dict(accepted=7), empty=dict(accepted=0)),
-            )), encoding="utf-8")
+            publication_path.write_text(
+                json.dumps(
+                    dict(
+                        accepted=7,
+                        exports=dict(s=dict(accepted=7), empty=dict(accepted=0)),
+                    )
+                ),
+                encoding="utf-8",
+            )
             manifest = dict(
-                canonical_publication=dict(path=str(publication_path),
-                                           sha256=hashlib.sha256(publication_path.read_bytes()).hexdigest()),
+                canonical_publication=dict(
+                    path=str(publication_path), sha256=hashlib.sha256(publication_path.read_bytes()).hexdigest()
+                ),
                 sources=dict(s=dict(baseline=True, rallies=[{}]), empty=dict(baseline=False, rallies=[])),
             )
             report = root / "sessions/s/windows/first/fit_report.json"
             report.parent.mkdir(parents=True)
             report.write_text(json.dumps(dict(fitted=12, accepted=10)), encoding="utf-8")
             viewer = ViewerData(root, root, None, manifest, {}, {})
-            before = {path:path.read_bytes() for path in (publication_path, report)}
+            before = {path: path.read_bytes() for path in (publication_path, report)}
             state = viewer.status()
             self.assertEqual(state["status_source"], "canonical_publication")
             self.assertEqual(state["paired_accepted"], 7)
@@ -66,7 +77,7 @@ class PublishedStatusTests(unittest.TestCase):
             self.assertEqual(state["sources"]["empty"]["accepted"], 0)
             self.assertEqual(state["sources"]["empty"]["available_fit_windows"], 0)
             self.assertFalse((root / "build_status.json").exists())
-            self.assertEqual({path:path.read_bytes() for path in before}, before)
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
             publication_path.write_text("changed", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                 viewer.status()
@@ -213,6 +224,254 @@ class NativeRoiTests(unittest.TestCase):
         self.assertEqual(result["count"], 4)
         viewer.geometry_batch("s", 0, 4)
         self.assertEqual(calls[-2:], [("cam1", []), ("cam2", [])])
+
+
+class BackgroundGroundDisplayTests(unittest.TestCase):
+    sid = "20261022_161632"
+
+    def settings(self, path):
+        return dict(
+            schema="badminton-background-ground-display-v1",
+            sport="badminton",
+            scope="background_display_only",
+            source_ids=[self.sid],
+            base_bbox_sha256="a" * 64,
+            ground_ignore_id="ground",
+            ground_positive_local_z_extension_m=0.015,
+            dataset_manifest=dict(path=str(path.resolve()), sha256="b" * 64),
+            preview_only=True,
+            formal_crop_unchanged=True,
+        )
+
+    def bbox(self, rotation=(0, 0, 0)):
+        bbox = NativeRoiTests().bbox(rotation)
+        bbox["boxes"][0]["id"] = "ground"
+        bbox["boxes"][1]["id"] = "net"
+        return bbox
+
+    def test_tilted_extension_retains_original_region_net_and_ground_bottom(self):
+        bbox = self.bbox((12, -8, 31))
+        before = copy.deepcopy(bbox)
+        settings = self.settings(Path("unused"))
+        changed = apply_display_ground_extension(bbox, settings, "a" * 64)
+        original = badminton_detection_bbox(bbox)
+        self.assertEqual(changed["boxes"][1:], original["boxes"][1:])
+        direction = bbox_rotation_float32(bbox["boxes"][0]["rotation_deg"])[:, 2].astype(np.float64)
+        old_ground, new_ground = original["boxes"][0], changed["boxes"][0]
+        np.testing.assert_array_equal(
+            new_ground["center"], np.asarray(old_ground["center"], np.float64) + direction * 0.0075
+        )
+        np.testing.assert_allclose(
+            np.asarray(new_ground["center"]) - direction * new_ground["size"][2] / 2,
+            np.asarray(old_ground["center"]) - direction * old_ground["size"][2] / 2,
+            atol=1e-15,
+            rtol=0,
+        )
+        self.assertEqual(bbox, before)
+
+    def test_closed_settings_reject_missing_extra_and_invalid_values(self):
+        original = self.settings(Path("unused"))
+        invalid = []
+        extra = dict(original, extra=True)
+        invalid.append(extra)
+        for field in original:
+            value = copy.deepcopy(original)
+            del value[field]
+            invalid.append(value)
+        for field, value in [
+            ("scope", "formal"),
+            ("preview_only", 1),
+            ("formal_crop_unchanged", False),
+            ("source_ids", [self.sid, self.sid]),
+            ("source_ids", []),
+            ("source_ids", [1]),
+            ("dataset_manifest", dict(path="relative", sha256="b" * 64)),
+            ("dataset_manifest", dict(path=str(Path("unused").resolve()), sha256="bad")),
+            ("ground_ignore_id", "net"),
+            ("ground_positive_local_z_extension_m", True),
+            ("ground_positive_local_z_extension_m", float("nan")),
+            ("ground_positive_local_z_extension_m", -0.01),
+            ("base_bbox_sha256", "c" * 64),
+        ]:
+            invalid.append(dict(original, **{field: value}))
+        for settings in invalid:
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                apply_display_ground_extension(self.bbox(), settings, "a" * 64)
+
+    def test_load_sidecar_checks_frozen_bbox_bytes_and_keeps_region(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bbox = self.bbox()
+            bbox_path = root / "bbox.json"
+            bbox_path.write_text(json.dumps(bbox), encoding="utf-8")
+            sha = hashlib.sha256(bbox_path.read_bytes()).hexdigest()
+            calibration = SimpleNamespace(
+                snapshot_json=root / "snapshot.json",
+                data=dict(
+                    bbox=bbox,
+                    artifacts=dict(bbox=dict(path="bbox.json", sha256=sha)),
+                ),
+            )
+            settings = dict(self.settings(root / "dataset.json"), base_bbox_sha256=sha)
+            path = root / "display.json"
+            path.write_text(json.dumps(settings), encoding="utf-8")
+            changed, evidence = load_display_bbox(calibration, path)
+            self.assertEqual(changed["boxes"][2], badminton_detection_bbox(bbox)["boxes"][2])
+            self.assertEqual(evidence["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            bbox_path.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "bytes/geometry mismatch"):
+                load_display_bbox(calibration, path)
+
+    def test_actual_parent_binding_and_review_scope_are_mandatory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "labels"
+            path = root / "datasets/dataset_manifest.json"
+            path.parent.mkdir(parents=True)
+            body = dict(review_only=True, training_published=False, exports={self.sid: {}})
+            path.write_text(json.dumps(body), encoding="utf-8")
+            settings = self.settings(path)
+            settings["dataset_manifest"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            evidence = dict(settings=settings)
+            registry = dict(sources={self.sid: {}})
+            output = root.parent / "new_viewer"
+            validate_ground_display_parent(root, root, registry, body, evidence, output)
+            for alteration in ["hash", "path", "sources", "review", "training", "baseline", "output"]:
+                changed = copy.deepcopy(evidence)
+                actual = copy.deepcopy(body)
+                baseline, target = root, output
+                if alteration == "hash":
+                    changed["settings"]["dataset_manifest"]["sha256"] = "0" * 64
+                elif alteration == "path":
+                    changed["settings"]["dataset_manifest"]["path"] = str(root / "other.json")
+                elif alteration == "sources":
+                    changed["settings"]["source_ids"] = ["20261023_000000"]
+                elif alteration == "review":
+                    actual["review_only"] = False
+                elif alteration == "training":
+                    actual["training_published"] = True
+                elif alteration == "baseline":
+                    baseline = root.parent
+                else:
+                    target = root / "viewer"
+                with self.subTest(alteration=alteration), self.assertRaises(ValueError):
+                    validate_ground_display_parent(root, baseline, registry, actual, changed, target)
+
+    def fixture(self, root, *, filtered):
+        cloud = np.array([[2, 3, 0.105], [2, 3, 0.105], [2, 3, 0.11], [2, 3, 0.13], [2, 3, 0.09]], np.float32)
+        bbox = self.bbox()
+        settings = self.settings(root / "datasets/dataset_manifest.json")
+        evidence = dict(settings=settings, sha256="c" * 64)
+        manifest = dict(sources={self.sid: dict(common_origin_us=0, baseline=True)})
+        if filtered:
+            manifest["point_filter"] = dict(display_crop=evidence)
+        calibration = SimpleNamespace(
+            data=dict(bbox=bbox), project=lambda pts, cam, distort: (pts[:, :2] * 10, np.ones(len(pts)))
+        )
+        camera = dict(status="matched", record_index=0, media_pts_us=0, common_time_us=0)
+        pair = dict(lidar_index=0, scan_mid_us=0, cameras={cam: dict(camera) for cam in ("cam1", "cam2")})
+        session = SimpleNamespace(
+            pairs=lambda: [pair],
+            read_cloud=lambda pair: cloud.copy(),
+            camera_rows=lambda cam: [camera],
+            read_image=lambda cam, index: np.full((16, 16, 3), 100, np.uint8),
+        )
+        viewer = ViewerData(
+            root,
+            root,
+            calibration,
+            manifest,
+            {self.sid: session},
+            {},
+            viewer_bbox=(
+                apply_display_ground_extension(bbox, settings, "a" * 64) if filtered else badminton_detection_bbox(bbox)
+            ),
+        )
+        rows = []
+        for track, index, accepted in [(1, 1, True), (2, 2, False)]:
+            path = root / "sessions" / self.sid / "windows/window/fits" / f"fit{track}.npz"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                np.savez(
+                    path,
+                    source_indices=np.array([index], np.int64),
+                    source_cloud=cloud[[index]],
+                    vertices=cloud[[index]],
+                    joints=cloud[[index]],
+                )
+            row = dict(
+                fit_path=str(path),
+                motion_id=f"{self.sid}:window:{track}:0",
+                lidar_index=0,
+                accepted=accepted,
+                rejection_reasons=[] if accepted else ["stored_rejected"],
+                qa=dict(final_p2surface_mean_m=0.01),
+            )
+            rows.append(row)
+            viewer._track_colors[row["motion_id"]] = "#abcdef"
+        viewer.quality_rows = lambda sid: {0: rows}
+        return viewer, cloud, rows
+
+    def test_geometry_protects_exact_ordinals_including_rejected_and_preserves_person_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, cloud, _ = self.fixture(root, filtered=False)
+            new, _, rows = self.fixture(root, filtered=True)
+            original, changed = old.geometry(self.sid, 0), new.geometry(self.sid, 0)
+            np.testing.assert_array_equal(
+                np.frombuffer(base64.b64decode(changed["frame"]["cloud"]), "<f4").reshape(-1, 3), cloud[[1, 2, 3]]
+            )
+            self.assertEqual(changed["frame"]["background_filter"]["removed_background_points"], 1)
+            self.assertEqual(changed["frame"]["background_filter"]["removed_fit_members"], 0)
+            self.assertEqual(changed["frame"]["athletes"], original["frame"]["athletes"])
+            self.assertEqual(changed["athletes"], original["athletes"])
+            self.assertEqual(changed["native_images"], original["native_images"])
+            self.assertEqual(new.geometry(self.sid, 0, "all"), old.geometry(self.sid, 0, "all"))
+            for row in rows:
+                self.assertEqual(new.render_fit(row["fit_path"]), old.render_fit(row["fit_path"]))
+            before = new.fit_source_members.cache_info().hits
+            new.geometry(self.sid, 0)
+            self.assertGreater(new.fit_source_members.cache_info().hits, before)
+
+    def test_empty_scan_has_no_protected_fits_and_keeps_only_background_above_slab(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viewer, cloud, _ = self.fixture(Path(directory), filtered=True)
+            viewer.quality_rows = lambda sid: {}
+            result = viewer.geometry(self.sid, 0)
+            self.assertEqual(result["frame"]["point_count"], 1)
+            self.assertEqual(result["frame"]["background_filter"]["removed_background_points"], 3)
+            self.assertEqual(result["frame"]["background_filter"]["protected_members"], 0)
+
+    def test_invalid_member_indices_bytes_scan_and_source_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            viewer, cloud, rows = self.fixture(Path(directory), filtered=True)
+            row = rows[0]
+            good = dict(row)
+            for index, points in [
+                (np.array([-1], np.int64), cloud[[1]]),
+                (np.array([len(cloud)], np.int64), cloud[[1]]),
+                (np.array([1], np.float32), cloud[[1]]),
+                (np.array([[1]], np.int64), cloud[[1]]),
+                (np.array([1], np.int64), cloud[[3]]),
+                (np.array([1], np.int64), cloud[[1]].astype(np.float64)),
+            ]:
+                np.savez(row["fit_path"], source_indices=index, source_cloud=points)
+                viewer.fit_source_members.cache_clear()
+                with self.subTest(indices=index), self.assertRaisesRegex(ValueError, "indices/cloud mismatch"):
+                    viewer.protected_source_members(self.sid, 0, cloud, [row])
+            for field, value in [
+                ("lidar_index", 1),
+                ("lidar_index", False),
+                ("motion_id", "foreign:0"),
+                ("fit_path", str(Path(directory) / "elsewhere.npz")),
+            ]:
+                altered = dict(good, **{field: value})
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "source/scan mismatch"):
+                    viewer.protected_source_members(self.sid, 0, cloud, [altered])
+            with self.assertRaisesRegex(ValueError, "source mismatch"):
+                viewer.protected_source_members("foreign", 0, cloud, [])
+            Path(row["fit_path"]).unlink()
+            with self.assertRaises(FileNotFoundError):
+                viewer.protected_source_members(self.sid, 0, cloud, [good])
 
 
 if __name__ == "__main__":
