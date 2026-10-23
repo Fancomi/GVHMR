@@ -154,11 +154,13 @@ def test_prepare_viewer_uses_separate_output_and_explicit_source_resolver(tmp_pa
     json_file(
         run / "intake.json",
         dict(
-            prepared_ranges=dict(path=str(ranges)),
+            prepared_ranges=dict(path=str(ranges), sha256=hashlib.sha256(ranges.read_bytes()).hexdigest()),
             effective_window_minutes=0.1,
             sources={SID: dict(paired_unique_png_frames=2)},
         ),
     )
+    registry["intake"]["sha256"] = hashlib.sha256((run / "intake.json").read_bytes()).hexdigest()
+    json_file(run / "source_registry.json", registry)
     original_viewer = put(run, "viewer/index.html", b"original accepted viewer")
     before_registry = (run / "source_registry.json").read_bytes()
     output = tmp_path / "separate/viewer"

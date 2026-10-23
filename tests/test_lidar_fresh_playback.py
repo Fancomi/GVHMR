@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -208,6 +210,85 @@ class TypedViewerRelocationTests(unittest.TestCase):
     def test_partial_explicit_binding_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "together"):
             viewer_relocations("root", "relocations.json")
+
+
+class SealImportTests(unittest.TestCase):
+
+    def launch(self, code, *args, cwd=None):
+        root = Path(__file__).resolve().parents[1]
+        return subprocess.run(
+            [sys.executable, "-B", "-c", code, str(root), *map(str, args)],
+            cwd=cwd or root.parent,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+
+    def test_spec_import_from_outside_repository_loads_exact_sibling_without_tools_path(self):
+        code = """
+import importlib.util, json, sys, types
+from pathlib import Path
+root = Path(sys.argv[1])
+tools = root / 'tools'
+sys.path[:] = [p for p in sys.path if Path(p or '.').resolve() != tools]
+sys.path.insert(0, str(root))
+assert not Path.cwd().resolve().is_relative_to(root)
+assert all(Path(p or '.').resolve() != tools for p in sys.path)
+# An unrelated already imported module must not replace this tool's sibling.
+sys.modules['badminton_viewer_contracts'] = types.SimpleNamespace(validate_browser_source_acceptance=None)
+before = list(sys.path)
+spec = importlib.util.spec_from_file_location('_consumer_readonly_seal_gate', tools / 'seal_badminton_expansion.py')
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+assert sys.path == before
+assert callable(gate.validate_acceptance)
+assert callable(gate.validate_browser_source_acceptance)
+assert Path(gate.validate_browser_source_acceptance.__code__.co_filename).resolve() == tools / 'badminton_viewer_contracts.py'
+import torch
+assert not torch.cuda.is_initialized()
+print(json.dumps(dict(spec_import=True, exact_sibling=True, tools_on_path=False, cuda_initialized=False)))
+"""
+        result = self.launch(code)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["exact_sibling"])
+
+    def test_real_consumer_spec_gate_import_from_consumer_repository(self):
+        root = Path(__file__).resolve().parents[1]
+        consumer = root.parent.parent / "LIDAR/rollout_lidar_mocap_badminton"
+        if not (consumer / "src/data/gvhmr_joint_validator.py").is_file():
+            self.skipTest("The independent consumer checkout is unavailable")
+        code = """
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+root, consumer = map(Path, sys.argv[1:3])
+sys.path[:] = [p for p in sys.path if Path(p or '.').resolve() != root / 'tools']
+sys.path.insert(0, str(consumer))
+from src.data.gvhmr_joint_validator import producer_seal_gate
+gate = producer_seal_gate(SimpleNamespace(gvhmr_root=root))
+assert callable(gate.validate_acceptance)
+assert Path(gate.validate_browser_source_acceptance.__code__.co_filename).resolve() == root / 'tools/badminton_viewer_contracts.py'
+import torch
+assert not torch.cuda.is_initialized()
+print(json.dumps(dict(real_consumer_gate=True, cuda_initialized=False)))
+"""
+        result = self.launch(code, consumer, cwd=consumer)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["real_consumer_gate"])
+
+    def test_seal_cli_help_from_outside_repository(self):
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "-B", str(root / "tools/seal_badminton_expansion.py"), "--help"],
+            cwd=root.parent,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--sequence-report", result.stdout)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,14 @@ from hmr4d.lidar_mocap.dual_view import file_sha
 from hmr4d.lidar_mocap.expanded_dataset import binding, check_binding
 from hmr4d.lidar_mocap.rally_pipeline import read_json
 from hmr4d.lidar_mocap.repair_execution import write_progress_json as write_json
-from badminton_viewer_contracts import validate_browser_source_acceptance
+
+# The consumer loads this tool by file spec without adding tools/ to sys.path.
+_viewer_spec = importlib.util.spec_from_file_location(
+    "_badminton_seal_viewer_contracts", Path(__file__).with_name("badminton_viewer_contracts.py")
+)
+_viewer_contracts = importlib.util.module_from_spec(_viewer_spec)
+_viewer_spec.loader.exec_module(_viewer_contracts)
+validate_browser_source_acceptance = _viewer_contracts.validate_browser_source_acceptance
 
 
 def encode(value):

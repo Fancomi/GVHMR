@@ -62,10 +62,25 @@ def historical_corrections(path, assembly):
         or correction.get("all_person_admissions_unchanged") is not True
     ):
         raise ValueError("Historical supplement is not a complete admission-preserving correction")
-    for name in ("metadata", "training_manifest", "full_native_pixel_audit"):
+    for name in ("training_manifest", "full_native_pixel_audit"):
         check_binding(correction[name])
     components = assembly["suggested_session_splits"]["test"]["components"]
-    if correction["metadata"] not in [entry["metadata"] for entry in components]:
+    original = correction["metadata"]
+    for component in components:
+        current = component["metadata"]
+        original_path, current_path = Path(original["path"]), Path(current["path"])
+        if (
+            original["sha256"] == current["sha256"]
+            and original_path.is_file()
+            and current_path.is_file()
+            and original_path.resolve(strict=True) == current_path.resolve(strict=True)
+            and original_path.samefile(current_path)
+        ):
+            # Hash the actual current component once. The preserved historical
+            # spelling must still identify this same file with the same digest.
+            check_binding(current)
+            break
+    else:
         raise ValueError("Historical corrected metadata is not an exact unchanged expansion component")
     result = {}
     for item in correction["corrections"]:
@@ -74,6 +89,8 @@ def historical_corrections(path, assembly):
             raise ValueError("Duplicate historical pixel correction")
         if assembly["source_registry"][key[0]]["generation"] != "old":
             raise ValueError("Historical correction cannot be applied to a new source")
+        if assembly["source_registry"][key[0]]["role"] != "test":
+            raise ValueError("Historical correction must retain its original test source role")
         check_binding(item["evidence"])
         check_binding(item["original_report"])
         evidence = read_json(item["evidence"]["path"])

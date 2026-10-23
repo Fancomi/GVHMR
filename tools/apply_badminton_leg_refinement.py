@@ -19,6 +19,17 @@ from hmr4d.lidar_mocap.fitting import _projection_loss, point_to_surface_squared
 from hmr4d.lidar_mocap.multiview import epipolar_errors, fundamental_matrix
 from hmr4d.lidar_mocap.pipeline import BadmintonPipeline, write_json
 from hmr4d.lidar_mocap.rally_pipeline import read_json, read_rows, load_run_session
+from hmr4d.lidar_mocap.relocations import load_pilot_run_relocations
+
+
+def load_review_sessions(labels, calibration, selection):
+    """Validate all required session contracts before model preparation or writes."""
+    source_ids = sorted({key.split(":", 1)[0] for key, item in selection["windows"].items() if item["selected"]})
+    if not source_ids:
+        return {}
+    relocations = (load_pilot_run_relocations(labels, calibration.data)
+                   if (labels / "source_registry.json").exists() else None)
+    return {sid: load_run_session(labels, calibration, sid, relocations=relocations) for sid in source_ids}
 
 
 def backup_file(source, target, expected):
@@ -106,10 +117,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=PROJ_ROOT / "outputs/badminton_body_repair_v2")
     p.add_argument("--prepare-only", action="store_true")
+    p.add_argument("--review-sessions-only", action="store_true",
+                   help="Validate all bound review session inputs on CPU and exit before models or label writes")
     p.add_argument("--threads", type=int, default=2)
     args = p.parse_args()
     if args.threads < 1:
         p.error("--threads must be positive")
+    if args.review_sessions_only and args.prepare_only:
+        p.error("Use --review-sessions-only separately; --prepare-only also computes CUDA QA")
     root = args.root.resolve()
     labels = root / "final_labels"
     plan = read_json(labels / "repair_plan.json")
@@ -130,6 +145,10 @@ def main():
     ):
         raise ValueError("Sealed leg policy changed")
     cal = CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json")
+    review_sessions = load_review_sessions(labels, cal, selection)
+    if args.review_sessions_only:
+        print(dict(state="review_session_contracts_validated", sources=sorted(review_sessions), gpu_started=False))
+        return
     torch.set_num_threads(args.threads)
     device = "cuda"
     if read_json(plan["source_union"]).get("schema") == "badminton-new-source-repair-input-v1":
@@ -264,7 +283,7 @@ def main():
         from hmr4d.lidar_mocap.review import make_review
 
         sid = key.split(":")[0]
-        report["review"] = make_review(load_run_session(labels, cal, sid), cal, source)
+        report["review"] = make_review(review_sessions[sid], cal, source)
         for name in ["ptv3.pth", "ptv3.metadata.jsonl", "quality.jsonl"]:
             report["artifacts_sha256"][name] = file_sha(source / name)
         for change in work["changes"].values():

@@ -7,10 +7,13 @@ be completed before either consumer-facing manifest is published.
 from collections import Counter, defaultdict
 import json
 from pathlib import Path
+import re
 import shutil
 
 import joblib
 import torch
+
+from hmr4d import PROJ_ROOT
 
 from .calibration import CalibrationSnapshot
 from .dual_view import _verify_export_data, file_sha
@@ -269,6 +272,166 @@ def verify_expanded_base(manifest, contract):
     ), dependencies
 
 
+def _validate_new_completion(repair, completion, parent_publication, publication):
+    """Bind an already verified formal completion without rerunning its CPU/native passes."""
+    evidence = completion.get("evidence", {})
+    if not isinstance(evidence, dict) or evidence.get(parent_publication["path"]) != parent_publication["sha256"]:
+        raise ValueError("New source completion does not seal this dataset")
+    labels = repair / "final_labels"
+    registry_path = labels / "source_registry.json"
+    formal = registry_path.exists() and read_json(registry_path).get("schema") == (
+        "badminton-formal-derived-source-registry-v1"
+    )
+    if not formal:
+        if not completion.get("training_published") or completion.get("formal_postleg_cpu_receipt") is not None:
+            raise ValueError("New source completion does not seal this dataset")
+        return []
+    if (
+        repair.name != "repair"
+        or completion.get("state") != "labels_published_viewer_prepared"
+        or completion.get("training_published") is not False
+        or completion.get("bilateral_labels_published") is not True
+        or completion.get("archive_published") is not False
+        or completion.get("consumer_admitted") is not False
+        or completion.get("dataset_manifest") != parent_publication["path"]
+        or type(completion.get("accepted")) is not int
+        or completion["accepted"] != publication["accepted"]
+    ):
+        raise ValueError("Formal completion must seal bilateral labels while archive/consumer admission stays pending")
+    dependencies = []
+
+    def bound(item, expected=None):
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+            or (expected is not None and Path(item["path"]).resolve() != expected.resolve())
+        ):
+            raise ValueError("Formal completion requires exact existing evidence paths and SHA256 bindings")
+        check_binding(item)
+        if item not in dependencies:
+            dependencies.append(item)
+        return item
+
+    def completed(path):
+        return bound(dict(path=str(path), sha256=evidence.get(str(path))), path)
+
+    registry_binding = bound(binding(registry_path))
+    registry = read_json(registry_binding["path"])
+    plan_path = repair / "case_plan.json"
+    plan = read_json(bound(binding(plan_path))["path"])
+    source = bound(
+        dict(path=plan["source_union"], sha256=plan["source_union_sha256"]), repair / "new_source_input.json"
+    )
+    source_input = read_json(source["path"])
+    body_path = labels / "datasets/dataset_manifest.json"
+    body_binding = completed(body_path)
+    body = read_json(body_path)
+    paired = repair.with_name(repair.name + "_paired")
+    bound(parent_publication, paired / "datasets/dataset_manifest.json")
+    receipt_binding = bound(
+        completion.get("formal_postleg_cpu_receipt"), repair / "evaluation/formal_postleg_cpu_receipt.json"
+    )
+    if completed(Path(receipt_binding["path"])) != receipt_binding:
+        raise ValueError("Formal completion does not bind its postleg CPU receipt")
+    receipt = read_json(receipt_binding["path"])
+    if (
+        receipt.get("schema") != "gvhmr-formal-postleg-cpu-completion-v1"
+        or receipt.get("state") != "postleg_native_qa_complete_bilateral_browser_archive_pending"
+        or Path(receipt.get("root", "")).resolve() != repair.parent
+        or receipt.get("source_input") != source
+        or source_input.get("schema") != "badminton-new-source-repair-input-v1"
+        or receipt.get("calibration_digest") != plan["calibration_digest"]
+        or receipt.get("calibration_digest") != source_input.get("calibration_digest")
+        or receipt.get("calibration_digest") != publication["calibration_digest"]
+        or receipt.get("calibration_digest") != body.get("calibration_digest")
+        or type(receipt.get("windows")) is not int
+        or receipt["windows"] != len(plan["jobs"])
+        or receipt["windows"] != len(source_input["jobs"])
+        or type(receipt.get("accepted")) is not int
+        or receipt["accepted"] != body.get("accepted")
+        or receipt["accepted"] < publication["accepted"]
+        or receipt.get("gpu_started") is not False
+        or receipt.get("training_published") is not False
+        or set(receipt.get("workers", {})) != {"native", "dataset"}
+        or set(body.get("exports", {})) != set(publication["exports"])
+        or body.get("source_registry_sha256") != registry_binding["sha256"]
+        or set(registry["sources"]) != set(publication["exports"])
+        or {job["source_id"] for job in source_input["jobs"]} - set(registry["sources"])
+        or publication.get("source_dataset_manifest") != str(body_path)
+        or publication.get("source_dataset_manifest_sha256") != body_binding["sha256"]
+    ):
+        raise ValueError("Formal postleg CPU receipt differs from the actual source/calibration/window/body scope")
+    bound(receipt.get("baseline"), repair.parent / "gpu_guarded_leg/baseline/baseline.json")
+    execution = bound(receipt.get("leg_execution"))
+    execution_path = Path(execution["path"]).resolve()
+    if (
+        execution_path.name != "completion.json"
+        or execution_path.parent.parent != repair.parent / "gpu_guarded_leg/attempts"
+    ):
+        raise ValueError("Formal CPU receipt must bind its actual guarded execution completion")
+    expected_evidence = dict(
+        before=repair / "evaluation/v2_before_leg.json",
+        native=labels / "native_verification.json",
+        dataset=labels / "datasets/verification.json",
+        post_refinement=labels / "post_refinement.json",
+        leg_receipt=repair / "leg_refinement_receipt.json",
+        after=repair / "evaluation/v2_after_leg.json",
+        comparison=repair / "evaluation/v2_leg_comparison.json",
+    )
+    if set(receipt.get("evidence", {})) != set(expected_evidence):
+        raise ValueError("Formal postleg CPU receipt is missing its actual verification evidence")
+    for name, path in expected_evidence.items():
+        item = bound(receipt["evidence"][name], path)
+        if name in ("before", "native", "leg_receipt", "after", "comparison") and completed(path) != item:
+            raise ValueError("Formal completion and postleg CPU evidence differ")
+    allocation = dict(
+        schema="gvhmr-formal-cpu-worker-v1", affinity=[26, 27], priority="BelowNormal", cuda_visible_devices="-1"
+    )
+    for role, worker in receipt["workers"].items():
+        if (
+            type(worker.get("exit_code")) is not int
+            or worker["exit_code"] != 0
+            or worker.get("allocation") != allocation
+            or worker.get("hidden_window") is not True
+        ):
+            raise ValueError("Formal CPU worker did not complete in its verified CPU allocation")
+        entry = "verify_badminton_native_bound.py" if role == "native" else "verify_badminton_dataset.py"
+        bound(worker.get("entry"), PROJ_ROOT / "tools" / entry)
+        log = bound(worker.get("log"))
+        log_path = Path(log["path"]).resolve()
+        if (
+            log_path.name != role + ".log"
+            or log_path.parent.parent != repair / "evaluation/formal_postleg_cpu/attempts"
+        ):
+            raise ValueError("Formal CPU worker log leaves its actual completion attempt")
+    observations_path = paired / "observations/manifest.json"
+    observations_binding = completed(observations_path)
+    observations = read_json(observations_path)
+    if (
+        observations.get("completed") is not True
+        or observations.get("source_accepted") != receipt["accepted"]
+        or observations.get("identity", {}).get("calibration_digest") != receipt["calibration_digest"]
+        or observations.get("identity", {}).get("source", {}).get("dataset_manifest") != body_binding
+        or publication.get("full_observation_manifest") != str(observations_path)
+        or publication.get("full_observation_manifest_sha256") != observations_binding["sha256"]
+    ):
+        raise ValueError("Formal bilateral observations do not bind the completed CPU body publication")
+    verification = read_json(completed(paired / "verification.json")["path"])
+    if (
+        verification.get("accepted") != publication["accepted"]
+        or set(verification.get("sessions", {})) != set(publication["exports"])
+        or any(
+            verification["sessions"][sid].get("accepted") != item["accepted"]
+            for sid, item in publication["exports"].items()
+        )
+    ):
+        raise ValueError("Formal bilateral verification differs from its actual publication")
+    completed(labels / "viewer/manifest.json")
+    return dependencies
+
+
 def assemble(old_path, new_path, contract_path, output_root):
     old_path, new_path, contract_path, output = map(Path, (old_path, new_path, contract_path, output_root))
     dependencies = [binding(path) for path in (old_path, new_path, contract_path)]
@@ -304,7 +467,7 @@ def assemble(old_path, new_path, contract_path, output_root):
                 base_run = base_run.parent
             if output.resolve().is_relative_to(base_run) or base_run.is_relative_to(output.resolve()):
                 raise ValueError("Expansion output must be separate from the complete canonical base")
-            source_registry.update(registry)
+            source_registry.update({sid: dict(entry, generation="old") for sid, entry in registry.items()})
             dependencies.extend(base_dependencies)
             continue
         source_path = Path(manifest["source_dataset_manifest"])
@@ -355,13 +518,20 @@ def assemble(old_path, new_path, contract_path, output_root):
             raise ValueError("New publication does not belong to the agreed new repair run")
         parent_publication = binding(new_path)
     completion_path = repair / "new_source_completion_receipt.json"
-    dependencies.append(binding(completion_path))
+    completion_binding = binding(completion_path)
+    dependencies.append(completion_binding)
     completion = read_json(completion_path)
-    if (
-        not completion.get("training_published")
-        or completion["evidence"].get(parent_publication["path"]) != parent_publication["sha256"]
-    ):
-        raise ValueError("New source completion does not seal this dataset")
+    publication = read_json(parent_publication["path"])
+    completion_evidence = _validate_new_completion(repair, completion, parent_publication, publication)
+    if completion_evidence:
+        source = next(item for item in completion_evidence if Path(item["path"]) == repair / "new_source_input.json")
+        if (
+            contract.get("schema") not in JOINT_CONTRACTS
+            or contract["bindings"]["new_source_input"] != source
+            or contract["bindings"]["producer_confirmation"] != completion_binding
+        ):
+            raise ValueError("Formal assembly requires the sealed joint contract's exact current source and completion")
+    dependencies.extend(completion_evidence)
     digests = {sid: e["calibration_digest"] for sid, e in source_registry.items()}
     splits, sequences = {}, {}
     for role in ROLES:
@@ -391,7 +561,7 @@ def assemble(old_path, new_path, contract_path, output_root):
         source_registry=source_registry,
         source_publications={"old": dependencies[0], "new": dependencies[1]},
         consumer_contract=dependencies[2],
-        new_completion=dependencies[-1],
+        new_completion=completion_binding,
         source_verification=verification,
         sequences=sequences,
         old_accepted=old["accepted"],
