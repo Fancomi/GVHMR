@@ -118,6 +118,12 @@ def _reuse_formal_postleg(root, plan, receipt_path, expected_sha256, threads):
             or set(receipt.get("workers", {})) != {"native", "dataset"}
         ):
             raise ValueError("Existing formal postleg CPU completion belongs to different or incomplete evidence")
+        if "policy_fingerprint_compatibility" in receipt.get("evidence", {}):
+            from .formal_completion_policy_compat import (
+                validate_compatibility_receipt, verify_formal_postleg_cpu,
+            )
+
+            validate_compatibility_receipt(root.parent, receipt)
         checked = verify_formal_postleg_cpu(root.parent, receipt["baseline"], receipt["leg_execution"], threads=threads)
         handle.seek(0)
         if checked != receipt or handle.read() != payload or file_sha(path) != expected_sha256:

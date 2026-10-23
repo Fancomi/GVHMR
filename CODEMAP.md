@@ -73,7 +73,12 @@ then actually reconstruct all uncovered or changed windows. Baseline, post-leg
 completion and the guarded executor check explicit actual/derived coverage.
 `tools/finalize_badminton_formal_cpu.py` / `formal_completion.py` install that
 genuine before-QA snapshot before the leg, then validate actual guarded CUDA
-exit and run the existing native/dataset verifiers on CPU. Bilateral, pixels,
+exit and run the existing native/dataset verifiers on CPU. For independently
+bound refinement/selection/application fingerprints, use the explicit
+`tools/finalize_badminton_formal_cpu_compat.py` entry and its durable tested
+implementation binding; `formal_completion_policy_compat.py` preserves the
+frozen native implementation and runs the same numerical verifiers.
+Its metadata-only inspection does not complete native or QA checks. Bilateral, pixels,
 Chrome, archive and consumer admission remain separate completion gates.
 `tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately
 approved continuous grant, start the next 1019 teacher batch and enforce the
