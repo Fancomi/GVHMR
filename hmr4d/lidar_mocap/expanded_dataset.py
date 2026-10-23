@@ -319,7 +319,7 @@ def _validate_new_completion(repair, completion, parent_publication, publication
 
     registry_binding = bound(binding(registry_path))
     registry = read_json(registry_binding["path"])
-    plan_path = repair / "case_plan.json"
+    plan_path = labels / "repair_plan.json"
     plan = read_json(bound(binding(plan_path))["path"])
     source = bound(
         dict(path=plan["source_union"], sha256=plan["source_union_sha256"]), repair / "new_source_input.json"

@@ -359,9 +359,24 @@ class ExpandedDatasetTests(unittest.TestCase):
         write_json(
             repair / "case_plan.json",
             dict(
+                schema="badminton-body-repair-cases-v2",
+                source_union=source["path"],
+                source_union_sha256=source["sha256"],
+                clips=[],
+                selected_scans={},
+                unresolved_native_endpoints=[],
+                track_candidates=[],
+            ),
+        )
+        write_json(
+            labels / "repair_plan.json",
+            dict(
+                schema="badminton-body-repair-plan-v1",
                 source_union=source["path"],
                 source_union_sha256=source["sha256"],
                 calibration_digest="new-cal",
+                fitting_config={},
+                training_published=False,
                 jobs=jobs,
             ),
         )
@@ -498,6 +513,39 @@ class ExpandedDatasetTests(unittest.TestCase):
         write_json(path, receipt)
         completion["formal_postleg_cpu_receipt"] = binding(path)
         completion["evidence"][str(path)] = binding(path)["sha256"]
+
+    def test_formal_completion_binds_body_plan_separately_from_case_inventory(self):
+        with TemporaryDirectory() as directory:
+            publications, _, repair, completion, _ = self.make_formal_completion(Path(directory))
+            parent, publication = publications[1]
+            case_path = repair / "case_plan.json"
+            cases = json.loads(case_path.read_text())
+            self.assertEqual(cases["schema"], "badminton-body-repair-cases-v2")
+            self.assertNotIn("jobs", cases)
+            self.assertNotIn("calibration_digest", cases)
+            dependencies = _validate_new_completion(repair, completion, binding(parent), publication)
+            self.assertIn(binding(repair / "final_labels/repair_plan.json"), dependencies)
+            self.assertNotIn(binding(case_path), dependencies)
+
+    def test_formal_completion_requires_existing_stable_body_plan(self):
+        with TemporaryDirectory() as directory:
+            publications, _, repair, completion, _ = self.make_formal_completion(Path(directory))
+            parent, publication = publications[1]
+            (repair / "final_labels/repair_plan.json").unlink()
+            self.assertTrue((repair / "case_plan.json").is_file())
+            with self.assertRaises(FileNotFoundError):
+                _validate_new_completion(repair, completion, binding(parent), publication)
+
+    def test_formal_body_plan_calibration_and_windows_must_match_cpu_receipt(self):
+        with TemporaryDirectory() as directory:
+            publications, _, repair, completion, _ = self.make_formal_completion(Path(directory))
+            parent, publication = publications[1]
+            plan_path = repair / "final_labels/repair_plan.json"
+            plan = json.loads(plan_path.read_text())
+            for change in (dict(calibration_digest="other-camera"), dict(jobs=[])):
+                write_json(plan_path, dict(plan, **change))
+                with self.subTest(change=change), self.assertRaisesRegex(ValueError, "source/calibration/window/body"):
+                    _validate_new_completion(repair, completion, binding(parent), publication)
 
     def test_formal_assembly_reuses_proven_cpu_receipt_with_different_body_and_bilateral_counts(self):
         with TemporaryDirectory() as directory:
@@ -708,27 +756,35 @@ class ExpandedDatasetTests(unittest.TestCase):
     def test_formal_rechecks_existing_proof_bindings_before_completing_assembly(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            publications, contract_path, _, _, _ = self.make_formal_completion(root)
-            observation_path = Path(publications[1][1]["full_observation_manifest"])
-            called = []
+            for changed_name in ("observation", "body_plan"):
+                publications, contract_path, repair, _, _ = self.make_formal_completion(root / changed_name)
+                changed_path = (
+                    Path(publications[1][1]["full_observation_manifest"])
+                    if changed_name == "observation"
+                    else repair / "final_labels/repair_plan.json"
+                )
+                output = root / (changed_name + "_union")
+                called = []
 
-            def merge_then_change(*args):
-                result = merge_role(*args)
-                if not called:
-                    observation_path.write_text("{}", encoding="utf-8")
-                called.append(True)
-                return result
+                def merge_then_change(*args):
+                    result = merge_role(*args)
+                    if not called:
+                        changed_path.write_text("{}", encoding="utf-8")
+                    called.append(True)
+                    return result
 
-            with (
-                patch(
-                    "hmr4d.lidar_mocap.expanded_dataset.CalibrationSnapshot.load", side_effect=self.expanded_calibration
-                ),
-                patch("hmr4d.lidar_mocap.expanded_dataset._verify_export_data", return_value={}),
-                patch("hmr4d.lidar_mocap.expanded_dataset.merge_role", side_effect=merge_then_change),
-                self.assertRaisesRegex(ValueError, "Frozen dependency"),
-            ):
-                assemble(publications[0][0], publications[1][0], contract_path, root / "changed_union")
-            self.assertFalse((root / "changed_union/assembly_manifest.json").exists())
+                with (
+                    self.subTest(dependency=changed_name),
+                    patch(
+                        "hmr4d.lidar_mocap.expanded_dataset.CalibrationSnapshot.load",
+                        side_effect=self.expanded_calibration,
+                    ),
+                    patch("hmr4d.lidar_mocap.expanded_dataset._verify_export_data", return_value={}),
+                    patch("hmr4d.lidar_mocap.expanded_dataset.merge_role", side_effect=merge_then_change),
+                    self.assertRaisesRegex(ValueError, "Frozen dependency"),
+                ):
+                    assemble(publications[0][0], publications[1][0], contract_path, output)
+                self.assertFalse((output / "assembly_manifest.json").exists())
 
     def test_expanded_old_generation_allows_exact_historical_pixel_supplement_without_rewriting_base(self):
         from tools.audit_badminton_expanded_pixels import historical_corrections
