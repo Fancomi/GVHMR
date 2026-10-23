@@ -5,29 +5,61 @@ dataset verification and numerical comparisons use the frozen helpers directly.
 """
 
 import json
+import math
+import os
 from pathlib import Path
 import re
+import subprocess
+import time
 import uuid
+from datetime import datetime
 
 from hmr4d import PROJ_ROOT
 from . import formal_completion as frozen
 from .formal_completion import (
-    STATE, _artifacts, _baseline, _binding, _bound, _count, _dataset_after, _encode, _exact_path,
-    _gone, _load, _native_after, _preflight_target, _publish, _qa_scope, _run_cpu_check, _sha, _unchanged,
+    CPU_BOOTSTRAP,
+    STATE,
+    _artifacts,
+    _baseline,
+    _binding,
+    _bound,
+    _count,
+    _dataset_after,
+    _encode,
+    _exact_path,
+    _gone,
+    _load,
+    _native_after,
+    _preflight_target,
+    _publish,
+    _qa_scope,
+    _run_cpu_check,
+    _sha,
+    _unchanged,
 )
 
 FROZEN_SHA256 = "7a641255a3d6ee53ba9b00b5ed9e8240b65b91be9a79e03a259cfc888a253c1c"
 PROOF_ROLE = "policy_fingerprint_compatibility"
 PROOF_SCHEMA = "gvhmr-formal-postleg-policy-fingerprint-compatibility-v1"
+HISTORICAL_CODE = dict(
+    checker="a0c35493b0571550f5caa5a1ed8ddc122f5bf94d075ecf3a19030760d053b07a",
+    entry="f1082155caf436ae104dfe3eb7dd64652607316aad15d0ce54350a8bfc9495f9",
+    consumer="f2cfd7200ea45dd43a203bdd675c76786f358ebb11afb18c6f03a43e6f61d092",
+    focused_tests="ab518271befc0f2bc83ea98942a0c42c6dda0749e0030cb800ba1f3a59292821",
+)
 
 
 def compatibility_files():
-    return {role: PROJ_ROOT / relative for role, relative in dict(
-        checker="hmr4d/lidar_mocap/formal_completion_policy_compat.py",
-        entry="tools/finalize_badminton_formal_cpu_compat.py",
-        consumer="hmr4d/lidar_mocap/new_source_completion.py",
-        focused_tests="tests/test_lidar_formal_policy_compat.py",
-    ).items()}
+    return {
+        role: PROJ_ROOT / relative
+        for role, relative in dict(
+            checker="hmr4d/lidar_mocap/formal_completion_policy_compat.py",
+            entry="tools/finalize_badminton_formal_cpu_compat.py",
+            consumer="hmr4d/lidar_mocap/new_source_completion.py",
+            focused_tests="tests/test_lidar_formal_policy_compat.py",
+            dataset_entry="tools/verify_badminton_formal_dataset.py",
+        ).items()
+    }
 
 
 def _assert_frozen():
@@ -35,19 +67,24 @@ def _assert_frozen():
         raise ValueError("The frozen original formal completion implementation changed")
 
 
-def _tested_binding(item):
+def _implementation(item, expected):
     implementation, _ = _bound(item, {})
-    expected = {role: _binding(path) for role, path in compatibility_files().items()}
-    if (set(implementation) != {"schema", "code", "code_archive", "test_execution", "test_outputs",
-                                "test_sources", "original_checker"}
-            or implementation["schema"] != "gvhmr-formal-policy-compat-implementation-v1"
-            or implementation["code"] != expected or set(implementation["code_archive"]) != set(expected)):
+    if (
+        set(implementation)
+        != {"schema", "code", "code_archive", "test_execution", "test_outputs", "test_sources", "original_checker"}
+        or implementation["schema"] != "gvhmr-formal-policy-compat-implementation-v1"
+        or implementation["code"] != expected
+        or set(implementation["code_archive"]) != set(expected)
+    ):
         raise ValueError("Use the exact durable compatibility implementation and actual CPU evidence")
     folder = Path(item["path"]).resolve().parent
 
     def archived(proof, sha):
-        if (not Path(proof["path"]).resolve().is_relative_to(folder) or proof["sha256"] != sha
-                or _binding(proof["path"]) != proof):
+        if (
+            not Path(proof["path"]).resolve().is_relative_to(folder)
+            or proof["sha256"] != sha
+            or _binding(proof["path"]) != proof
+        ):
             raise ValueError("A permanent compatibility evidence copy changed or left its bundle")
 
     for role, proof in implementation["code_archive"].items():
@@ -58,12 +95,21 @@ def _tested_binding(item):
     archived(original["archived"], FROZEN_SHA256)
     archived(implementation["test_execution"], implementation["test_execution"]["sha256"])
     tested, _ = _bound(implementation["test_execution"], {})
-    if (tested.get("schema") != "gvhmr-formal-policy-compat-cpu-test-v1" or tested.get("state") != "passed"
-            or tested.get("exit_code") != 0 or type(tested.get("passed")) is not int or tested["passed"] < 1
-            or tested.get("failed") != 0 or tested.get("fixture_only") is not False
-            or tested.get("gpu_started") is not False or tested.get("actual_affinity") != [26, 27]
-            or tested.get("cuda_visible_devices") != "-1" or tested.get("code") != expected
-            or tested.get("source_bytes_unchanged") is not True or not tested.get("test_files")):
+    if (
+        tested.get("schema") != "gvhmr-formal-policy-compat-cpu-test-v1"
+        or tested.get("state") != "passed"
+        or tested.get("exit_code") != 0
+        or type(tested.get("passed")) is not int
+        or tested["passed"] < 1
+        or tested.get("failed") != 0
+        or tested.get("fixture_only") is not False
+        or tested.get("gpu_started") is not False
+        or tested.get("actual_affinity") != [26, 27]
+        or tested.get("cuda_visible_devices") != "-1"
+        or tested.get("code") != expected
+        or tested.get("source_bytes_unchanged") is not True
+        or not tested.get("test_files")
+    ):
         raise ValueError("Actual isolated CPU compatibility tests are missing or bind different code")
     if set(implementation["test_outputs"]) != {"stdout", "junit"}:
         raise ValueError("Both actual durable CPU outputs are required")
@@ -74,6 +120,16 @@ def _tested_binding(item):
     for entry in implementation["test_sources"]:
         archived(entry["archived"], entry["original"]["sha256"])
     return item
+
+
+def _tested_binding(item):
+    return _implementation(item, {role: _binding(path) for role, path in compatibility_files().items()})
+
+
+def _historical_implementation(item):
+    paths = compatibility_files()
+    expected = {role: dict(path=str(paths[role].resolve()), sha256=sha) for role, sha in HISTORICAL_CODE.items()}
+    return _implementation(item, expected)
 
 
 def _resolve_tests(root, item):
@@ -89,11 +145,14 @@ def _policies(checked, execution, outputs):
     scope = request["scope"][0]
     configuration, _ = _bound(scope["configuration"], checked["observed"])
     bindings = scope.get("existing_input_and_code_bindings", {})
-    if (len(request["scope"]) != 1 or scope.get("stage") != "guarded_leg"
-            or Path(scope["root"]).resolve() != checked["repair"]
-            or configuration.get("target_root") != str(checked["repair"])
-            or configuration.get("algorithm_changed") is not False
-            or configuration.get("code_and_inputs") != bindings):
+    if (
+        len(request["scope"]) != 1
+        or scope.get("stage") != "guarded_leg"
+        or Path(scope["root"]).resolve() != checked["repair"]
+        or configuration.get("target_root") != str(checked["repair"])
+        or configuration.get("algorithm_changed") is not False
+        or configuration.get("code_and_inputs") != bindings
+    ):
         raise ValueError("Producer policies lack their exact executed request/configuration")
     policies = {}
     for role, relative in (
@@ -110,13 +169,17 @@ def _policies(checked, execution, outputs):
     if commands["apply"]["entry_binding"] != policies["application_entry"]:
         raise ValueError("Application fingerprint differs from the actually executed entry")
     proposals, selection, applied = [outputs[phase] for phase in ("propose", "select", "apply")]
-    if (proposals.get("policy_sha256") != policies["refinement_policy"]["sha256"]
-            or selection.get("refinement_policy_sha256") != policies["refinement_policy"]["sha256"]
-            or selection.get("selection_policy_sha256") != policies["selection_policy"]["sha256"]
-            or applied.get("policy_sha256") != policies["application_entry"]["sha256"]):
+    if (
+        proposals.get("policy_sha256") != policies["refinement_policy"]["sha256"]
+        or selection.get("refinement_policy_sha256") != policies["refinement_policy"]["sha256"]
+        or selection.get("selection_policy_sha256") != policies["selection_policy"]["sha256"]
+        or applied.get("policy_sha256") != policies["application_entry"]["sha256"]
+    ):
         raise ValueError("Actual leg fingerprints do not match their distinct bound producer sources")
-    if any(value.get("state") != "complete" or value.get("training_published") is not False
-           for value in (proposals, selection, applied)):
+    if any(
+        value.get("state") != "complete" or value.get("training_published") is not False
+        for value in (proposals, selection, applied)
+    ):
         raise ValueError("Complete unpublished genuine phase metadata is required")
     return policies
 
@@ -128,17 +191,22 @@ def _metadata_material(checked, execution_binding, test_execution):
     observed = checked["observed"]
     execution, _ = _bound(execution_binding, observed)
     attempt = Path(execution_binding["path"]).resolve().parent
-    if (attempt.parent != checked["root"] / "gpu_guarded_leg/attempts"
-            or re.fullmatch(r"[0-9a-f]{32}", attempt.name) is None
-            or Path(execution_binding["path"]).name != "completion.json"
-            or execution.get("schema") != "gvhmr-guarded-leg-execution-v1"
-            or execution.get("state") != "complete_actual_cuda_exited"
-            or execution.get("training_published") is not False
-            or set(execution.get("phases", {})) != {"propose", "select", "apply"}):
+    if (
+        attempt.parent != checked["root"] / "gpu_guarded_leg/attempts"
+        or re.fullmatch(r"[0-9a-f]{32}", attempt.name) is None
+        or Path(execution_binding["path"]).name != "completion.json"
+        or execution.get("schema") != "gvhmr-guarded-leg-execution-v1"
+        or execution.get("state") != "complete_actual_cuda_exited"
+        or execution.get("training_published") is not False
+        or set(execution.get("phases", {})) != {"propose", "select", "apply"}
+    ):
         raise ValueError("Select the exact actually completed guarded-leg attempt")
     outputs, output_bindings = {}, {}
-    for phase, relative in (("propose", "leg_refinement_proposals/receipt.json"),
-                            ("select", "leg_refinement_selection.json"), ("apply", "leg_refinement_receipt.json")):
+    for phase, relative in (
+        ("propose", "leg_refinement_proposals/receipt.json"),
+        ("select", "leg_refinement_selection.json"),
+        ("apply", "leg_refinement_receipt.json"),
+    ):
         item = execution["phases"][phase]["output"]
         if Path(item["path"]).resolve() != checked["repair"] / relative:
             raise ValueError("Actual phase output leaves its exact repair root")
@@ -148,22 +216,33 @@ def _metadata_material(checked, execution_binding, test_execution):
     proposals, selection, applied = [outputs[phase] for phase in ("propose", "select", "apply")]
     selected = {key: row for key, row in selection["windows"].items() if row["selected"]}
     total = sum(len(row["selected"]) for row in selected.values())
-    if (set(selection["windows"]) != checked["keys"] or set(proposals["windows"]) != checked["keys"]
-            or selection["source_union_sha256"] != checked["source_sha"]
-            or proposals["source_union_sha256"] != checked["source_sha"]
-            or selection["source_proposals_sha256"] != output_bindings["propose"]["sha256"]
-            or applied["selection_sha256"] != output_bindings["select"]["sha256"]
-            or any(_count(applied.get(key), key) != total for key in ("selected_frames", "updated_frames"))
-            or _count(selection.get("selected_frames"), "selected frames") != total
-            or _count(applied.get("body_qa_accepted"), "body accepted") != checked["accepted"]
-            or set(applied["windows"]) != set(selected)):
+    if (
+        set(selection["windows"]) != checked["keys"]
+        or set(proposals["windows"]) != checked["keys"]
+        or selection["source_union_sha256"] != checked["source_sha"]
+        or proposals["source_union_sha256"] != checked["source_sha"]
+        or selection["source_proposals_sha256"] != output_bindings["propose"]["sha256"]
+        or applied["selection_sha256"] != output_bindings["select"]["sha256"]
+        or any(_count(applied.get(key), key) != total for key in ("selected_frames", "updated_frames"))
+        or _count(selection.get("selected_frames"), "selected frames") != total
+        or _count(applied.get("body_qa_accepted"), "body accepted") != checked["accepted"]
+        or set(applied["windows"]) != set(selected)
+    ):
         raise ValueError("Actual selected/update/window/body metadata counts differ")
     post_path = checked["repair"] / "final_labels/post_refinement.json"
     post = _load(post_path, observed)
-    if any(post.get(key) != applied.get(key) for key in (
-        "state", "selected_frames", "updated_frames", "selection_sha256", "policy_sha256", "windows",
-        "training_published",
-    )):
+    if any(
+        post.get(key) != applied.get(key)
+        for key in (
+            "state",
+            "selected_frames",
+            "updated_frames",
+            "selection_sha256",
+            "policy_sha256",
+            "windows",
+            "training_published",
+        )
+    ):
         raise ValueError("Actual post-refinement metadata differs from application output")
     reports = {}
     for key, row in selected.items():
@@ -172,26 +251,42 @@ def _metadata_material(checked, execution_binding, test_execution):
         report = _load(path, observed)
         item = applied["windows"][key]
         mark = report.get("post_leg_refinement", {})
-        if (item.get("fit_report_sha256") != _sha(path) or item.get("frames") != len(row["selected"])
-                or mark.get("policy_sha256") != policies["application_entry"]["sha256"]
-                or mark.get("selection_sha256") != applied["selection_sha256"]
-                or mark.get("frames") != item["frames"]):
+        if (
+            item.get("fit_report_sha256") != _sha(path)
+            or item.get("frames") != len(row["selected"])
+            or mark.get("policy_sha256") != policies["application_entry"]["sha256"]
+            or mark.get("selection_sha256") != applied["selection_sha256"]
+            or mark.get("frames") != item["frames"]
+        ):
             raise ValueError("Actual changed-window report producer/count differs")
         reports[key] = _binding(path)
     request, _ = _bound(execution["request"], observed)
     if request["scope"][0]["manifest"] != checked["baseline"]["source_input"]:
         raise ValueError("Executed source manifest differs from the immutable baseline")
-    return dict(schema=PROOF_SCHEMA, state="metadata_checked_native_qa_pending", root=str(checked["root"]),
-                baseline=checked["baseline_binding"],
-                original_checker=dict(path=str(Path(frozen.__file__).resolve()), sha256=FROZEN_SHA256),
-                compatibility_code={role: _binding(path) for role, path in compatibility_files().items()},
-                compatibility_implementation=test_execution,
-                test_execution=_bound(test_execution, {})[0]["test_execution"],
-                leg_execution=execution_binding, request=execution["request"],
-                configuration=request["scope"][0]["configuration"], producers=policies, phase_outputs=output_bindings,
-                post_refinement=_binding(post_path), changed_window_reports=reports, selected_frames=total,
-                updated_frames=total, changed_windows=len(selected), body_qa_accepted=checked["accepted"],
-                native_qa_complete=False, gpu_started=False, training_published=False)
+    return dict(
+        schema=PROOF_SCHEMA,
+        state="metadata_checked_native_qa_pending",
+        root=str(checked["root"]),
+        baseline=checked["baseline_binding"],
+        original_checker=dict(path=str(Path(frozen.__file__).resolve()), sha256=FROZEN_SHA256),
+        compatibility_code={role: _binding(path) for role, path in compatibility_files().items()},
+        compatibility_implementation=test_execution,
+        test_execution=_bound(test_execution, {})[0]["test_execution"],
+        leg_execution=execution_binding,
+        request=execution["request"],
+        configuration=request["scope"][0]["configuration"],
+        producers=policies,
+        phase_outputs=output_bindings,
+        post_refinement=_binding(post_path),
+        changed_window_reports=reports,
+        selected_frames=total,
+        updated_frames=total,
+        changed_windows=len(selected),
+        body_qa_accepted=checked["accepted"],
+        native_qa_complete=False,
+        gpu_started=False,
+        training_published=False,
+    )
 
 
 def inspect_policy_metadata(formal_root, baseline_binding, execution_binding, test_execution):
@@ -200,16 +295,27 @@ def inspect_policy_metadata(formal_root, baseline_binding, execution_binding, te
     if root == PROJ_ROOT / "outputs" or not root.is_relative_to(PROJ_ROOT / "outputs"):
         raise ValueError("Select the exact formal outputs root")
     baseline, _ = _bound(baseline_binding, {})
-    if (Path(baseline_binding["path"]).resolve() != root / "gpu_guarded_leg/baseline/baseline.json"
-            or baseline.get("schema") != "gvhmr-formal-preleg-baseline-v1" or baseline.get("state") != "complete"
-            or baseline.get("gpu_started") is not False or baseline.get("training_published") is not False):
+    if (
+        Path(baseline_binding["path"]).resolve() != root / "gpu_guarded_leg/baseline/baseline.json"
+        or baseline.get("schema") != "gvhmr-formal-preleg-baseline-v1"
+        or baseline.get("state") != "complete"
+        or baseline.get("gpu_started") is not False
+        or baseline.get("training_published") is not False
+    ):
         raise ValueError("Select the exact immutable formal baseline")
     body, _ = _bound(baseline["body_receipt"], {})
     if body.get("state") != "body_qa_candidate_complete" or body.get("windows") != len(baseline["windows"]):
         raise ValueError("Metadata baseline body/window inventory is incomplete")
-    checked = dict(root=root, repair=root / "repair", keys=set(baseline["windows"]), observed={}, baseline=baseline,
-                   baseline_binding=baseline_binding,
-                   source_sha=baseline["source_union_sha256"], accepted=body["accepted"])
+    checked = dict(
+        root=root,
+        repair=root / "repair",
+        keys=set(baseline["windows"]),
+        observed={},
+        baseline=baseline,
+        baseline_binding=baseline_binding,
+        source_sha=baseline["source_union_sha256"],
+        accepted=body["accepted"],
+    )
     return _metadata_material(checked, execution_binding, test_execution)
 
 
@@ -219,8 +325,12 @@ def _validate_proof(receipt, material, repair):
         raise ValueError("A complete typed source-bound compatibility proof is required")
     path = Path(item["path"]).resolve()
     folder = repair / "evaluation/formal_postleg_cpu/attempts"
-    if (path.parent.parent != folder or re.fullmatch(r"[0-9a-f]{32}", path.parent.name) is None
-            or path.name != "policy_fingerprint_compatibility.json" or _bound(item, {})[0] != material):
+    if (
+        path.parent.parent != folder
+        or re.fullmatch(r"[0-9a-f]{32}", path.parent.name) is None
+        or path.name != "policy_fingerprint_compatibility.json"
+        or _bound(item, {})[0] != material
+    ):
         raise ValueError("Typed compatibility proof differs from actual sources, phase metadata or CPU test evidence")
 
 
@@ -229,8 +339,9 @@ def validate_compatibility_receipt(formal_root, receipt):
     if not isinstance(item, dict):
         raise ValueError("A typed compatibility proof binding is required")
     proof, _ = _bound(item, {})
-    material = inspect_policy_metadata(formal_root, receipt["baseline"], receipt["leg_execution"],
-                                       proof["compatibility_implementation"])
+    material = inspect_policy_metadata(
+        formal_root, receipt["baseline"], receipt["leg_execution"], proof["compatibility_implementation"]
+    )
     _validate_proof(receipt, material, Path(formal_root).resolve() / "repair")
     return proof
 
@@ -460,16 +571,294 @@ def _leg_outputs(checked, outputs, execution):
                 or entry.get("fit_report_sha256") != _sha(report_path)
                 or report.get("post_leg_refinement", {}).get("selection_sha256") != applied["selection_sha256"]
                 or report.get("post_leg_refinement", {}).get("frames") != entry["frames"]
-                or report.get("post_leg_refinement", {}).get("policy_sha256")
-                != policies["application_entry"]["sha256"]
+                or report.get("post_leg_refinement", {}).get("policy_sha256") != policies["application_entry"]["sha256"]
             ):
                 raise ValueError("Actual updated fit report differs from the apply output")
         elif _sha(report_path) != checked["baseline"]["windows"][key]["report_snapshot"]["sha256"]:
             raise ValueError("An unselected formal fit window changed")
 
 
+def _run_dataset_check(checked, directory, threads):
+    """The frozen CPU launcher contract, selecting only the explicit formal adapter."""
+    entry = compatibility_files()["dataset_entry"]
+    entry_binding = _binding(entry)
+    command = [
+        str(PROJ_ROOT / ".venv/Scripts/python.exe"),
+        "-u",
+        "-c",
+        CPU_BOOTSTRAP,
+        str(entry),
+        "--output-root",
+        str(checked["repair"] / "final_labels"),
+        "--samples-per-session",
+        "64",
+        "--threads",
+        str(threads),
+    ]
+    env = dict(
+        os.environ,
+        CUDA_VISIBLE_DEVICES="-1",
+        OMP_NUM_THREADS=str(threads),
+        MKL_NUM_THREADS=str(threads),
+        OPENBLAS_NUM_THREADS="1",
+    )
+    log = directory / "dataset.log"
+    started = time.perf_counter()
+    with log.open("xb") as handle:
+        completed = subprocess.run(
+            command,
+            cwd=PROJ_ROOT,
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+        )
+    if completed.returncode != 0:
+        raise RuntimeError(f"Formal CPU dataset verification failed ({completed.returncode}); see {log}")
+    if _binding(entry) != entry_binding:
+        raise ValueError("Actual CPU dataset adapter code changed during execution")
+    with log.open("rb") as handle:
+        allocation = json.loads(handle.readline())
+    if allocation != dict(
+        schema="gvhmr-formal-cpu-worker-v1", affinity=[26, 27], priority="BelowNormal", cuda_visible_devices="-1"
+    ):
+        raise RuntimeError("Actual CPU dataset worker allocation was not verified")
+    return dict(
+        exit_code=0,
+        command=command,
+        entry=entry_binding,
+        log=_binding(log),
+        wall_seconds=time.perf_counter() - started,
+        allocation=allocation,
+        hidden_window=True,
+    )
+
+
+def _resume_native(checked, execution_binding, item, material):
+    """Validate a durable prior result; the caller must still run original _native_after."""
+    observed = checked["observed"]
+    if (
+        not isinstance(item, dict)
+        or set(item) != {"path", "sha256"}
+        or not isinstance(item["path"], str)
+        or not isinstance(item["sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+    ):
+        raise ValueError("Explicit native resume requires its exact permanent proof byte binding")
+    proof_path = Path(item["path"]).resolve()
+    if (
+        proof_path.parent.parent != checked["root"] / "gpu_guarded_leg"
+        or proof_path.name != "native-resume.json"
+        or _binding(proof_path) != item
+    ):
+        raise ValueError("Native resume proof leaves its exact permanent formal bundle")
+    proof, _ = _bound(item, observed)
+    fields = {
+        "schema",
+        "root",
+        "baseline",
+        "leg_execution",
+        "failed_attempt",
+        "previous_implementation",
+        "evidence",
+        "exit_readback",
+    }
+    if (
+        set(proof) != fields
+        or proof["schema"] != "gvhmr-formal-postleg-native-resume-v1"
+        or proof["root"] != str(checked["root"])
+        or proof["baseline"] != checked["baseline_binding"]
+        or proof["leg_execution"] != execution_binding
+    ):
+        raise ValueError("Native resume does not bind this exact baseline and guarded execution")
+    attempt = Path(proof["failed_attempt"])
+    if (
+        attempt != attempt.resolve()
+        or attempt.parent != checked["repair"] / "evaluation/formal_postleg_cpu/attempts"
+        or re.fullmatch(r"[0-9a-f]{32}", attempt.name) is None
+    ):
+        raise ValueError("Native predecessor is not an exact prior formal CPU attempt")
+    roles = {"failure", "start", "stage_log", "native_log", "dataset_log", "policy_metadata", "native_result"}
+    if set(proof["evidence"]) != roles:
+        raise ValueError("Native resume requires all seven durable actual predecessor records")
+
+    def payload(binding):
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"path", "sha256"}
+            or not isinstance(binding["path"], str)
+            or not isinstance(binding["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", binding["sha256"]) is None
+        ):
+            raise ValueError("Native predecessor requires an exact byte binding")
+        path = Path(binding["path"]).resolve()
+        if not path.is_relative_to(proof_path.parent) or _binding(path) != binding:
+            raise ValueError("Native predecessor copy changed or left its permanent bundle")
+        observed[str(path)] = binding["sha256"]
+        return path.read_bytes()
+
+    raw = {role: payload(binding) for role, binding in proof["evidence"].items()}
+    docs = {role: json.loads(raw[role]) for role in ("failure", "start", "policy_metadata", "native_result")}
+    failure, start = docs["failure"], docs["start"]
+    exited = json.loads(payload(proof["exit_readback"]))
+    if (
+        set(exited) != {"schema", "observed_utc", "failure", "job_empty", "process_identities", "gpu_started"}
+        or exited["schema"] != "gvhmr-formal-cpu-predecessor-exit-v1"
+        or exited["failure"] != proof["evidence"]["failure"]
+        or exited["job_empty"] is not True
+        or exited["gpu_started"] is not False
+        or failure.get("stage") != "postleg"
+        or failure.get("job_empty") is not True
+        or failure.get("gpu_started") is not False
+        or failure.get("training_published") is not False
+        or failure.get("actual_log", {}).get("sha256") != proof["evidence"]["stage_log"]["sha256"]
+    ):
+        raise ValueError("Actual failed predecessor release/exit evidence is incomplete")
+    begin, failed, readback = [
+        datetime.fromisoformat(value) for value in (start["started_utc"], failure["failed_utc"], exited["observed_utc"])
+    ]
+    if any(value.tzinfo is None for value in (begin, failed, readback)) or not begin <= failed <= readback:
+        raise ValueError("Actual predecessor start/failure/exit times differ")
+
+    def identity(value):
+        if (
+            type(value.get("pid")) is not int
+            or value["pid"] <= 0
+            or type(value.get("create_time")) not in (int, float)
+            or not math.isfinite(value["create_time"])
+            or value["create_time"] <= 0
+        ):
+            raise ValueError("Native predecessor requires exact original PID/create-time identities")
+        return value["pid"], value["create_time"]
+
+    actors = failure.get("observed_process_identities")
+    readbacks = exited["process_identities"]
+    if (
+        not isinstance(actors, list)
+        or not actors
+        or not isinstance(readbacks, list)
+        or len({identity(x) for x in actors}) != len(actors)
+        or {identity(x) for x in actors} != {identity(x) for x in readbacks}
+        or len(readbacks) != len(actors)
+        or any(
+            set(x) != {"pid", "create_time", "original_identity_absent"} or x["original_identity_absent"] is not True
+            for x in readbacks
+        )
+    ):
+        raise ValueError("Native predecessor exit readback omits or reuses original process identities")
+    for actor in actors:
+        _gone(actor)
+    previous = proof["previous_implementation"]
+    if not Path(previous["path"]).resolve().is_relative_to(checked["root"] / "gpu_guarded_leg"):
+        raise ValueError("Historical implementation leaves permanent formal evidence")
+    _historical_implementation(previous)
+    implementation, _ = _bound(previous, observed)
+    prior = docs["policy_metadata"]
+    expected_prior = dict(
+        material,
+        compatibility_code=implementation["code"],
+        compatibility_implementation=previous,
+        test_execution=implementation["test_execution"],
+    )
+    if prior != expected_prior:
+        raise ValueError("Historical metadata proof differs from the current unchanged leg/source evidence")
+    launcher = start.get("launcher", {})
+    command = launcher.get("command", [])
+    old_threads = start.get("threads")
+    expected_args = [
+        "-u",
+        str(compatibility_files()["entry"]),
+        "--root",
+        str(checked["root"]),
+        "--baseline",
+        proof["baseline"]["path"],
+        "--baseline-sha256",
+        proof["baseline"]["sha256"],
+        "--leg-execution",
+        execution_binding["path"],
+        "--leg-execution-sha256",
+        execution_binding["sha256"],
+        "--threads",
+        str(old_threads),
+        "--compatibility-implementation",
+        previous["path"],
+        "--compatibility-implementation-sha256",
+        previous["sha256"],
+    ]
+    if (
+        type(old_threads) is not int
+        or old_threads not in (1, 2)
+        or not command
+        or command[1:] != expected_args
+        or identity(launcher) not in {identity(x) for x in actors}
+        or start.get("stage") != "postleg"
+        or start.get("entry") != implementation["code"]["entry"]
+        or launcher.get("assigned_before_resume") is not True
+        or launcher.get("affinity") != [26, 27]
+        or start.get("affinity") != [26, 27]
+        or start.get("cuda_visible_devices") != "-1"
+        or start.get("priority") != "BelowNormal"
+    ):
+        raise ValueError("Actual predecessor command/entry/CPU ownership differs")
+    for role, entry_name, arguments in (
+        ("native", "verify_badminton_native_bound.py", ["--root", str(checked["repair"]), "--verified-formal-cache"]),
+        (
+            "dataset",
+            "verify_badminton_dataset.py",
+            ["--output-root", str(checked["repair"] / "final_labels"), "--samples-per-session", "64"],
+        ),
+    ):
+        expected_tail = [
+            "-u",
+            "-c",
+            CPU_BOOTSTRAP,
+            str(PROJ_ROOT / "tools" / entry_name),
+            *arguments,
+            "--threads",
+            str(old_threads),
+        ]
+        if not any(x.get("command", [])[1:] == expected_tail for x in actors):
+            raise ValueError(f"Actual predecessor lacks the original {role} CPU process")
+    stage_log = raw["stage_log"].decode("utf-8")
+    dataset_log = raw["dataset_log"].decode("utf-8")
+    if (
+        f"Formal CPU dataset verification failed (1); see {attempt / 'dataset.log'}" not in stage_log
+        or 'workers["dataset"] = _run_cpu_check(checked, "dataset", attempt, threads)' not in stage_log
+        or "This run requires its explicitly bound data relocations" not in dataset_log
+        or str(PROJ_ROOT / "tools/verify_badminton_dataset.py") not in dataset_log
+    ):
+        raise ValueError("Predecessor did not fail at the actual original dataset relocation interface")
+    native_lines = raw["native_log"].decode("utf-8").splitlines()
+    allocation = dict(
+        schema="gvhmr-formal-cpu-worker-v1", affinity=[26, 27], priority="BelowNormal", cuda_visible_devices="-1"
+    )
+    native = docs["native_result"]
+    if (
+        not native_lines
+        or json.loads(native_lines[0]) != allocation
+        or json.loads(native_lines[-1]) != native
+        or native != _load(checked["repair"] / "final_labels/native_verification.json", observed)
+        or not native.get("actual_native_witnesses")
+    ):
+        raise ValueError("Actual native log/result/witness changed after the failed dataset attempt")
+    return dict(
+        state="reused_completed_native_witness",
+        entry=_binding(PROJ_ROOT / "tools/verify_badminton_native_bound.py"),
+        log=proof["evidence"]["native_log"],
+        resume=item,
+        native_result=proof["evidence"]["native_result"],
+        actual_native_witnesses=native["actual_native_witnesses"],
+    )
+
+
 def verify_formal_postleg_cpu(
-    formal_root, baseline_binding, leg_execution_binding, threads=1, *, compatibility_test_execution=None,
+    formal_root,
+    baseline_binding,
+    leg_execution_binding,
+    threads=1,
+    *,
+    compatibility_test_execution=None,
+    native_resume=None,
 ):
     """Check historical CUDA exit, then run only the two existing CPU verifiers."""
     if type(threads) is not int or threads not in (1, 2):
@@ -513,6 +902,14 @@ def verify_formal_postleg_cpu(
             for item in (worker["entry"], worker["log"]):
                 if _sha(item["path"]) != item["sha256"]:
                     raise ValueError("Existing formal CPU worker evidence changed")
+        worker = receipt["workers"]["native"]
+        if worker.get("state") == "reused_completed_native_witness":
+            if native_resume is not None and native_resume != worker["resume"]:
+                raise ValueError("Existing native resume proof differs from the explicit selection")
+            if _resume_native(checked, leg_execution_binding, worker["resume"], material) != worker:
+                raise ValueError("Existing native witness reuse evidence changed")
+        elif native_resume is not None:
+            raise ValueError("Existing completion did not use this explicitly selected native resume proof")
         _native_after(checked)
         _dataset_after(checked)
         from .new_source_completion import collect_absolute_qa, compare_same_v2
@@ -532,10 +929,14 @@ def verify_formal_postleg_cpu(
     proof_binding = _binding(proof_path)
     observed[str(proof_path.resolve())] = proof_binding["sha256"]
     workers = {}
-    workers["native"] = _run_cpu_check(checked, "native", attempt, threads)
+    workers["native"] = (
+        _run_cpu_check(checked, "native", attempt, threads)
+        if native_resume is None
+        else _resume_native(checked, leg_execution_binding, native_resume, material)
+    )
     _native_after(checked)
     _unchanged(observed)
-    workers["dataset"] = _run_cpu_check(checked, "dataset", attempt, threads)
+    workers["dataset"] = _run_dataset_check(checked, attempt, threads)
     _dataset_after(checked)
     _unchanged(observed)
     from .new_source_completion import collect_absolute_qa, compare_same_v2

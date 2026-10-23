@@ -78,6 +78,11 @@ bound refinement/selection/application fingerprints, use the explicit
 `tools/finalize_badminton_formal_cpu_compat.py` entry and its durable tested
 implementation binding; `formal_completion_policy_compat.py` preserves the
 frozen native implementation and runs the same numerical verifiers.
+The internal `tools/verify_badminton_formal_dataset.py` adapter supplies the exact
+frozen formal relocation resolver before opening a model; its source/cloud/SMPL
+checks and limits match the original verifier. Explicit native-resume evidence
+can reuse a completed witness after a later dataset-interface failure; current
+strict native provenance and the real dataset CPU pass remain required.
 Its metadata-only inspection does not complete native or QA checks. Bilateral, pixels,
 Chrome, archive and consumer admission remain separate completion gates.
 `tools/watch_badminton_full_gpu.py` / `gpu_handoff.py` consume a separately

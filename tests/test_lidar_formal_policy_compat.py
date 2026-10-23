@@ -25,8 +25,9 @@ def rebind(value):
     for key, item in value.applied["windows"].items():
         path = value.current_dirs[key] / "fit_report.json"
         report = read(path)
-        report["post_leg_refinement"].update(selection_sha256=selection["sha256"],
-                                            policy_sha256=value.applied["policy_sha256"])
+        report["post_leg_refinement"].update(
+            selection_sha256=selection["sha256"], policy_sha256=value.applied["policy_sha256"]
+        )
         item["fit_report_sha256"] = put(path, report)["sha256"]
     applied = put(Path(value.apply["path"]), value.applied)
     put(Path(value.post["path"]), dict(value.applied, source="bounded_native_leg_correspondence"))
@@ -41,15 +42,16 @@ def rebind(value):
     context = read(context_path)
     preflight = read(context["preflight"]["path"])
     preflight.update(request=request, grant=grant_binding, readiness=grant["readiness"])
-    context.update(request=request, grant=grant_binding,
-                   preflight=put(Path(context["preflight"]["path"]), preflight))
+    context.update(request=request, grant=grant_binding, preflight=put(Path(context["preflight"]["path"]), preflight))
     context_binding = put(context_path, context)
     outputs = dict(propose=proposal, select=selection, apply=applied)
     for phase, info in value.execution["phases"].items():
         info["output"] = outputs[phase]
         put(context_path.parent / (phase + ".exit.json"), info)
-    put(context_path.parent / "all_phases_complete.json",
-        dict(phases=value.execution["phases"], context=context_binding))
+    put(
+        context_path.parent / "all_phases_complete.json",
+        dict(phases=value.execution["phases"], context=context_binding),
+    )
     for role in ("actual_exit", "independent_guard"):
         item = value.execution[role]
         data = read(item["path"])
@@ -86,8 +88,11 @@ def producer_finished(finished, monkeypatch):
     value.proposals = read(value.proposal["path"])
     value.proposals.update(policy_sha256=policies["refinement_policy"]["sha256"], training_published=False)
     value.selected = read(value.selection["path"])
-    value.selected.update(refinement_policy_sha256=policies["refinement_policy"]["sha256"],
-                          selection_policy_sha256=policies["selection_policy"]["sha256"], training_published=False)
+    value.selected.update(
+        refinement_policy_sha256=policies["refinement_policy"]["sha256"],
+        selection_policy_sha256=policies["selection_policy"]["sha256"],
+        training_published=False,
+    )
     value.applied = read(value.apply["path"])
     value.applied["policy_sha256"] = policies["application_entry"]["sha256"]
     value.policies = policies
@@ -95,9 +100,15 @@ def producer_finished(finished, monkeypatch):
     value.tested = put(project / "synthetic_mock_implementation.json", dict(test_execution=raw))
     monkeypatch.setattr(compat, "_tested_binding", lambda item: (compat._bound(item, {})[0] and item))
     monkeypatch.setattr(compat, "_run_cpu_check", value.worker)
+    monkeypatch.setattr(
+        compat,
+        "_run_dataset_check",
+        lambda checked, directory, threads: value.worker(checked, "dataset", directory, threads),
+    )
     rebind(value)
     value.verify_compat = lambda: compat.verify_formal_postleg_cpu(
-        value.root, value.baseline_binding, value.execution_binding, compatibility_test_execution=value.tested)
+        value.root, value.baseline_binding, value.execution_binding, compatibility_test_execution=value.tested
+    )
     return value
 
 
@@ -112,9 +123,13 @@ def test_distinct_actual_producer_fingerprints_execute_original_cpu_pipeline_and
     assert proof["selected_frames"] == proof["updated_frames"] == proof["changed_windows"] == 1
     assert receipt == value.verify_compat()
     assert value.native_calls == ["native", "dataset"]
-    reused, _ = consumer._reuse_formal_postleg(value.repair, read(value.repair / "final_labels/repair_plan.json"),
+    reused, _ = consumer._reuse_formal_postleg(
+        value.repair,
+        read(value.repair / "final_labels/repair_plan.json"),
         value.repair / "evaluation/formal_postleg_cpu_receipt.json",
-        compat._sha(value.repair / "evaluation/formal_postleg_cpu_receipt.json"), 1)
+        compat._sha(value.repair / "evaluation/formal_postleg_cpu_receipt.json"),
+        1,
+    )
     assert reused == receipt and value.native_calls == ["native", "dataset"]
 
 
@@ -126,9 +141,24 @@ def test_metadata_inspection_does_not_start_workers_or_claim_native_completion(p
     assert not (value.repair / "evaluation/formal_postleg_cpu_receipt.json").exists()
 
 
-@pytest.mark.parametrize("change", ["fake_same_sha", "wrong_apply", "wrong_refinement", "wrong_selection",
-                                   "wrong_source_path", "selected_count", "updated_count", "body_count",
-                                   "training", "partial", "changed_source", "wrong_apply_entry", "job_busy"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "fake_same_sha",
+        "wrong_apply",
+        "wrong_refinement",
+        "wrong_selection",
+        "wrong_source_path",
+        "selected_count",
+        "updated_count",
+        "body_count",
+        "training",
+        "partial",
+        "changed_source",
+        "wrong_apply_entry",
+        "job_busy",
+    ],
+)
 def test_wrong_producer_count_flags_or_exit_cannot_start_native_workers(producer_finished, change):
     value = producer_finished
     if change == "fake_same_sha":
@@ -190,8 +220,9 @@ def test_finish_requires_full_exact_typed_compatibility_proof(producer_finished,
     receipt["evidence"][compat.PROOF_ROLE] = put(Path(proof_item["path"]), proof)
     item = put(receipt_path, receipt)
     with pytest.raises(ValueError):
-        consumer._reuse_formal_postleg(value.repair, read(value.repair / "final_labels/repair_plan.json"),
-                                      receipt_path, item["sha256"], 1)
+        consumer._reuse_formal_postleg(
+            value.repair, read(value.repair / "final_labels/repair_plan.json"), receipt_path, item["sha256"], 1
+        )
     assert value.native_calls == ["native", "dataset"]
 
 
@@ -199,14 +230,16 @@ def test_original_legacy_receipt_still_dispatches_original_checker(finished):
     receipt = finished.verify()
     path = finished.repair / "evaluation/formal_postleg_cpu_receipt.json"
     assert compat.PROOF_ROLE not in receipt["evidence"]
-    reused, _ = consumer._reuse_formal_postleg(finished.repair,
-        read(finished.repair / "final_labels/repair_plan.json"), path, compat._sha(path), 1)
+    reused, _ = consumer._reuse_formal_postleg(
+        finished.repair, read(finished.repair / "final_labels/repair_plan.json"), path, compat._sha(path), 1
+    )
     assert reused == receipt and finished.native_calls == ["native", "dataset"]
 
 
 def test_execution_preconditions_ast_and_numeric_helper_objects_are_frozen():
     assert ast.dump(ast.parse(inspect.getsource(compat._execution))) == ast.dump(
-        ast.parse(inspect.getsource(frozen._execution)))
+        ast.parse(inspect.getsource(frozen._execution))
+    )
     for name in ("_baseline", "_gone", "_artifacts", "_native_after", "_dataset_after", "_qa_scope", "_unchanged"):
         assert getattr(compat, name) is getattr(frozen, name)
 
@@ -216,11 +249,22 @@ def durable_bundle(value, change=None):
     junit = value.root / "test.xml"
     bytes_file(stdout, b"synthetic test output\n")
     bytes_file(junit, b"<synthetic/>\n")
-    proof = dict(schema="gvhmr-formal-policy-compat-cpu-test-v1", state="passed", exit_code=0, passed=1, failed=0,
-        fixture_only=False, gpu_started=False, actual_affinity=[26, 27], cuda_visible_devices="-1",
+    proof = dict(
+        schema="gvhmr-formal-policy-compat-cpu-test-v1",
+        state="passed",
+        exit_code=0,
+        passed=1,
+        failed=0,
+        fixture_only=False,
+        gpu_started=False,
+        actual_affinity=[26, 27],
+        cuda_visible_devices="-1",
         code={role: compat._binding(path) for role, path in compat.compatibility_files().items()},
-        stdout=compat._binding(stdout), junit=compat._binding(junit), source_bytes_unchanged=True,
-        test_files=[compat._binding(compat.compatibility_files()["focused_tests"])])
+        stdout=compat._binding(stdout),
+        junit=compat._binding(junit),
+        source_bytes_unchanged=True,
+        test_files=[compat._binding(compat.compatibility_files()["focused_tests"])],
+    )
     if change == "fixture":
         proof["fixture_only"] = True
     elif change == "failed":
@@ -240,13 +284,18 @@ def durable_bundle(value, change=None):
 
     raw = put(value.root / "test_receipt.json", proof)
     original = dict(path=str(Path(frozen.__file__).resolve()), sha256=compat.FROZEN_SHA256)
-    implementation = dict(schema="gvhmr-formal-policy-compat-implementation-v1", code=proof["code"],
-        code_archive={role: copy(compat._binding(path), "code/" + role + ".py")
-                      for role, path in compat.compatibility_files().items()},
+    implementation = dict(
+        schema="gvhmr-formal-policy-compat-implementation-v1",
+        code=proof["code"],
+        code_archive={
+            role: copy(compat._binding(path), "code/" + role + ".py")
+            for role, path in compat.compatibility_files().items()
+        },
         test_execution=copy(raw, "actual_test_execution.json"),
         test_outputs={role: copy(proof[role], role + ".bin") for role in ("stdout", "junit")},
         test_sources=[dict(original=item, archived=copy(item, "tested_source.py")) for item in proof["test_files"]],
-        original_checker=dict(original=original, archived=copy(original, "frozen_formal_completion.py")))
+        original_checker=dict(original=original, archived=copy(original, "frozen_formal_completion.py")),
+    )
     return put(folder / "implementation.json", implementation)
 
 

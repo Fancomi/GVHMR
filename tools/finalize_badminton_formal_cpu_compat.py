@@ -9,8 +9,14 @@ import json
 import os
 from pathlib import Path
 
-os.environ.update(CUDA_VISIBLE_DEVICES="-1", PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1",
-                  MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
+os.environ.update(
+    CUDA_VISIBLE_DEVICES="-1",
+    PYTHONDONTWRITEBYTECODE="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    OPENBLAS_NUM_THREADS="1",
+    NUMEXPR_NUM_THREADS="1",
+)
 
 
 def main():
@@ -24,7 +30,13 @@ def main():
     parser.add_argument("--compatibility-implementation-sha256", required=True)
     parser.add_argument("--threads", type=int, choices=(1, 2), default=1)
     parser.add_argument("--metadata-only", action="store_true")
+    parser.add_argument("--resume-native-proof", type=Path)
+    parser.add_argument("--resume-native-proof-sha256")
     args = parser.parse_args()
+    if (args.resume_native_proof is None) != (args.resume_native_proof_sha256 is None):
+        parser.error("Native resume requires both its permanent proof path and SHA256")
+    if args.metadata_only and args.resume_native_proof is not None:
+        parser.error("Metadata-only inspection does not validate or consume a native resume proof")
     import psutil
 
     own = psutil.Process()
@@ -32,7 +44,8 @@ def main():
     own.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
     os.environ.update(OMP_NUM_THREADS=str(args.threads), MKL_NUM_THREADS=str(args.threads))
     from hmr4d.lidar_mocap.formal_completion_policy_compat import (
-        inspect_policy_metadata, verify_formal_postleg_cpu,
+        inspect_policy_metadata,
+        verify_formal_postleg_cpu,
     )
 
     item = lambda path, sha: dict(path=str(path.resolve()), sha256=sha)
@@ -45,8 +58,18 @@ def main():
         import torch
 
         torch.set_num_threads(args.threads)
-        result = verify_formal_postleg_cpu(args.root, baseline, execution, threads=args.threads,
-                                         compatibility_test_execution=tested)
+        result = verify_formal_postleg_cpu(
+            args.root,
+            baseline,
+            execution,
+            threads=args.threads,
+            compatibility_test_execution=tested,
+            native_resume=(
+                item(args.resume_native_proof, args.resume_native_proof_sha256)
+                if args.resume_native_proof is not None
+                else None
+            ),
+        )
     print(json.dumps(result, ensure_ascii=False))
 
 
