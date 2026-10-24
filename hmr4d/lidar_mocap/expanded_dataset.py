@@ -371,6 +371,14 @@ def _validate_new_completion(repair, completion, parent_publication, publication
     if completed(Path(receipt_binding["path"])) != receipt_binding:
         raise ValueError("Formal completion does not bind its postleg CPU receipt")
     receipt = read_json(receipt_binding["path"])
+    if "source_registry_sha256" in body:
+        body_registry_matches = body["source_registry_sha256"] == registry_binding["sha256"]
+    else:
+        body_registry_matches = (
+            body.get("schema") == "badminton-ptv3-dataset-v1"
+            and body.get("source_union_manifest_sha256") == source["sha256"]
+            and source_input.get("source_registry_sha256") == registry_binding["sha256"]
+        )
     if (
         receipt.get("schema") != "gvhmr-formal-postleg-cpu-completion-v1"
         or receipt.get("state") != "postleg_native_qa_complete_bilateral_browser_archive_pending"
@@ -391,7 +399,7 @@ def _validate_new_completion(repair, completion, parent_publication, publication
         or receipt.get("training_published") is not False
         or set(receipt.get("workers", {})) != {"native", "dataset"}
         or set(body.get("exports", {})) != set(publication["exports"])
-        or body.get("source_registry_sha256") != registry_binding["sha256"]
+        or not body_registry_matches
         or set(registry["sources"]) != set(publication["exports"])
         or {job["source_id"] for job in source_input["jobs"]} - set(registry["sources"])
         or publication.get("source_dataset_manifest") != str(body_path)
@@ -438,19 +446,22 @@ def _validate_new_completion(repair, completion, parent_publication, publication
                     proof_bindings(item)
 
         proof_bindings(proof)
-        implementation_binding = proof["compatibility_implementation"]
-        payload = Path(implementation_binding["path"]).read_bytes()
-        if hashlib.sha256(payload).hexdigest() != implementation_binding["sha256"]:
-            raise ValueError("The verified compatibility implementation changed while reading")
-        implementation = json.loads(payload)
-        for item in (
-            *implementation["code_archive"].values(),
-            implementation["test_execution"],
-            *implementation["test_outputs"].values(),
-            *(entry["archived"] for entry in implementation["test_sources"]),
-            implementation["original_checker"]["archived"],
-        ):
-            bound(item)
+
+        def implementation_bindings(implementation_binding):
+            payload = Path(implementation_binding["path"]).read_bytes()
+            if hashlib.sha256(payload).hexdigest() != implementation_binding["sha256"]:
+                raise ValueError("The verified compatibility implementation changed while reading")
+            implementation = json.loads(payload)
+            for item in (
+                *implementation["code_archive"].values(),
+                implementation["test_execution"],
+                *implementation["test_outputs"].values(),
+                *(entry["archived"] for entry in implementation["test_sources"]),
+                implementation["original_checker"]["archived"],
+            ):
+                bound(item)
+
+        implementation_bindings(proof["compatibility_implementation"])
     for name, path in expected_evidence.items():
         item = bound(receipt["evidence"][name], path)
         if name in ("before", "native", "leg_receipt", "after", "comparison") and completed(path) != item:
@@ -459,6 +470,25 @@ def _validate_new_completion(repair, completion, parent_publication, publication
         schema="gvhmr-formal-cpu-worker-v1", affinity=[26, 27], priority="BelowNormal", cuda_visible_devices="-1"
     )
     for role, worker in receipt["workers"].items():
+        if role == "native" and worker.get("state") == "reused_completed_native_witness":
+            if not has_compatibility:
+                raise ValueError("Native witness reuse requires the verified compatibility proof")
+            from .formal_completion_policy_compat import _resume_native
+
+            observed = {}
+            checked = dict(root=repair.parent, repair=repair, baseline_binding=receipt["baseline"], observed=observed)
+            if _resume_native(checked, execution, worker.get("resume"), proof) != worker:
+                raise ValueError("Native witness reuse differs from the original exact metadata reconstruction")
+            bound(worker.get("entry"), PROJ_ROOT / "tools/verify_badminton_native_bound.py")
+            bound(worker.get("log"))
+            for path, sha in observed.items():
+                bound(dict(path=path, sha256=sha))
+            resume = read_json(worker["resume"]["path"])
+            proof_bindings(resume)
+            implementation_bindings(resume["previous_implementation"])
+            for item in worker["actual_native_witnesses"]:
+                bound(item)
+            continue
         if (
             type(worker.get("exit_code")) is not int
             or worker["exit_code"] != 0
@@ -467,6 +497,13 @@ def _validate_new_completion(repair, completion, parent_publication, publication
         ):
             raise ValueError("Formal CPU worker did not complete in its verified CPU allocation")
         entry = "verify_badminton_native_bound.py" if role == "native" else "verify_badminton_dataset.py"
+        if role == "dataset" and has_compatibility and "dataset_entry" in proof["compatibility_code"]:
+            expected_entry = bound(
+                proof["compatibility_code"]["dataset_entry"], PROJ_ROOT / "tools/verify_badminton_formal_dataset.py"
+            )
+            if worker.get("entry") != expected_entry:
+                raise ValueError("Dataset worker differs from its verified source-bound compatibility entry")
+            entry = "verify_badminton_formal_dataset.py"
         bound(worker.get("entry"), PROJ_ROOT / "tools" / entry)
         log = bound(worker.get("log"))
         log_path = Path(log["path"]).resolve()
