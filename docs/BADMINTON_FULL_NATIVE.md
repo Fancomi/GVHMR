@@ -1085,3 +1085,48 @@ instead of empty clips. Overall full-fit clips must remain nonempty. A standalon
 zero-count per-source coverage and completed native analysis/planner files. Its
 source watcher records `no_fit_needed` and exits without creating fitted input
 or SMPL tensors. Joint coverage still accounts for the source explicitly.
+
+### Explicit safe native decoding and formal display
+
+For the 1022 formal observer, use the original entry with explicit
+`--decode-threads 1`, for example:
+
+```powershell
+python -B tools/observe_badminton_dual_view.py --source-root <formal>/repair/final_labels --output-root <formal>/repair_paired --device cpu --threads 8 --decode-threads 1
+```
+
+This selects single-thread PyAV SLICE decoding and verifies native PTS within
+2 microseconds. It retains the original frame indexes and BGR observation
+interface. The omitted option retains the legacy behavior. On the actual 1022
+recording, an AUTO seek probe produced visible corruption while the same-PTS
+single-thread decode was clear; the failed observer also terminated inside
+avcodec. Failed partial output remains separate from the fresh run.
+
+Safe decoding does not by itself authorize a detection-cache hit. Each frame
+must match the actual decoded pixel SHA, original native row, source/camera,
+calibration, model settings and the hash-bound native-pose cache file. The
+cache index is validated once; each selected file and image is checked when
+used. A missing or mismatched frame uses the existing detector for that frame.
+Journal resumption requires the same explicit decoder profile. No cached
+SMPL, source point member, timestamp or camera matrix is modified.
+
+Full native geometry QA and bilateral observation are independent stages.
+An observer failure retains successful native QA and its original receipt;
+the original finish entry runs only after both actual stages have completed.
+Neither stage alone establishes archive acceptance or starts training.
+
+The canonical viewer also accepts explicit `--native-decode-threads 1` before
+its first frame is decoded. Its optional `--display-crop` accepts the typed
+`badminton-formal-background-ground-display-v1` sidecar for the single 1022
+source. That sidecar binds the real formal body, bilateral completion and
+canonical publication, plus the accepted 15mm background preview settings.
+The existing ground-mask renderer protects all stored person members,
+including fits excluded from canonical display. Camera/court geometry and
+formal crop remain unchanged. This is a display option and does not turn a
+formal body into a review body or publish training labels.
+
+The decoder/cache changes passed 34 focused CPU tests. The formal ground
+adapter and safe viewer passed 53 CPU tests, including 18 unchanged original
+viewer tests and real lossless-video pixel/PTS checks. Production full-frame
+traversal, sampled display comparisons, fresh browser playback and final
+archive/consumer acceptance remain separate recorded checks.
