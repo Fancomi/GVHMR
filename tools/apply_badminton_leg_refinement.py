@@ -139,6 +139,24 @@ def main():
         raise ValueError("Full baseline and full leg selection must finish before any label writes")
     if file_sha(plan["source_union"]) != plan["source_union_sha256"]:
         raise ValueError("Original published union changed")
+    original_union = read_json(plan["source_union"])
+    incremental_policy = None
+    if original_union.get("schema") == "badminton-new-source-repair-input-v1" and "release_policy" in original_union:
+        from hmr4d.lidar_mocap.incremental_release import policy_from_binding, validate_roles
+
+        incremental_policy = policy_from_binding(original_union["release_policy"])
+        if file_sha(labels / "source_registry.json") != original_union["source_registry_sha256"]:
+            raise ValueError("New-source registry differs from its prepared input")
+        registry = read_json(labels / "source_registry.json")
+        roles = validate_roles(original_union["session_splits"], registry["sources"], incremental_policy.required)
+        suggested = {name: item["sessions"] for name, item in original_union["suggested_session_splits"].items()}
+        if (
+            original_union.get("review_only") is True
+            or roles != incremental_policy.roles
+            or suggested != roles
+            or original_union.get("required_nonempty_splits") != incremental_policy.required
+        ):
+            raise ValueError("New-source roles/required splits differ from the explicit release policy")
     if (
         file_sha(PROJ_ROOT / "hmr4d/lidar_mocap/leg_refinement.py") != selection["refinement_policy_sha256"]
         or file_sha(PROJ_ROOT / "hmr4d/lidar_mocap/leg_selection.py") != selection["selection_policy_sha256"]
@@ -296,7 +314,6 @@ def main():
         write_json(root / "leg_refinement_receipt.json", receipt)
     pipeline = BadmintonPipeline(cal.data["sessions_root"], "D:/PROJECT/LIDAR/lidar_project", labels)
     pipeline.calibration = cal
-    original_union = read_json(plan["source_union"])
     aggregate_sources = sorted({j["source_id"] for j in plan["jobs"]})
     if original_union.get("schema") == "badminton-new-source-repair-input-v1":
         aggregate_sources = sorted({sid for ids in original_union["session_splits"].values() for sid in ids})
@@ -331,7 +348,12 @@ def main():
     )
     if original_union.get("schema") == "badminton-new-source-repair-input-v1":
         from hmr4d.lidar_mocap.export import require_nonempty_splits
-        aggregate["required_nonempty_splits"] = ["train", "val", "test"]
+
+        if incremental_policy is not None:
+            incremental_policy.recheck()
+        aggregate["required_nonempty_splits"] = (
+            incremental_policy.required if incremental_policy is not None else ["train", "val", "test"]
+        )
         require_nonempty_splits(aggregate)
     write_json(labels / "datasets/dataset_manifest.json", aggregate)
     receipt.update(

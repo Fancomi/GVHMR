@@ -57,15 +57,34 @@ def main():
     import cv2
     cv2.setNumThreads(args.threads)
     fresh_sources = read_json(args.union).get("schema") == "badminton-new-source-repair-input-v1"
-    pilot_review = fresh_sources and read_json(args.union).get('review_only') is True
+    pilot_review = fresh_sources and read_json(args.union).get("review_only") is True
+    incremental_policy = None
     if fresh_sources:
         prepared = read_json(args.union)
-        if (args.source_root.resolve() != Path(prepared["source_root"]).resolve()
-                or file_sha(args.source_root / "source_registry.json") != prepared["source_registry_sha256"]):
+        if (
+            args.source_root.resolve() != Path(prepared["source_root"]).resolve()
+            or file_sha(args.source_root / "source_registry.json") != prepared["source_registry_sha256"]
+        ):
             raise ValueError("New-source source-root/registry differs from its prepared input")
+        if "release_policy" in prepared:
+            from hmr4d.lidar_mocap.incremental_release import policy_from_binding, validate_roles
+
+            incremental_policy = policy_from_binding(prepared["release_policy"])
+            registry = read_json(args.source_root / "source_registry.json")
+            roles = validate_roles(prepared["session_splits"], registry["sources"], incremental_policy.required)
+            suggested = {name: item["sessions"] for name, item in prepared["suggested_session_splits"].items()}
+            if (
+                pilot_review
+                or roles != incremental_policy.roles
+                or suggested != roles
+                or prepared.get("required_nonempty_splits") != incremental_policy.required
+            ):
+                raise ValueError("New-source roles/required splits differ from the explicit release policy")
     root = args.output_root.resolve()
-    if (root/'post_refinement.json').exists():
-        raise ValueError('This candidate root contains sealed postprocessed labels; use a fresh output root for baseline fitting')
+    if (root / "post_refinement.json").exists():
+        raise ValueError(
+            "This candidate root contains sealed postprocessed labels; use a fresh output root for baseline fitting"
+        )
     jobs = [
         (sid, window)
         for sid, window in published_windows(args.union)
@@ -274,20 +293,31 @@ def main():
         result = pipeline.aggregate(aggregate_sources,review_only=pilot_review)
         if fresh_sources:
             from hmr4d.lidar_mocap.rally_pipeline import validate_session_splits
+
             if pilot_review:
                 from hmr4d.lidar_mocap.pilot import require_review_group
-                splits = require_review_group(read_json(args.union)['session_splits'],result['exports'])
+
+                splits = require_review_group(read_json(args.union)["session_splits"], result["exports"])
+            elif incremental_policy is not None:
+                incremental_policy.recheck()
+                splits = validate_roles(prepared["session_splits"], result["exports"], incremental_policy.required)
             else:
                 splits = validate_session_splits(read_json(args.union)["session_splits"], result["exports"])
             result["suggested_session_splits"] = {
                 name: dict(sessions=sids, accepted=sum(result["exports"][sid]["accepted"] for sid in sids))
-                for name, sids in splits.items()}
+                for name, sids in splits.items()
+            }
             result["source_registry"] = str(root / "source_registry.json")
             result["source_registry_sha256"] = file_sha(root / "source_registry.json")
             result["body_policy"] = "native_dual_pose_ray_filter_shared_shape_v2_before_leg_postpass"
             result["training_published"] = False
-            result["required_nonempty_splits"] = [] if pilot_review else ["train", "val", "test"]
+            result["required_nonempty_splits"] = (
+                []
+                if pilot_review
+                else incremental_policy.required if incremental_policy is not None else ["train", "val", "test"]
+            )
             from hmr4d.lidar_mocap.export import require_nonempty_splits
+
             require_nonempty_splits(result)
             write_json(root / "datasets/dataset_manifest.json", result)
         write_json(
