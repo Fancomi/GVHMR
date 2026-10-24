@@ -889,6 +889,89 @@ membership. Its `repair/evaluation/formal_postleg_cpu_receipt.json` explicitly
 leaves bilateral/native-pixel/Chrome/sequence/archive and consumer admission
 pending. It never calls the older automatic CUDA completion path.
 
+### Generic incremental guarded leg
+
+`tools/run_badminton_incremental_guarded_leg.py` uses `incremental_guard.py` and
+`incremental_guard_execution.py` for an explicitly bound formal increment. The
+original `run_badminton_guarded_leg.py` remains the legacy interface. The new
+authorization profile is `gvhmr-incremental-guard-parent-map-v1`; actual source
+IDs and parent roots come from the reviewed policy and numeric-import audit,
+with no date-based parent selection. The original propose/select/apply CLIs,
+numerical rules and native verification remain unchanged.
+
+The closed descriptor has exactly `schema`, `authorization_profile`,
+`formal_root`, `release_policy`, `source_input`, `import_audit`, `numeric_import`,
+`baseline`, `formal_preleg_native`, `formal_preleg_qa`, `parents`, `windows` and
+`source_scope`. Both profile fields use the value above. Its path/SHA bindings
+must identify the actual complete inputs. `parents` must equal the completed
+numeric import and audit's `parent_evidence`. Each window has exactly
+`parent_root`, `source_id`, `original_window`, `original_report`, `current_report`
+and `current_window_report`; the exact window set, counts, baseline snapshots,
+teacher rebinding, original numeric bytes and actual native/identity evidence
+are checked. These current review parents are separate from the release policy's
+five previous sealed-release bindings (`ParentRelease5`) described below.
+
+The request stays in `<formal>/gpu_guarded_leg`, targets only `<formal>/repair`
+and binds that descriptor as `incremental_descriptor`. Request, selected runtime
+contract, readiness and new grant must bind the same profile/descriptor. Issue
+their explicit grant/readiness schemas and CPU allocation independently. Readiness
+requires all seven actual evidence roles: `formal_numeric_import`,
+`formal_complete_baseline`, `formal_reviewed_identity`,
+`formal_preleg_native_verification`, `formal_preleg_qa`,
+`predecessor_cuda_exit_bundle` and `independent_guard_ready`. Predecessor evidence
+uses `gvhmr-incremental-guard-predecessor-release-v1`, actual released CUDA leases
+and exited original PID/create-time identities.
+
+Before production, retain a durable tested implementation package. Its closed
+`gvhmr-incremental-guard-implementation-v1` manifest contains `schema`, `request`,
+`descriptor`, `runtime_contract`, `code` and `test_execution`. The exact code map
+comes from `incremental_guard.implementation_files()`, including both new test
+files and the unchanged dependencies. Preserve actual code/test copies and the
+genuine CPU execution receipt, stdout and unique JUnit cases at durable bound
+paths. The required `gvhmr-incremental-guard-cpu-test-v1` evidence must match the
+current code, report exit0 with no failures/errors/skips, and truthfully retain
+`fixture_only=true`, `gpu_started=false` and the measured CPU allocation. Old
+guard8 implementation evidence cannot attest this new controller.
+
+With actual frozen files, the three public modes are:
+
+```powershell
+$Python = 'D:/PROJECT/LABEL/GVHMR/.venv/Scripts/python.exe'
+$Entry = 'D:/PROJECT/LABEL/GVHMR/tools/run_badminton_incremental_guarded_leg.py'
+$Request = '<absolute actual request.json>'
+$Descriptor = '<absolute actual descriptor.json>'
+$DescriptorSHA = '<actual descriptor SHA256>'
+$Grant = '<absolute newly issued grant.json>'
+& $Python -u $Entry --inspect-request --request $Request `
+  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
+& $Python -u $Entry --preflight --request $Request --grant $Grant `
+  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
+& $Python -u $Entry --execute --request $Request --grant $Grant `
+  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
+```
+
+Execution validates that exact `-u` argument order and its live driver identity.
+Inspection consumes no grant. Preflight requires a real new grant and runs the
+deep readiness checks without a lease or CUDA; execution repeats them at startup
+and before apply. This entry has no legacy `--pregrant` read-pass mode. These CPU
+checks do not reset the issued grant's absolute window: grant/local stage time is
+at most thirty minutes and remains bounded by the request's hard deadline.
+Execution also requires a fresh real desktop binding (at most fifteen minutes
+old, valid through the deadline, `desktop_allowance_fixture_only=false`), no
+foreign compute owner and clean outputs. CPU controller/selection use E26/27
+with CUDA disabled; proposal/application use 0/1 and GPU0, with the bound two-thread
+allocation. Suspended children enter the private Windows Job before running;
+the separate watchdog enforces the deadline, controller loss and owned-tree exit.
+Existing locks, leases and failed outputs are preserved rather than auto-relaunched.
+
+The actual joint development regression passed 63 tests in 45.8756 seconds,
+CPU-only, with real owned-Job lifecycle checks. Its original receipt is
+`.local/formal_release_recovery_20261024/1022-formal-readiness-v1/guard-implementation-v1/joint-v1/test-execution.json`
+(SHA256 `b830c29247bf9bdaee867e91311de1dc512d5a2c2d48fc5ee5abd8e02b56dc2f`).
+This is synthetic development evidence, not actual formal readiness, a GPU run,
+native completion or data release. Actual three-phase completion and CUDA release
+must precede the existing CPU postleg, bilateral and final publication gates.
+
 ### Explicit incremental formal release policy v2
 
 An independent single-source review run can prepare a separate formal increment
@@ -917,6 +1000,11 @@ loads the actual admitted source with its original strict certificate checker,
 retains every native window/settings/scan address, and invokes only the original
 CPU body-plan preparation. Its metadata receipt leaves body import, native/QA,
 guarded execution, complete bilateral observations and every publication gate pending.
+The real equivalence proof is written directly to
+`<formal>/formal_input_equivalence.json`. Both `repair/new_source_input.json` and
+the preparation receipt bind that same actual file, as required by the unchanged
+observer's formal teacher check; copying a byte-identical alias elsewhere does
+not satisfy that path contract.
 
 Actual input equivalence and numeric import then permit one policy-bound completed
 review parent, preserving all original teacher, numerical, identity and membership

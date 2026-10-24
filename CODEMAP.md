@@ -96,7 +96,19 @@ The explicit incremental entry `tools/prepare_badminton_formal_increment.py` use
 `formal_incremental_intake.py` / `incremental_release.py` with a frozen policy
 path/SHA and the previous sealed release's five actual parent bindings, including
 its successful final consumer audit. It supports a new train-only source while
-preserving the full old train/val/test prefixes. Later canonical stages require
+preserving the full old train/val/test prefixes. The real input-equivalence audit
+writes `<formal>/formal_input_equivalence.json`; the source input and preparation
+receipt bind that same file for the unchanged observer.
+`tools/run_badminton_incremental_guarded_leg.py` uses `incremental_guard.py` and
+`incremental_guard_execution.py` for an explicitly typed incremental leg. Its
+descriptor derives current review parents/windows from the actual numeric import,
+separately from the release policy's five previous-release bindings. It reuses the
+three numerical leg CLIs and native verifiers with a new tested implementation,
+grant, owned Job and independent watchdog. The original guarded entry above remains
+the legacy interface. The genuine 63-case CPU regression is development evidence;
+actual readiness, GPU execution and release admission still require their own proofs.
+See [incremental guard](docs/BADMINTON_FULL_NATIVE.md#generic-incremental-guarded-leg).
+Later canonical stages require
 genuine reviewed cuts or the typed `canonical_no_change.py` proof; neither route
 replaces native, bilateral, browser, archive or consumer acceptance. Commands and
 contracts: [incremental policy v2](docs/BADMINTON_FULL_NATIVE.md#explicit-incremental-formal-release-policy-v2).
