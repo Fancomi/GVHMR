@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from hmr4d.lidar_mocap import admitted_native_input, formal_incremental_intake as prep, incremental_release as inc
-from hmr4d.lidar_mocap import rally_pipeline, relocations
+from hmr4d.lidar_mocap import dual_view_observer as observer, rally_pipeline, relocations
 from hmr4d.lidar_mocap.calibration import CalibrationSnapshot
 from hmr4d.lidar_mocap.fitting import FittingConfig
 from hmr4d.lidar_mocap.source_index import SourceIndexedSession
@@ -151,6 +151,90 @@ def test_single_source_intake_uses_original_windows_and_exact_accepted_source(pr
     registry = json.loads((case.output / "source/source_registry.json").read_text())
     assert registry["sources"]["fresh"]["source_index"] == case.entry["admitted_source_index"]
     assert registry["release_policy"] == case.selected and registry.get("review_only") is not True
+
+
+def observer_inputs(case):
+    labels = case.output / "repair/final_labels"
+    registry = json.loads((labels / "source_registry.json").read_text())
+    return (
+        labels,
+        dict(exports={sid: {} for sid in registry["sources"]}),
+        CalibrationSnapshot.load(labels / "calibration/calibration_snapshot.json"),
+    )
+
+
+def rebind_input_equivalence(case, proof_binding):
+    """Keep genuine JSON hashes coherent while testing the original observer's checks."""
+    input_path = case.output / "repair/new_source_input.json"
+    prepared = json.loads(input_path.read_text())
+    prepared["formal_derivation"]["input_equivalence"] = proof_binding
+    input_binding = write(input_path, prepared)
+    plan_path = case.output / "repair/final_labels/repair_plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["source_union_sha256"] = input_binding["sha256"]
+    write(plan_path, plan)
+
+
+def test_real_intake_proof_is_accepted_by_the_original_formal_teacher_observer(prepared_case):
+    case = prepared_case
+    result = run(case)
+    prepared_receipt = json.loads(Path(result["path"]).read_text())
+    source_input_path = case.output / "repair/new_source_input.json"
+    source_input = json.loads(source_input_path.read_text())
+    canonical = bind(case.output / "formal_input_equivalence.json")
+    assert canonical == prepared_receipt["input_equivalence"]
+    assert canonical == source_input["formal_derivation"]["input_equivalence"]
+    assert not (case.output / "import_evidence/input_equivalence.json").exists()
+    # The producer runs the real input-equivalence audit; only source decoding,
+    # snapshot verification and the body-prepare subprocess use the fixture stand-ins.
+    assert observer._formal_teacher_proof(*observer_inputs(case)) == dict(
+        proof=canonical, source_input=bind(source_input_path)
+    )
+
+
+def test_original_observer_rejects_a_rebound_byte_identical_old_path(prepared_case):
+    case = prepared_case
+    run(case)
+    canonical = case.output / "formal_input_equivalence.json"
+    alias = case.output / "import_evidence/input_equivalence.json"
+    shutil.copyfile(canonical, alias)
+    assert bind(alias)["sha256"] == bind(canonical)["sha256"]
+    rebind_input_equivalence(case, bind(alias))
+    with pytest.raises(ValueError, match="bound input-equivalence proof"):
+        observer._formal_teacher_proof(*observer_inputs(case))
+
+
+def test_original_observer_rejects_changed_canonical_proof_bytes(prepared_case):
+    case = prepared_case
+    run(case)
+    canonical = case.output / "formal_input_equivalence.json"
+    canonical.write_bytes(canonical.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="bound input-equivalence proof"):
+        observer._formal_teacher_proof(*observer_inputs(case))
+
+
+@pytest.mark.parametrize("change", ["camera", "physical", "index", "sources", "handoff"])
+def test_original_observer_retains_physical_input_checks_after_canonical_binding(prepared_case, change):
+    case = prepared_case
+    run(case)
+    canonical = case.output / "formal_input_equivalence.json"
+    proof = json.loads(canonical.read_text())
+    if change == "camera":
+        proof["evidence"]["formal_calibration"]["sha256"] = "0" * 64
+    elif change == "physical":
+        proof["sources"]["fresh"]["cameras_court_ground_bbox_clock_exact"] = False
+    elif change == "index":
+        proof["sources"]["fresh"]["admitted_index"]["sha256"] = "0" * 64
+    elif change == "sources":
+        proof["sources"] = {}
+    elif change == "handoff":
+        input_path = case.output / "repair/new_source_input.json"
+        prepared = json.loads(input_path.read_text())
+        prepared["formal_derivation"]["camera_admission_handoff"]["sha256"] = "0" * 64
+        write(input_path, prepared)
+    rebind_input_equivalence(case, write(canonical, proof))
+    with pytest.raises(ValueError, match="equivalence does not bind|exact physical calibration/input mapping"):
+        observer._formal_teacher_proof(*observer_inputs(case))
 
 
 def test_changed_original_window_rejects_before_any_formal_write(prepared_case):

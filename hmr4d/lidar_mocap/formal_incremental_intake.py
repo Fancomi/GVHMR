@@ -196,7 +196,7 @@ def prepare_formal_increment(policy_path, policy_sha256, root):
         release_policy=policy.binding["path"],
         release_policy_sha256=policy.binding["sha256"],
     )
-    equivalence_binding = _write_once(root / "import_evidence/input_equivalence.json", equivalence)
+    equivalence_binding = _write_once(root / "formal_input_equivalence.json", equivalence)
     jobs = []
     for (sid, name), config in window_configs.items():
         target = repair / "initial_teacher/sessions" / sid / "windows" / name
