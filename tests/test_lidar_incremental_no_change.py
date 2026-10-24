@@ -185,3 +185,112 @@ def test_assembly_dispatch_runs_real_no_change_verifier_and_binds_returned_compl
         )
     assert len(calls) == 1 and calls[0]["accepted"] == 3 and calls[0]["full_accepted"] == 4
     assert not value["output"].exists()
+
+
+def _write_body_case_bindings(case, source, audit, review):
+    review["source_publication"] = write(case["source_path"], source)
+    completion = json.loads(case["completion_path"].read_text())
+    completion["evidence"][str(case["source_path"])] = review["source_publication"]["sha256"]
+    review["source_completion"] = write(case["completion_path"], completion)
+    review["continuity_audit"] = write(case["audit_path"], audit)
+    write(case["review_path"], review)
+
+
+def _hashless_full_body(case):
+    source = json.loads(case["source_path"].read_text())
+    body_path = Path(source["source_dataset_manifest"])
+    body = json.loads(body_path.read_text())
+    entry = body["exports"]["fresh"]
+    entry.pop("sha256")
+    entry.pop("metadata_sha256")
+    source["source_dataset_manifest_sha256"] = write(body_path, body)["sha256"]
+    review = json.loads(case["review_path"].read_text())
+    audit = json.loads(case["audit_path"].read_text())
+    audit["body_manifest"] = bind(body_path)
+    _write_body_case_bindings(case, source, audit, review)
+    return source, body, audit, review
+
+
+def test_original_hashless_body_uses_frozen_full_audit_bindings_without_rewriting(case):
+    _hashless_full_body(case)
+    paths = [
+        case["source_path"],
+        case["review_path"],
+        case["audit_path"],
+        case["labels"] / "datasets/dataset_manifest.json",
+    ]
+    before = {str(path): path.read_bytes() for path in paths}
+    proof = nc.verify_no_change_publication(publish(case), **pair(case))
+    assert proof["full_accepted"] == 4 and proof["accepted"] == 3
+    audit = json.loads(case["audit_path"].read_text())
+    assert [proof["sessions"]["fresh"][name] for name in ("body_tensor", "body_metadata")] == audit["sources"]["fresh"][
+        "dependencies"
+    ]
+    assert {str(path): path.read_bytes() for path in paths} == before
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "extra", "swapped", "foreign_path", "stale", "tensor_hash", "metadata_hash"]
+)
+def test_hashless_body_rejects_missing_wrong_stale_or_conflicting_original_dependencies(case, change):
+    source, body, audit, review = _hashless_full_body(case)
+    dependencies = audit["sources"]["fresh"]["dependencies"]
+    if change == "missing":
+        audit["sources"]["fresh"].pop("dependencies")
+    elif change == "extra":
+        dependencies.append(deepcopy(dependencies[0]))
+    elif change == "swapped":
+        dependencies.reverse()
+    elif change == "foreign_path":
+        copied = case["root"] / "same-body-elsewhere.pth"
+        copied.write_bytes(Path(dependencies[0]["path"]).read_bytes())
+        dependencies[0] = bind(copied)
+    elif change == "stale":
+        dependencies[0]["sha256"] = "0" * 64
+    else:
+        body["exports"]["fresh"]["sha256" if change == "tensor_hash" else "metadata_sha256"] = "0" * 64
+        body_path = Path(source["source_dataset_manifest"])
+        source["source_dataset_manifest_sha256"] = write(body_path, body)["sha256"]
+        audit["body_manifest"] = bind(body_path)
+    _write_body_case_bindings(case, source, audit, review)
+    with pytest.raises(ValueError, match="dependencies|dependency|Frozen|hash conflicts"):
+        publish(case)
+    assert not case["output"].exists()
+
+
+def test_bilateral_publication_still_requires_its_own_export_hashes(case):
+    source = json.loads(case["source_path"].read_text())
+    source["exports"]["fresh"].pop("sha256")
+    review = json.loads(case["review_path"].read_text())
+    audit = json.loads(case["audit_path"].read_text())
+    _write_body_case_bindings(case, source, audit, review)
+    with pytest.raises(KeyError, match="sha256"):
+        publish(case)
+    assert not case["output"].exists()
+
+
+def test_original_body_key_reads_native_motion_id_without_adding_derived_fields():
+    row = dict(session_id="fresh", motion_id="fresh:window:2:0", lidar_index=8)
+    before = deepcopy(row)
+    assert nc._body_sample_key(row, "fresh") == expanded.sample_key(dict(row, window_id="window", track_id=2))
+    assert nc._body_sample_key(dict(row, window_id="window", track_id="2"), "fresh") == ("fresh", "window", 2, 8)
+    assert row == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(motion_id="fresh:window:2"),
+        dict(motion_id="other:window:2:0"),
+        dict(session_id="other"),
+        dict(window_id="other"),
+        dict(track_id=3),
+    ],
+)
+def test_original_body_key_rejects_malformed_source_or_optional_identity_conflicts(change):
+    row = dict(session_id="fresh", motion_id="fresh:window:2:0", lidar_index=8)
+    row.update(change)
+    before = deepcopy(row)
+    with pytest.raises(ValueError, match="identity"):
+        nc._body_sample_key(row, "fresh")
+    assert row == before

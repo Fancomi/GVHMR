@@ -182,6 +182,55 @@ def _entry(entry, frozen):
     )
 
 
+def _body_entry(entry, dependencies, expected_tensor, frozen):
+    """Use the original full continuity audit's two immutable export bindings."""
+    _integer(entry["accepted"], "artifact accepted")
+    _need(isinstance(dependencies, list) and len(dependencies) == 2, "Require exactly two original body dependencies")
+    result = []
+    for (key, sha, expected), item in zip(
+        (
+            ("path", "sha256", expected_tensor),
+            ("metadata", "metadata_sha256", expected_tensor.with_suffix(".metadata.jsonl")),
+        ),
+        dependencies,
+    ):
+        incremental_release.require_binding(item)
+        _need(
+            _path(entry[key]) == _path(item["path"]) == expected,
+            "Original body dependency must name the exact canonical tensor or metadata path",
+        )
+        _need(
+            sha not in entry or entry[sha] == item["sha256"],
+            "Optional full-body export hash conflicts with original audit",
+        )
+        result.append(frozen.add(item))
+    return tuple(result)
+
+
+def _body_sample_key(row, sid):
+    """Read the original motion identity without adding bilateral metadata fields."""
+    motion = row.get("motion_id")
+    pieces = motion.split(":") if isinstance(motion, str) else []
+    _need(
+        len(pieces) == 4
+        and pieces[0] == sid
+        and row.get("session_id") == sid
+        and bool(pieces[1])
+        and re.fullmatch(r"[0-9]+", pieces[2]) is not None,
+        "Original body motion identity has invalid source/window/track fields",
+    )
+    track = int(pieces[2])
+    optional_track = row.get("track_id", track)
+    _need(
+        ("window_id" not in row or row["window_id"] == pieces[1])
+        and type(optional_track) in (int, str)
+        and str(optional_track).isdigit()
+        and int(optional_track) == track,
+        "Optional original body identity fields conflict with motion_id",
+    )
+    return sid, pieces[1], track, _integer(row.get("lidar_index"), "full-body scan")
+
+
 def _review(review_binding, source_binding, frozen):
     review = frozen.read(review_binding)
     _need(
@@ -390,8 +439,13 @@ def _compute(source_binding, review_binding, policy, frozen):
             and _path(metadata["path"]) == expected_tensor.with_suffix(".metadata.jsonl"),
             "Bilateral artifact paths cannot be substituted with aliases or foreign publications",
         )
-        original_tensor, original_metadata = _entry(body["exports"][sid], frozen)
         current_audit = audit["sources"][sid]
+        original_tensor, original_metadata = _body_entry(
+            body["exports"][sid],
+            current_audit.get("dependencies"),
+            repair / "final_labels/datasets" / (sid + ".pth"),
+            frozen,
+        )
         body_count = _integer(body["exports"][sid]["accepted"], "source full count")
         # Keep the original aggregate verifier's window byte predicates live.
         # No native/model pass or aggregate JSON rewrite is started here.
@@ -431,7 +485,7 @@ def _compute(source_binding, review_binding, policy, frozen):
             _need(key not in scan_times or scan_times[key] == stamp, "People on one native scan have different times")
             scan_times[key] = stamp
         _need(
-            len({sample_key(row) for row in original_rows}) == len(original_rows),
+            len({_body_sample_key(row, sid) for row in original_rows}) == len(original_rows),
             "Duplicate original full-body person-scan",
         )
         _need(len({sample_key(row) for row in rows}) == len(rows), "Duplicate bilateral person-scan")
