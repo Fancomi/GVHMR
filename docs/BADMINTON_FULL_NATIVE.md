@@ -1073,6 +1073,31 @@ For the 1022 increment, the preceding seven-source release must first have its
 real seal and final consumer audit; passing synthetic CPU tests creates none of
 these production policies, publications or acceptance receipts.
 
+The admitted review snapshot has explicit
+`badminton-admitted-review-calibration-derivation-v1` lineage. Its review-purpose
+fields make its digest different from the accepted snapshot even when camera,
+clock and source metadata are identical. The Consumer accepts this recognized
+derivation only after checking both self-digests, all four original lineage
+bindings, the admitted source index and original artifact bytes, and typed
+equality of every other snapshot field. It also checks the existing formal-input
+equivalence proof against the actual formal registry, policy, calibration and
+original review inputs. The equal-digest route retains its original checks.
+
+Original full-body exports can omit per-entry SHA fields. Canonical publication
+and the Consumer then use the exact body tensor/metadata bindings recorded by
+the original full continuity audit, with matching source and export paths.
+Present hashes must agree; bilateral exports still require their hashes. This
+handles the producer's existing format without rewriting body labels,
+continuity receipts, camera snapshots or historical review evidence.
+
+This metadata compatibility change passed a real, read-only 1022 policy/source
+smoke check and all 73 policy tests, including 49 new cases. In the combined
+165-case run, three unchanged CLI alias tests failed because its fixture base
+was outside the Consumer's required `.local` directory. The same three tests
+passed when rerun in that required directory; original and retry receipts are
+retained. Actual assembly, pixel checks, seal and final Consumer acceptance
+remain separate executions.
+
 For genuine eligible-coverage gaps, publish flat clips retaining original
 `rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
 Each segment carries actual clock bounds and continuous eligible PNG ordinals.
