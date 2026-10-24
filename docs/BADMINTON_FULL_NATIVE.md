@@ -1155,3 +1155,27 @@ adapter and safe viewer passed 53 CPU tests, including 18 unchanged original
 viewer tests and real lossless-video pixel/PTS checks. Production full-frame
 traversal, sampled display comparisons, fresh browser playback and final
 archive/consumer acceptance remain separate recorded checks.
+
+On 2026-10-24 the actual 1022 continuation completed all of those checks. The
+single source `20261022_161632` contributed 5,879 bilateral canonical samples
+from 5,887 full-body QA candidates and 26 rallies. The cumulative archive
+`20261024_expanded_228059` retains all 222,180 parent samples and contains
+train/val/test counts 170,815/23,749/33,495. The zero-new val/test payloads and
+metadata are byte-identical to the parent. The original union pixel audit
+checked 26,124 images with zero unknown differences; the 13 historical
+corrections were recaptured in both cameras and all 26 person admissions
+remained unchanged. Archive verification and the actual final Consumer CPU
+audit passed; recomputed train/val sequence counts are 37,364/1,846. Model
+training was not started.
+
+The immutable release entry is
+`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`
+(SHA `68e0065c20a71d301e3318753fe28bcfce388ae72280a5f884b61762d64ca4a4`).
+The permanent final contract and actual successful Consumer audit are in
+`outputs/badminton_1022_formal_v1/release_inputs/tail-v2/`, with SHA values
+`d8715b54c3e7340f3423ba9e3811021ad4cbf6c682254f3a5854204f957a2106` and
+`e929668f13f2b3d6fd4bd6c38820a9d3f5f2c9c43f8d11e32c9e40d9d6ea5890`.
+The separate read-only viewer at `http://127.0.0.1:8803/` serves the same actual
+canonical publication and typed background-display sidecar. The original
+acceptance browser/service exited normally; the user viewer has its own
+recorded process identity and lifecycle.
