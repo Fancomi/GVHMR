@@ -8,6 +8,7 @@ in association and foreign-person visibility. No body or camera is optimized.
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -175,7 +176,7 @@ def selected_frames(source, dataset, sid):
     return [frame for _, frame in sorted(frames.items()) if any(p["accepted"] for p in frame["athletes"])]
 
 
-def _resume_rows(path, expected, camera):
+def _resume_rows(path, expected, camera, decode_profile=None):
     """Recover only an interrupted final write; reject changed/duplicate records."""
     done, frame_count, person_count, seconds = set(), 0, 0, 0.0
     if not path.exists():
@@ -190,6 +191,8 @@ def _resume_rows(path, expected, camera):
                 handle.truncate(start)
                 break
             row = json.loads(line)
+            if decode_profile is not None and row.get("native_decode_profile") != decode_profile:
+                raise ValueError("Resume journal has an incompatible native decode profile")
             index = row["lidar_index"]
             frame = expected.get(index)
             if index in done or frame is None or row["camera_name"] != camera:
@@ -207,7 +210,7 @@ def _resume_rows(path, expected, camera):
     return done, frame_count, person_count, seconds
 
 
-def _cached_frames(paths, calibration_digest):
+def _cached_frames(paths, calibration_digest, decode_profile=None):
     cache = {}
     for path in paths:
         path = Path(path).resolve()
@@ -239,6 +242,8 @@ def _cached_frames(paths, calibration_digest):
                 models=report["models"],
                 checker_sha256=report["checker_sha256"],
             )
+            if decode_profile is not None:
+                frame["reused_native_evidence"]["camera"] = report.get("camera")
             cache.setdefault(key, frame)
     return cache
 
@@ -261,7 +266,9 @@ def _cache_matches(record, frame):
     return True
 
 
-def teacher_detections(source, dataset, sid, camera, calibration, session, *, formal_context=None):
+def teacher_detections(
+    source, dataset, sid, camera, calibration, session, *, formal_context=None, decode_profile=None, ignored_caches=None
+):
     """Reuse only exact native-frame detections; never treat interpolation as presence."""
     import torch
 
@@ -279,6 +286,12 @@ def teacher_detections(source, dataset, sid, camera, calibration, session, *, fo
         manifest_path = teacher_directory / "manifest.json"
         manifest = _read(manifest_path)
         provenance = manifest["provenance"]
+        if decode_profile is not None and provenance.get("native_decode_profile") != decode_profile:
+            if ignored_caches is not None:
+                ignored_caches.append(
+                    dict(path=str(manifest_path), reason="native_decode_profile_missing_or_different")
+                )
+            continue
         expected_hash = hashlib.sha256(_canonical(provenance)).hexdigest()
         if (
             manifest.get("status") != "complete"
@@ -304,6 +317,8 @@ def teacher_detections(source, dataset, sid, camera, calibration, session, *, fo
             manifest_sha256=file_sha(manifest_path),
             provenance_hash=expected_hash,
         )
+        if decode_profile is not None:
+            evidence["native_decode_profile"] = decode_profile
         if formal_context is not None:
             evidence["formal_input_equivalence"] = formal_context
         seen = set()
@@ -323,6 +338,180 @@ def teacher_detections(source, dataset, sid, camera, calibration, session, *, fo
     return result
 
 
+def _native_decode_profile(decode_threads):
+    if decode_threads is None:
+        return None
+    if type(decode_threads) is not int or decode_threads != 1:
+        raise ValueError("Only explicit single-thread decoding is supported")
+    import av
+
+    return dict(
+        schema="badminton-observer-native-decode-v1",
+        backend="pyav",
+        thread_count=1,
+        thread_type="SLICE",
+        pixel_format="rgb24",
+        native_pts_tolerance_us=2,
+        pyav_version=av.__version__,
+        library_versions={key: list(value) for key, value in av.library_versions.items()},
+    )
+
+
+def _pixel_matches(record, raw_bgr, checker):
+    """Legacy/profile labels never substitute for the current actual pixels."""
+    raw_sha = hashlib.sha256(raw_bgr.tobytes()).hexdigest()
+    values = []
+    for name in ("native_bgr_image_sha256", "raw_bgr_sha256"):
+        if name in record:
+            values.append(record[name] == raw_sha)
+    if "undistorted_rgb_image_sha256" in record:
+        import cv2
+
+        rgb = cv2.remap(raw_bgr[:, :, ::-1], checker.map_x, checker.map_y, cv2.INTER_LINEAR)
+        values.append(record["undistorted_rgb_image_sha256"] == hashlib.sha256(rgb.tobytes()).hexdigest())
+    return bool(values) and all(values)
+
+
+def _pose_cache_context(source, calibration):
+    receipt_path = source.parent / "pose_receipt.json"
+    if not receipt_path.is_file():
+        return None
+    receipt = _read(receipt_path)
+    config = receipt.get("config", {})
+    plan = _read(source / "repair_plan.json")
+    from .full_native import pose_config_digest
+
+    if (
+        receipt.get("state") != "complete"
+        or receipt.get("source_union_sha256") != plan["source_union_sha256"]
+        or config.get("calibration_digest") != calibration.data["snapshot_digest"]
+        or receipt.get("config_digest") != pose_config_digest(config)
+    ):
+        return None
+    selected = receipt.get("formal_import_inventory")
+    if not selected or file_sha(selected["path"]) != selected["sha256"]:
+        return None
+    inventory = _read(selected["path"])
+    if (
+        inventory.get("schema") != "badminton-formal-native-pose-import-v1"
+        or inventory.get("state") != "complete"
+        or inventory.get("config") != config
+    ):
+        return None
+    targets = {row["target"]["path"]: row["target"] for row in inventory["records"]}
+    if len(targets) != len(inventory["records"]):
+        raise ValueError("Duplicate native pose cache target")
+    return dict(
+        config=config,
+        config_digest=receipt["config_digest"],
+        targets=targets,
+        files=[dict(path=str(receipt_path), sha256=file_sha(receipt_path)), selected],
+    )
+
+
+def _pose_detections(context, source, sid, camera, session, native_index, bgr, checker, misses=None):
+    def miss(reason):
+        if misses is not None:
+            misses[reason] = misses.get(reason, 0) + 1
+        return None
+
+    if context is None:
+        return miss("source_cache_context_unavailable")
+    config = context["config"]
+    if config.get("detector_imgsz") != checker.detector_imgsz or any(
+        config.get("models", {}).get(name) != item for name, item in checker.models.items()
+    ):
+        return miss("model_or_detector_options_differ")
+    path = source.parent / "native_poses" / sid / camera / f"{native_index:07d}.json"
+    selected = context["targets"].get(str(path.resolve()))
+    if not selected or not path.is_file() or file_sha(path) != selected["sha256"]:
+        return miss("native_file_missing_or_binding_differ")
+    record = _read(path)
+    if (
+        record.get("schema") != "badminton-native-pose-v1"
+        or record.get("config_digest") != context["config_digest"]
+        or record.get("source_id") != sid
+        or record.get("camera") != camera
+        or record.get("native") != session.camera_rows(camera)[native_index]
+        or record.get("coordinate_space") != "opencv_undistorted_K_preserved"
+        or Path(record.get("source_video", "")).resolve() != session.video_paths[camera].resolve()
+    ):
+        return miss("native_source_camera_time_or_config_differ")
+    if not _pixel_matches(record, bgr, checker):
+        return miss("native_image_sha_missing_or_differ")
+    boxes, confidence = record.get("boxes"), record.get("detection_confidence")
+    if not isinstance(boxes, list) or not isinstance(confidence, list) or len(boxes) != len(confidence):
+        return miss("invalid_native_detection_arrays")
+    return dict(
+        detections=[dict(bbx_xyxy=box, detection_confidence=score) for box, score in zip(boxes, confidence)],
+        evidence=dict(
+            cache=selected,
+            config_digest=context["config_digest"],
+            cache_type="native_pose_boxes_only",
+            raw_bgr_sha256=record["raw_bgr_sha256"],
+            method="actual_native_pixels_model_camera_source_time_equal",
+        ),
+    )
+
+
+def _journal_matches(record, frame, bgr, checker, session, camera):
+    evidence = record.get("reused_native_evidence", {})
+    return (
+        record.get("inference_scope") == "person_detection_and_association_only"
+        and evidence.get("camera") == checker.camera
+        and all(evidence.get("models", {}).get(name) == item for name, item in checker.models.items())
+        and Path(record.get("raw_camera_video", "")).resolve() == session.video_paths[camera].resolve()
+        and _cache_matches(record, frame)
+        and _pixel_matches(record, bgr, checker)
+    )
+
+
+def _camera_frames(session, camera, indices, decode_threads):
+    """Observer-only opt-in; the default public native reader is untouched."""
+    if decode_threads is None:
+        yield from session.iter_video_frames(camera, indices)
+        return
+    _native_decode_profile(decode_threads)
+    if not indices:
+        return
+    import av
+    from fractions import Fraction
+
+    source_rows = session.camera_rows(camera)
+    if any(type(i) is not int or i < 0 or i >= len(source_rows) for i in indices):
+        raise ValueError("Native decoder requires existing integer source indices")
+    if any(right <= left for left, right in zip(indices, indices[1:])):
+        raise ValueError("Native decoder indices must be strictly increasing")
+    rows = [source_rows[index] for index in indices]
+    with av.open(str(session.video_paths[camera])) as container:
+        if not container.streams.video:
+            raise ValueError("Native observer source contains no video stream")
+        stream = container.streams.video[0]
+        stream.thread_count = 1
+        stream.thread_type = "SLICE"
+        if stream.thread_count != 1 or str(stream.thread_type) != "SLICE":
+            raise ValueError("Native observer decoder did not apply the explicit single-thread profile")
+        if stream.time_base is None or stream.time_base <= 0:
+            raise ValueError("Native observer video lacks a valid time base")
+        first = Fraction(rows[0]["media_pts_us"], 1_000_000) / stream.time_base
+        container.seek(int(first), stream=stream, backward=True, any_frame=False)
+        wanted = 0
+        for frame in container.decode(stream):
+            if frame.pts is None or frame.time_base is None:
+                raise ValueError("Native observer frame lacks PTS")
+            actual = round(frame.pts * frame.time_base * 1_000_000)
+            target = rows[wanted]["media_pts_us"]
+            if actual < target - 2:
+                continue
+            if abs(actual - target) > 2:
+                raise ValueError(f"Native observer PTS mismatch: {actual} vs {target}")
+            yield indices[wanted], frame.to_ndarray(format="rgb24")[:, :, ::-1].copy()
+            wanted += 1
+            if wanted == len(indices):
+                return
+        raise ValueError("Native observer source ended before the requested frame")
+
+
 def observe_all(
     source_root,
     output_root,
@@ -332,6 +521,7 @@ def observe_all(
     threads=8,
     max_new_frames=None,
     cache_reports=(),
+    decode_threads=None,
 ):
     source, output = _bound_output(source_root, output_root)
     dataset, sources = source_selection(source)
@@ -348,6 +538,10 @@ def observe_all(
         flip_test=False,
         observation_scope="person_detection_and_association_only",
     )
+    decode_profile = _native_decode_profile(decode_threads)
+    if decode_profile is not None:
+        settings["native_decode_profile"] = decode_profile
+    pose_context = _pose_cache_context(source, calibration) if decode_profile is not None else None
     cache_sources = []
     for path in cache_reports:
         report = _read(path)
@@ -364,15 +558,17 @@ def observe_all(
         cache_sources=cache_sources,
         formal_teacher_equivalence=formal_context,
     )
+    if decode_profile is not None:
+        identity["native_pose_cache_sources"] = pose_context["files"] if pose_context is not None else []
     identity_sha = hashlib.sha256(_canonical(identity)).hexdigest()
     observer_path = output / "observations/manifest.json"
     if observer_path.exists() and _read(observer_path)["identity_sha256"] != identity_sha:
         raise ValueError("Resume inputs/settings/checker changed; use a new output folder")
     started = time.perf_counter()
+    cache = _cached_frames(cache_reports, dataset["calibration_digest"], decode_profile)
     checker = RGBKeypointChecker(
         calibration, threads, detector_imgsz, False, device=device, pose_batch_size=pose_batch_size, observe_pose=False
     )
-    cache = _cached_frames(cache_reports, dataset["calibration_digest"])
     state = dict(
         schema="badminton-full-native-rgb-observations-v1",
         completed=False,
@@ -384,6 +580,8 @@ def observe_all(
         source_accepted=dataset["accepted"],
         model_loading_seconds=time.perf_counter() - started,
     )
+    if decode_profile is not None:
+        state["native_decode_profile"] = decode_profile
     observer_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(observer_path, state)
     new_frames = 0
@@ -395,10 +593,21 @@ def observe_all(
             checker.select_camera(camera)
             report_path = output / "observations" / f"{sid}_{camera}.json"
             rows_path = report_path.with_suffix(".jsonl")
-            done, completed_frames, completed_people, measured_seconds = _resume_rows(rows_path, frame_lookup, camera)
+            done, completed_frames, completed_people, measured_seconds = _resume_rows(
+                rows_path, frame_lookup, camera, decode_profile
+            )
             session = checker.session(sid)
+            ignored_caches = []
             teacher_cache = teacher_detections(
-                source, dataset, sid, camera, calibration, session, formal_context=formal_context
+                source,
+                dataset,
+                sid,
+                camera,
+                calibration,
+                session,
+                formal_context=formal_context,
+                decode_profile=decode_profile,
+                ignored_caches=ignored_caches,
             )
             video = session.video_paths[camera]
             video_stat = video.stat()
@@ -422,6 +631,13 @@ def observe_all(
                 inference_seconds=measured_seconds,
                 device=device,
             )
+            if decode_profile is not None:
+                report["native_decode_profile"] = decode_profile
+                report["ignored_teacher_caches"] = ignored_caches
+                report["pixel_verified_cached_camera_frames"] = 0
+                report["native_pose_cached_camera_frames"] = 0
+                report["pixel_cache_mismatch_or_missing_frames"] = 0
+                report["native_pose_cache_miss_reasons"] = {}
             report["exact_native_teacher_cache_frames_available"] = sum(
                 f["cameras"][camera]["record_index"] in teacher_cache for f in frames
             )
@@ -431,6 +647,8 @@ def observe_all(
             reused = 0
             with rows_path.open("a", encoding="utf-8") as handle:
                 for frame in frames:
+                    if decode_profile is not None:
+                        continue  # Cross-profile reuse requires this run's actual decoded pixels.
                     key = (sid, camera, frame["lidar_index"])
                     if frame["lidar_index"] in done or key not in cache:
                         continue
@@ -450,16 +668,53 @@ def observe_all(
             stop = max_new_frames is not None and new_frames >= max_new_frames
             if not stop:
                 with rows_path.open("a", encoding="utf-8") as handle:
-                    stream = session.iter_video_frames(camera, sorted(grouped))
+                    stream = _camera_frames(session, camera, sorted(grouped), decode_threads)
                     try:
                         for native_index, bgr in stream:
+                            pose_cached = None
+                            if decode_profile is not None:
+                                pose_cached = _pose_detections(
+                                    pose_context,
+                                    source,
+                                    sid,
+                                    camera,
+                                    session,
+                                    native_index,
+                                    bgr,
+                                    checker,
+                                    report["native_pose_cache_miss_reasons"],
+                                )
                             for frame in grouped[native_index]:
                                 clip = dict(id="full_source_session", session_id=sid, output_root=str(source))
-                                cached = teacher_cache.get(native_index)
-                                record = checker.check_frame(
-                                    clip, frame, raw_bgr=bgr, cached_detections=cached["detections"] if cached else None
-                                )
-                                if cached:
+                                cached = pose_cached if decode_profile is not None else teacher_cache.get(native_index)
+                                previous = cache.get((sid, camera, frame["lidar_index"]))
+                                if (
+                                    decode_profile is not None
+                                    and previous is not None
+                                    and _journal_matches(previous, frame, bgr, checker, session, camera)
+                                ):
+                                    record = deepcopy(previous)
+                                    record["pixel_verified_cache_reuse"] = record["reused_native_evidence"]
+                                    record["timing_seconds"] = dict(detector=0.0, pose=0.0, total=0.0)
+                                    report["pixel_verified_cached_camera_frames"] += 1
+                                else:
+                                    record = checker.check_frame(
+                                        clip,
+                                        frame,
+                                        raw_bgr=bgr,
+                                        cached_detections=cached["detections"] if cached else None,
+                                    )
+                                    if decode_profile is not None:
+                                        if pose_cached is not None:
+                                            report["native_pose_cached_camera_frames"] += 1
+                                            record["person_detection_source"] = (
+                                                "pixel_verified_native_pose_detection_cache"
+                                            )
+                                        else:
+                                            report["pixel_cache_mismatch_or_missing_frames"] += 1
+                                if decode_profile is not None:
+                                    record["native_decode_profile"] = decode_profile
+                                if cached and "pixel_verified_cache_reuse" not in record:
                                     record["teacher_detection_evidence"] = cached["evidence"]
                                 add_raw_pixel_observations(dict(camera=checker.camera, frames=[record]))
                                 handle.write(json.dumps(record, allow_nan=False) + "\n")

@@ -15,6 +15,13 @@ def main():
     parser.add_argument('--pose-batch-size', type=int, default=4)
     parser.add_argument('--detector-imgsz', type=int, default=960)
     parser.add_argument('--threads', type=int, default=8)
+    parser.add_argument(
+        "--decode-threads",
+        type=int,
+        choices=(1,),
+        default=None,
+        help="Explicit single-thread native decoding; omitted keeps the existing AUTO decoder",
+    )
     parser.add_argument('--cache-report',dest='cache_reports',type=Path,action='append',default=[],help='Reuse verified native observations, including the complete prefix of an interrupted journal')
     parser.add_argument('--max-new-frames', type=int, help='Bounded runtime probe; rerun without this option to resume all frames')
     args = parser.parse_args()
