@@ -571,6 +571,15 @@ retry only bounded permission errors; corrupted JSON and persistent failures
 remain errors. Three recovery tests pass; queue recovery receipts preserve the
 failed state and replacement process identity.
 
+The reusable `hmr4d/lidar_mocap/progress_io.py` provides bounded atomic
+status writes and paired shared-delete reads for new CPU controllers. On
+Windows, replacing an existing status uses `ReplaceFileW`; only errors 5/32
+retry for up to three seconds. Persistent failures retain the old target and
+pending bytes. Five real Windows tests cover held readers and recovery.
+Existing frozen writers retain their original behavior; new controllers must
+use both helper APIs. The actual evidence is preserved in
+`outputs/badminton_1022_release_inputs_v1/progress_io_tests_v1/`.
+
 The formal 291-window body plan also completed on CPU in 125.16 s:
 `body_prepare_receipt.json` SHA `efc064d7...` binds the original and formal
 window configs, proving exact equality except the admitted calibration digest,
@@ -1009,6 +1018,15 @@ not satisfy that path contract.
 Actual input equivalence and numeric import then permit one policy-bound completed
 review parent, preserving all original teacher, numerical, identity and membership
 checks. The old two-parent/three-new-nonempty-role behavior remains the default.
+The canonical body CLI's `--require-completed` path and the canonical leg-apply
+CLI also consume the input union's exact `release_policy` binding. Before model
+setup or label writes they check the exhaustive source roles, suggested roles
+and required roles against that policy; after original aggregation they require
+only its declared new roles. No additional CLI flag is needed. Legacy and body
+review behavior remain unchanged. The focused CPU regression passed 48 cases,
+including original preparation, completed-cache aggregation and rejection of
+missing/stale fits; teacher, fit, leg-update and QA algorithms are unchanged.
+
 The v2 assembly entry additionally requires `--release-policy <same file>
 --release-policy-sha256 <same SHA>` and a sealed
 `expanded-source-increment-assembly-input/v2`. Its actual source registry,
