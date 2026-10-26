@@ -45,12 +45,14 @@ dependencies = [
     "ultralytics==8.2.42",
     "cython-bbox==0.1.5",
     "lapx==0.5.11.post1",
+    "psutil==7.2.2",
 ]
 
 [project.optional-dependencies]
-dev = ["black", "jupyter"]
+dev = ["black", "jupyter", "pytest==8.3.5"]
 compat = ["roma==1.5.0", "loguru==0.7.3"]
 serve = ["flask>=3.0,<4.0"]
+review = ["playwright==1.64.0"]
 
 [tool.setuptools.packages.find]
 include = ["hmr4d*"]
