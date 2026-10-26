@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -144,6 +145,20 @@ class SamplingTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        # Only file identities are exercised; these bytes cannot load a model.
+        for relative in ("yolo/yolov8x.pt", "vitpose/vitpose-h-multi-coco.pth",
+                         "hmr2/epoch=10-step=25000.ckpt", "gvhmr/gvhmr_siga24_release.ckpt"):
+            identity = root / "inputs/checkpoints" / relative
+            identity.parent.mkdir(parents=True, exist_ok=True)
+            identity.write_bytes(b"test-only weight identity; not a loadable model")
+        project_root = patch("hmr4d.PROJ_ROOT", root)
+        project_root.start()
+        self.addCleanup(project_root.stop)
+
     def test_half_precision_changes_cache_hash_and_default_preserves_existing_hash(self):
         camera = {"K": np.eye(3), "distortion_opencv": [0] * 5, "image_size": [1920, 1080]}
         with tempfile.TemporaryDirectory() as directory:

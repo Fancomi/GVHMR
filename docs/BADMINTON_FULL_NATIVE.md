@@ -1,1181 +1,452 @@
 # Full native rally fitting
 
-The optional exact-stage owner is `tools/run_badminton_owned_stage.py`. It wraps
-one existing `run_badminton_full_native.py --stage teacher|poses|fit` invocation
-in the unchanged Windows Job implementation. It does not enter the continuous
-sequence or dispatch later stages. Both the CPU controller and independent
-watchdog use E26/27, BelowNormal and CUDA=-1. The single suspended stage launcher
-receives P0/1, BelowNormal, GPU0 and one math thread before resume; every inherited
-descendant stays in its private Job. Teacher always receives the explicitly
-frozen `--teacher-sampling-input`; this interface cannot omit it for dense input.
+This guide covers admitted native rally intake, the accepted v2 body policy and
+formal cumulative publication. Use [INSTALL.md](INSTALL.md) for environment,
+source/time contracts and neutral-SMPL conventions; use
+[BADMINTON_BODY_REPAIR.md](BADMINTON_BODY_REPAIR.md) for identity/leg quality rules.
+A review run and a formal archive are separate outputs. LiDAR owns camera/court
+calibration; all body stages keep cameras fixed.
 
-Its immutable descriptor uses `schema=gvhmr-owned-full-stage-descriptor-v1` and
-exactly these additional fields: absolute `root`, `stage`, bindings `pilot_input`,
-`manifest`, `source_input`, `teacher_sampling_input` (required for teacher, null
-otherwise), absolute future `lease_path`, `progress_output`, `resume_progress`,
-`absolute_hard_deadline_utc` and `code`. Obtain `code` from
-`owned_gpu_stage.implementation_files()` with actual path/SHA256 bindings.
-`pilot_input` is the prepared root's `pilot_input.json`; `source_input` is its
-`repair/new_source_input.json`; the manifest must equal the pilot's actual binding.
-`lease_path` is a distinct ordinary JSON name in that root's `gpu_leases/`.
-Teacher/fit progress uses a new `full_teacher_progress.<batch>.json` or
-`full_fit_progress.<batch>.json` in the root; resume is null or a separate bound
-checkpoint there. Poses retains its original progress interface, so both fields
-are null. The descriptor supplies no arbitrary executable, shell command or flags.
+## Current accepted data
 
-A separately issued local lease uses
-`schema=gvhmr-owned-full-stage-local-lease-v1`, `status=held`, `owner=GVHMR`, exact
-`root`, `stage`, `manifest_sha256`, `owned_stage_descriptor` path/SHA256,
-`approved_start_utc`, `approved_deadline_utc`, `cuda_visible_devices="0"`,
-`max_concurrent_cuda_trees=1`, `training_published=false`, `desktop_allowance`
-path/SHA256 and `desktop_allowance_fixture_only=false`. Its actual UTC window must
-contain now and end within 120 minutes of its start and the descriptor's hard
-deadline. The fresh existing desktop policy binds the descriptor as `request`;
-capture it within fifteen minutes of admission and make its `valid_until_utc`
-cover the complete lease. Run-time checks retain that same bound policy through
-its stated validity. No continuous grant or unrelated native-exit list is used.
+The cumulative archive is
+`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`,
+SHA256 `68e0065c20a71d301e3318753fe28bcfce388ae72280a5f884b61762d64ca4a4`.
+It contains **228,059** person-frames: train **170,815**, validation **23,749**,
+test **33,495**. It preserves all 222,180 parent rows and adds 5,879 samples from
+`20261022_161632` (5,887 full-body QA candidates, 26 rallies). New-source val/test
+counts are zero; parent val/test tensor and metadata bytes are unchanged.
 
-Inspect without creating a Job, then use the separately reviewed local lease:
+Archive verification and the final consumer CPU audit passed. Permanent evidence:
+`outputs/badminton_1022_formal_v1/release_inputs/tail-v2/final-consumer-contract.json`
+(SHA256 `d8715b54c3e7340f3423ba9e3811021ad4cbf6c682254f3a5854204f957a2106`) and
+`final-consumer-audit.json`
+(`e929668f13f2b3d6fd4bd6c38820a9d3f5f2c9c43f8d11e32c9e40d9d6ea5890`).
+Recomputed train/val twelve-frame sequences total 37,364 / 1,846.
+The release itself does not start or authorize model training.
 
-```powershell
-& <python.exe> -u <absolute-run_badminton_owned_stage.py> --inspect `
-  --descriptor <absolute-descriptor.json> --descriptor-sha256 <actual-SHA256>
-& <python.exe> -u <absolute-run_badminton_owned_stage.py> --execute `
-  --descriptor <absolute-descriptor.json> --descriptor-sha256 <actual-SHA256> `
-  --lease <absolute-new-local-lease.json> --lease-sha256 <actual-SHA256>
-```
+Releases are complete overlapping versions, not disjoint batches. Select one
+version; never concatenate their counts. Old archives and their default catalog
+selection remain immutable. [Consumer format](BADMINTON_REPAIRED_RELEASE.md) and
+[data relocation](DATA_RELOCATIONS.md) explain their entry points and aliases.
 
-The independently opened watchdog must be actually ready before the launcher
-resumes. Both processes retain immutable authority/code/source checks and kernel
-deadline timers with a ten-second shutdown margin. Controller loss, watchdog
-loss, revoked bindings, foreign GPU ownership, launcher error or expiration
-terminates only this Job and verifies it empty. Each local lease has a persistent
-single-attempt claim. Original completed checkpoints and the held authority file
-remain unchanged. A crash can leave `owned_gpu_stages/execution.lock.json`; root
-must inspect the actual Job/watchdog failure evidence before clearing that lock
-and issuing separate authority. Successful `release_receipt.json` attests CLI
-exit zero plus real owned Job exit; a teacher/fit CLI may have yielded at its
-existing safe boundary. Check its genuine stage progress before declaring the
-whole stage complete. Failure receipts never claim numerical completion or new
-training publication. The wrapper creates no descriptor, grant or local lease.
+Historical execution receipts bind the implementation bytes they actually ran.
+Replaying an old live-context check requires that original code revision and
+its frozen evidence; current source cannot substitute for an old fingerprint.
+The pre-cleanup revision is `e6926ae`. New runs freeze the maintained version's
+new fingerprints. Never rewrite historical receipts or weaken equality checks
+to make a newer implementation appear to be the original execution.
 
-The full-run entry is `tools/run_badminton_full_native.py`. It shares the existing
-native teacher, identity, v2 fitting, verification and viewer components with the
-short pilot, but requires a separate `badminton-native-rally-fit-v1` manifest.
-The short pilot's 180-second limit remains unchanged.
+## Native intake and stages
 
-The full manifest retains all five camera-file hashes, source-index bindings,
-exact native rally evidence, ordered unique paired scan ordinals and explicit
-historical relocation. It additionally records
-`execution_scope=all_effective_native_rallies`, the actual `user_confirmation`
-and a SHA-bound `coverage_audit`. The original camera `review_authorization`
-continues to apply; the new scope does not require another user confirmation.
-Fitting remains `review_only=true`, `training_published=false`.
+The entry is `tools/run_badminton_full_native.py`, sharing `pilot.py`,
+`full_native.py`, native teachers, reviewed identity, v2 fitting and verifiers.
+It requires a separate `badminton-native-rally-fit-v1` manifest. The short
+[pilot](BADMINTON_REVIEW_PILOT.md) keeps its 180-second limit.
 
-The 1019 manifest is
-`D:/PROJECT/LIDAR/datas/badminton/collections/gvhmr-1019-full-20261021/handoff/full-native-rallies.json`
-(SHA256 `bb64e2766442558033e5092046e2a89ede3fa03a12a218414ef29ea057dcb8f2`).
-Its 44 native windows allocate overlapping buffered ranges once: 4,117 selected
-scans / 410.238286 seconds, including the unchanged 14 pilot windows / 1,785 scans
-and 2,332 new scans. Three initial scans lack dual-camera pairing. Original rally
-lineage and every overlap assignment remain in `coverage-audit.json`.
-1020 applicability has since been accepted against the unchanged R11 numerical
-bundle, with its new `sources.json` bound separately. Its five recordings total
-64.85 raw minutes, which is not qualified rally/body-label duration. Actual
-native source contracts remain pending.
-
-The independent run is `outputs/badminton_1019_full_native_v1`. Actual CPU
-preparation took 52.63 seconds including command startup; its own measured inner
-prepare took 41.32 seconds. The snapshot digest is
-`c0151b6c9bc5f529f62bb33ddb184a42ca97e09f286c6ca95073af3aff5a1763`.
+A full manifest binds five camera files, source indexes, native rally evidence,
+ordered unique paired scan ordinals, explicit relocation, actual scope approval
+and a SHA-bound coverage audit. It declares
+`execution_scope=all_effective_native_rallies`. Review output stays
+`review_only=true`, `training_published=false`.
 
 ```powershell
-uv run --no-sync python tools/run_badminton_full_native.py `
-  --manifest <full-native-rallies.json> --root outputs/badminton_1019_full_native_v1 `
-  --stage prepare --threads 2
-
-uv run --no-sync python tools/seed_badminton_full_teachers.py `
-  --root outputs/badminton_1019_full_native_v1 `
-  --reuse-run outputs/badminton_1019_r11_pilot_v1 `
-  --reuse-run outputs/badminton_1019_r11_pilot_second_v1
-
-uv run --no-sync python tools/seed_badminton_full_poses.py `
-  --root outputs/badminton_1019_full_native_v1 `
-  --reuse-run outputs/badminton_1019_r11_pilot_v1 `
-  --reuse-run outputs/badminton_1019_r11_pilot_second_v1
+uv run --no-sync python tools/run_badminton_full_native.py --manifest <full-native-rallies.json> --root <new-review-run> --stage prepare --threads 2
+uv run --no-sync python tools/run_badminton_full_native.py --root <new-review-run> --stage teacher --gpu-lease <fresh-held-lease.json> --teacher-sampling-input <frozen-sampling-input.json> --threads 2
 ```
 
-Teacher reuse requires native-verified original runs, identical camera files and
-numerical cameras, source indexes, window bounds/selected scans/settings, video
-and model identities, original native rows and temporal provenance. It copies
-independent files, checks every copied SHA, then invokes the existing teacher
-resume validator without inference. The actual 14 windows / 28 camera contexts
-passed this check, recorded in `teacher_reuse_receipt.json`.
+For an independently accepted camera freeze,
+`tools/prepare_badminton_admitted_native.py` derives a separate review-purpose
+snapshot from the exact accepted snapshot and freeze proof. Supply
+`--manifest`, `--root`, `--accepted-parent`, `--accepted-parent-sha256`,
+`--accepted-freeze-proof` and `--accepted-freeze-proof-sha256`. Default inspection
+is read-only; `--prepare` runs original CPU source/body-plan preparation.
+It retains every geometry/session/clock/artifact field, records explicit
+accepted-review lineage and adds no artificial split for a single-source review.
 
-Native 2D reuse checks the physical camera bundle, source index, original frame
-row, all model-file hashes and inference options. Changing the selected source
-group changes the snapshot/config digest. A new record explicitly preserves the
-old file SHA/config digest while rebinding only this scope metadata; boxes,
-keypoints, confidence and original raw pixel SHA remain unchanged. The actual
-3,570 records are in `native_pose_reuse_receipt.json`. This is partial seeding:
-the native pose stage must compute every remaining frame before a complete
-`pose_receipt.json` can admit body fitting.
+Generic sealed rally intake uses `prepare_badminton_rallies.py`; an independent
+source-only run uses `build_badminton_rallies.py --stage prepare --intake <verified>
+--output-root <new-run> --calibration-dir <five-file-bundle> --session-splits <json>`.
+Sources must occur exactly once in exhaustive whole-source roles. Independent
+complete datasets need accepted samples in every required role; individual
+zero-rally sources may remain explicit zero-count sources. When all sources have
+`baseline:false`, preparation never reads old fitted labels. This intake adapter's
+original `run/fit` path does not automatically enable v2 body repair: follow the
+new-source body stages below.
 
-Teacher GPU execution uses a separate held manifest-bound lease with an actual
-UTC deadline. `--stage teacher` dispatches to `run_badminton_full_teachers.py`,
-which preserves completed camera-window checkpoints, verifies cached artifacts
-and launches one independent native camera worker at a time. The default
-300-second safety margin prevents starting another worker near the deadline.
-The supervisor yields only after a completed subprocess and records
-`safe_to_release_gpu`; the coordinating owner checks actual process exit before
-writing the shared lease `released`. Subsequent teacher/pose/fit leases require
-another coordinated safe GPU handoff.
+Full-source lineage permits original fullraw evidence or strict explicit source
+indexes, with original recording/download/clock/PTP bindings. `source_indexes`
+and `excluded_source_indexes` use `{file,sha256,bytes}`, relative to `data_root`;
+receipt/evidence bindings use `{path,sha256}`. No missing-file search is allowed.
+
+For eligible gaps, publish flat clips retaining original `rally_index` and
+zero-based `segment_index`, with actual clock bounds and continuous eligible PNG
+ordinals. Source/rally/segment is unique; nested `contiguous_windows` is rejected.
+Zero-eligible sources use `excluded_source_indexes` plus `no_fit_sources` evidence.
+A `badminton-native-no-fit-needed-v1` marker binds the source index, zero coverage,
+and completed native analysis/planner files; no fitted input or SMPL tensors are
+created. Overall full-fit scope must still be nonempty.
+
+## Reuse, teachers and owned execution
+
+`seed_badminton_full_teachers.py` and `seed_badminton_full_poses.py` take
+`--root <new-run>` and repeated `--reuse-run <verified-parent>`. Teacher reuse
+requires identical physical cameras, source indexes, windows/selected scans,
+settings, native rows, model/video identity and temporal provenance. Copies are
+independent files checked by SHA and the original resume validator. Native pose
+reuse preserves boxes, keypoints, confidence and raw pixel hashes, explicitly
+rebinding only proven scope metadata. Partial seeding never completes missing
+native observations.
+
+`paired_sampling.py` freezes the accepted real-paired-RGB input; `run_teacher`
+routes its explicit policy through `sparse_teacher.py` for initial and repaired
+contexts. Only actual native RGB anchors provide detection evidence. Inferred
+temporal states remain role-marked; they are not independent native detections.
+Pass the prepared `--teacher-sampling-input` explicitly; omission must not
+silently change an intended 10 Hz policy into dense 30 Hz processing.
+
+Teacher supervision executes one camera/window worker at a time and yields only
+at genuine completed subprocess boundaries. The default 300-second launch margin
+avoids starting work near lease expiration. `--progress-output <new-progress>`
+plus `--resume-progress <bound-complete-checkpoint>` preserves historical batches.
+`release_badminton_full_gpu.py` requires real owned process exit before release;
+a progress flag alone does not prove CUDA is gone. Full fit uses
+`--require-completed --device cpu` to validate existing windows, fails changed
+caches rather than refitting silently, and yields before its lease boundary.
+`--stage aggregate` is completed-only CPU work after GPU release.
+
+The exact-stage owner `tools/run_badminton_owned_stage.py` wraps one existing
+full-native `teacher|poses|fit` invocation. It never dispatches the next stage.
+Its closed `gvhmr-owned-full-stage-descriptor-v1` binds absolute root/stage,
+pilot input, manifest, source input, explicit teacher sampling input (teacher
+only), future lease path, progress/resume paths, hard deadline and the code map
+from `owned_gpu_stage.implementation_files()`. Pose progress fields are null;
+teacher/fit use distinct progress names within the run. It accepts no arbitrary
+shell command.
 
 ```powershell
-uv run --no-sync python tools/run_badminton_full_native.py `
-  --root outputs/badminton_1019_full_native_v1 --stage teacher `
-  --gpu-lease <fresh-held-lease.json> --threads 2
+& <python.exe> -u <absolute-repository>/tools/run_badminton_owned_stage.py --inspect --descriptor <descriptor.json> --descriptor-sha256 <actual-SHA>
+& <python.exe> -u <absolute-repository>/tools/run_badminton_owned_stage.py --execute --descriptor <descriptor.json> --descriptor-sha256 <actual-SHA> --lease <new-local-lease.json> --lease-sha256 <actual-SHA>
 ```
 
-Runtime progress is `full_teacher_progress.json`; each active worker's actual
-Python PIDs and log are recorded there. A native window can begin before the
-source's clock origin; signed window IDs are forwarded as `--window=value` to
-retain the original interval. The first such window exposed an argparse-only
-startup failure, fixed before CUDA inference; the deadline was not extended.
+The separately issued `gvhmr-owned-full-stage-local-lease-v1` is held, manifest/
+descriptor/root/stage-bound, allows GPU0 and one CUDA tree, and has a real window
+of at most 120 minutes within the descriptor deadline. Its non-fixture desktop
+snapshot must be fresh within fifteen minutes and valid for the entire window.
+The CPU controller/watchdog use E26/27, BelowNormal and CUDA disabled; the
+suspended launcher receives P0/1, BelowNormal, GPU0 and one math thread before
+resume. Every descendant belongs to its private Windows Job. The independent
+watchdog must be ready first. Controller/watchdog loss, revoked bindings, foreign
+GPU ownership, errors or deadline stop only this Job, with a ten-second margin.
 
-Full pose, identity review, fitting, native point/SMPL verification, coverage,
-outlier/quality reports and the final full-run viewer remain required. Existing
-QA acceptance and previous pilot outliers are retained as evidence, not promoted
-to independently accurate ground truth or formal training admission.
+Each lease has a persistent single-attempt claim. Inspect real failure/empty-Job
+evidence before clearing a crash lock or issuing new authority. A release receipt
+proves original CLI exit zero and owned Job exit; a teacher/fit CLI may have merely
+yielded, so also check real stage progress. Completed checkpoints and held
+authority files are never rewritten as recovery evidence.
 
-Batch 01 completed 17 new camera contexts in 1,499.39 seconds: 45 / 88 total,
-including 28 reused contexts. It released at 2026-10-22 00:44:18.854099 UTC,
-before the 00:48:18 deadline. All observed owned processes exited. Remaining
-teacher work is approximately 60–75 GPU minutes excluding queueing, poses and
-fitting; subsequent GPU windows require another explicit safe handoff.
+## New-source body production
 
-The first supervisor retains the historical argparse-only `exit_code=2` field;
-its actual final state is `yielded_before_deadline` with 45 valid checkpoints.
-That progress file is SHA-bound by its released lease and stays immutable.
-Batch 02 uses a new `--progress-output` plus `--resume-progress` pointing to the
-first file. The common native worker records actual Python descendants, stays
-hidden and runs below normal priority. `tools/release_badminton_full_gpu.py`
-checks completed stage state and actual owned CUDA process exit before release,
-and preserves an immutable progress snapshot. CPU stages are distinguished from
-native inference; no subsequent GPU stage is launched by the release observer.
+`prepare_badminton_new_source_repair.py --source-root <prepared-run> --root <repair>`
+freezes source windows, roles, native-pose case plan and teacher paths without
+manufacturing legacy body labels. Initial teacher work is bounded to one window
+with `--stage teacher --source <id> --window <window> --threads 1`.
+`run_badminton_initial_teachers.py` supervises those windows.
+`advance_badminton_new_source.py` waits for genuine teacher completion, observes
+poses and stops at a pending identity inventory.
 
-For batch 02 add these arguments to the full teacher command:
+`continue_badminton_native_identity.py --root <full-run> --request <request>
+--grant <continuous-grant>` is the canonical full-native continuation. It waits
+for real pose completion/release and the coordinator's identity phase, fills only
+missing evidence under that grant, then releases CUDA before CPU review/sealing.
+`--verify-complete` validates existing real outcomes without inference. Each
+child enters its own suspended Windows Job before execution; errors reclaim only
+those owned Jobs and retain issued shorter pose-stage limits.
+
+For explicit evidence review, use:
 
 ```powershell
---progress-output outputs/badminton_1019_full_native_v1/full_teacher_progress.batch02.json `
---resume-progress outputs/badminton_1019_full_native_v1/full_teacher_progress.json
+uv run --no-sync python tools/prepare_badminton_identity_review.py --root <repair>
+uv run --no-sync python tools/prepare_badminton_identity_review.py --root <repair> --render-endpoints --endpoint-offset 0 --endpoint-limit 20
+uv run --no-sync python tools/screen_badminton_new_identity.py --root <repair>
 ```
 
-The separate `fit_reuse_audit.json` proves 14 old windows / 3,553 fitted / 3,552
-original QA records eligible, including 1,785 actual clouds and 3,570 exact pose
-files. Git `e159d1e` reproduces the first pilot's original execution digest:
-the nine other execution modules are byte-identical, and calibration AST matches
-outside snapshot freezing/input-metadata checks. All numerical calibration
-fields and original native session contracts also match. Both original/current
-digests remain recorded; this is an eligibility audit, not another fitting run.
+The pending inventory records real tracklets/endpoints; screening proposes
+candidates and assigns no identity truth. Native RGB witnesses preserve original
+records, raw hashes and the exact K-preserved undistortion domain. A reviewed
+`badminton-new-source-identity-inventory-v1` binds `source_union_sha256`,
+camera digest, evidence files and all selected windows/cases. Then run the
+inventory preparation with `--boundary-inventory <reviewed.json>`, observe
+`<repair>/identity_evidence` through `observe_badminton_repair_poses.py`, run
+`review_badminton_identity_views.py`, and seal via
+`build_badminton_identity_decisions.py`.
 
-Only after current full poses and reviewed identity decisions are complete may
-`tools/apply_badminton_full_fit_reuse.py` import these results on CPU with CUDA
-masked. It checks unchanged local identity operations and exact teacher parameter
-bytes, copies NPZ/joblib artifacts unchanged, and explicitly rebinds scope/path
-metadata while retaining original provenance. Original QA and known bad cases
-remain unchanged. Full current native verification is still required.
+Unknown relationships remain pending unless an explicit reviewed
+`badminton-new-source-identity-abstention-v1` policy selects
+`keep_unproven_original_tracklets_separate`. It resets raw joins, joins only
+geometrically confirmed pairs, preserves different-person constraints and lists
+unknowns as `abstained_relationship_cases`. Evidence/hash checks and graph
+contradiction rejection remain required. Historical scene-specific overrides are
+never applied to new sources. Source-filtered reviews become complete only after
+full evidence coverage is checked.
 
-Full `--stage fit` uses a cooperative per-window supervisor. Existing outputs
-first pass `--require-completed --device cpu`; changed caches fail without silent
-fallback recomputation. New windows use the existing v2 policy and yield before
-the lease boundary. GPU release precedes separate CPU-only `--stage aggregate`,
-which also requires completed caches and cannot start new fitting/inference.
-
-1020 CPU-only watchers wait for `handoff/<sid>.full-native-rallies.json`, each
-source index using the existing `{file, sha256, bytes}` binding with `file`
-relative to `data_root`. `{path, sha256}` is reserved for receipt/evidence
-bindings and is rejected for `source_indexes` / `excluded_source_indexes`.
-Each watcher uses `outputs/badminton_1020_full_native_<sid>_v1`. The joint manifest watcher
-remains active as well. Actual launch references are in
-`outputs/badminton_1020_full_native_v1/source_intake_watchers.json`; per-run
-`intake_watch.json` distinguishes waiting, read-only validation and actual CPU
-preparation. `tools/watch_badminton_full_native.py` masks CUDA for every
-preparation subprocess. No Windows scheduled tasks are added.
-
-The 1020 bundle binds original recordings because it predates fullraw indexes.
-Portable review freezes may validate that explicit fullraw parent against the
-original recording manifest, common clock, PTP validation, download receipt and
-PCAP bindings, requiring matching file/SHA/bytes and source identity. The four
-small originals are hash-checked; PCAP identity retains the original download
-SHA and current size contract. The existing explicit source-index branch stays
-strict. Neither branch searches for missing files or changes the five-file bundle.
-
-Source `20261020_191011` completed actual CPU intake at
-`2026-10-22T03:37:09.128801+00:00`: manifest `93ff37af...`, 23 segments,
-2,285 unique eligible scans and 227.736177 seconds. Prepare CLI took 29.481714 s
-(19.166396 s internally); the separate complete body-plan prepare took 5.431744 s.
-`outputs/badminton_1020_full_native_20261020_191011_v1/cpu_prepare_receipt.json`
-binds the prepared registry, input, case plan, calibration and all-window body
-plan. Its 46 independent camera-teacher contexts, 4,570 planned native
-camera/scan observations and subsequent fitting/QA remain pending.
-
-The explicit two-cohort GPU queue is
-`outputs/badminton_full_native_gpu_queue_20261022/queue.json`: 1019 has 43 teacher
-contexts left, followed by the first ready 1020 source's 46. Each teacher lease
-requests at most 30 minutes and uses its own progress file; subsequent poses,
-reviewed identity, fitting, native verification and the full player retain their
-existing stage gates. The queue does not grant or launch GPU work automatically;
-Sports360's actual explicit handoff is still required.
-
-All five 1020 frozen sources passed the existing consumer's CPU source reader
-at `2026-10-22T04:43:12.928298+00:00`, taking 122.102458 s overall. The run
-verified original clocks and native camera indexes, plus six encoded point-member
-samples per source. All 30 sampled crops were bit-identical subsets of their
-emitted parent PNGs; the maximum single-M roundtrip error was 9.46e-7 m.
-
-| Source | Emitted scans | Paired nonempty scans | Empty crop scans |
-| --- | ---: | ---: | ---: |
-| 20261020_191011 | 3,664 | 3,649 | 11 |
-| 20261020_182854 | 10,027 | 10,015 | 6 |
-| 20261020_184642 | 6,529 | 6,520 | 0 |
-| 20261020_193236 | 11,975 | 11,920 | 49 |
-| 20261020_200346 | 6,711 | 6,707 | 1 |
-| Total | 38,906 | 38,811 | 67 |
-
-The reader's paired count already excludes empty foreground and validates common
-overlap and both native cameras. Of 67 empty crops, 64 have both camera matches
-and three lack one or both; another 28 nonempty scans lack camera matches.
-The 38,911 original clock rows retain five explicitly unclosed final packet rows.
-These source counts precede native rally selection and are not fitted bodies.
-Independent reports and their SHA bindings are in
-`outputs/badminton_1020_source_cpu_preflight_20261022/completion_receipt.json`
-(SHA `7863c8e07168a785c35f721a91ce6d5a4dfff7e1d37a07d930ab5c30108b15bd`)
-and `coverage_before_native.json`. The other four source watchers still wait for
-actual successful native manifests; no source preflight grants GPU or training admission.
-
-Full-native `prepare` now also runs the all-window body-plan stage with CUDA
-masked and `--device cpu`, using the same command/settings as subsequent fitting.
-An incomplete or failed body plan cannot make the intake ready. Existing successful
-body-plan receipts are checked and retained byte-for-byte. This closes the earlier
-manual preparation step for the four subsequent sources and the joint run.
-The helper was actually exercised on all 44 prepared 1019 windows (exit 0,
-6.128281 s), preserving the old B01 progress, release receipt and full body-plan
-SHA. The focused suite has 118 passing CPU checks.
-
-The user's priority instruction on 2026-10-22 superseded waiting for Sports360's
-full round. Sports360 saved a complete checkpoint and explicitly paused its GPU
-trainers/admission for the whole production. The remaining four native stages
-run first under their own explicit grants. The prepared continuous human-production
-request is `outputs/badminton_full_native_gpu_queue_20261022/continuous_gpu_request.json`;
-it is a request, not a granted lease. It proposes at most 30 hours after the
-native CUDA executors exit, actual manifest-bound local stage leases, and 1019
-followed by the 1020 joint run. No per-source 1020 GPU fitting has started, so
-the joint root avoids duplicate inference. Sports360 resumes only after the
-whole production is explicitly returned through the coordinating root.
-
-`tools/watch_badminton_full_gpu.py` is a hidden CPU-only receiver for that final
-grant. It verifies the frozen request, both actual manifest hashes, four distinct
-native return proofs, the Sports360 stop proof, delegation and the fixed overall
-deadline. A sample, future window or incomplete handoff cannot start inference.
-On the real window it creates the bounded B02 lease and starts the 1019 teacher
-controller plus its independent release observer. It then stays resident as the
-deadline monitor while poses, reviewed identity and fitting are dispatched.
-An active grant is immutable: replacement, removal or expiry stops only known
-CUDA trees in the two authorized outputs, matching PID creation identities.
-The receiver's actual PID, heartbeat, child PIDs and release binding are in
-`outputs/badminton_full_native_gpu_queue_20261022/continuous_gpu_receiver.json`.
-The focused 130-check suite includes real CPU subprocess-tree termination and
-proves that a different output root keeps running. No scheduled task is used.
-
-`tools/run_badminton_full_sequence.py` continues teachers, native poses, reviewed
-identity, audited fit import, bounded fitting, CPU aggregation/native verification
-and the full viewer serially. It emits durable review events and cannot invent a
-reviewed identity decision. `live_progress.json` selects the latest teacher batch
-and its preceding immutable release snapshot: B03 reports baseline 79 plus its
-own nine new camera contexts. Historical timing stays under `previous_attempts`.
-A replacement CPU coordinator waits for the existing GPU batch's actual release
-before dispatching any following stage; it does not restart the CUDA tree.
-
-For a prepared native identity scope and reviewed conservative policy, use the
-canonical continuation alongside the coordinator:
+Prepare and run v2 bodies with fixed cameras:
 
 ```powershell
-uv run --no-sync python tools/continue_badminton_native_identity.py `
-  --root outputs/<full-native-run> `
-  --request outputs/<queue>/continuous_gpu_request.json `
-  --grant outputs/<queue>/continuous_gpu_grant.json
+uv run --no-sync python tools/repair_badminton_body_labels.py --stage prepare --union <repair>/new_source_input.json --source-root <prepared-run> --output-root <repair>/final_labels --native-poses-root <repair> --joint-ray-filter --distal-pose-weight 0.03 --lower-limb-reprojection-weight 2 --identity-decisions <repair>/identity_evidence/identity_decisions.json --threads 1
+uv run --no-sync python tools/run_badminton_repair_windows.py --root <repair> --union <repair>/new_source_input.json --source-root <prepared-run> --threads 1
 ```
 
-It waits for real complete full poses, their genuine release and the coordinator's
-identity phase. Only then may the existing source-bound grant admit a local pose
-lease of at most 20 minutes. The observer reuses exact existing native files and
-computes missing boundary context; its original PID/create-time seeds the
-independent release observer. CPU geometric review and conservative sealing run
-after actual CUDA exit/release. Unknown relationships retain separate original
-tracklets. Cleanup checks only established native executors in authorized roots;
-it makes no claim that all unrelated machine CUDA processes are absent.
-Independent v5 review found two startup/authorization gaps. V6 registers a
-private Windows Job before each suspended launcher can run, retaining its
-original kernel handle through identity inspection. Any PID/ctime, state-write
-or observer-start failure stops and reaps only this continuation's Jobs,
-including its CPU observer. Failure evidence is written after cleanup through
-an independent exclusive writer. The effective deadline is the earlier of the
-original issued local deadline and start+20 minutes; direct workers also check
-the original stage cap, including shorter 10/15-minute grants. Six real CPU
-process/Job fault regressions preserve a same-root foreign sentinel.
-Future production does not import or execute per-run `.local` continuation code.
-Existing state and leases are preserved instead of silently overwritten.
+`advance_badminton_identity_review.py` and
+`advance_badminton_body_production.py` are bounded supervisors for those same
+stages, with explicit root/source-root/lease. They retain failure progress and
+stop for browser acceptance. `finish_badminton_body_repair.py --root <repair>`
+performs original native-member/SMPL checks, bounded continuous leg refinement,
+same-person pre/post QA and bilateral publication. It binds the actual baseline
+before changes. Completion `new_source_completion_receipt.json` can state
+`labels_published_viewer_prepared`, but keeps browser/archive/consumer/training
+admission false until their separate gates pass.
 
-For a genuinely completed run, `--verify-complete --root <run>` reads the actual
-full scope, geometry, precise decision operations, conservative policy, evidence
-hashes and both real releases, then freezes `native_identity_completion.json`.
-It starts no inference or CUDA and never backfills missing historical evidence.
-If only implementation bindings change, it preserves the prior completion and
-writes a separate versioned receipt; changed actual outcomes are rejected.
-The canonical controller is covered by synthetic CPU worker stand-ins; the real
-1020 producer below was the preceding frozen continuation and remains attributed
-to that actual execution. The canonical completed-evidence reader independently
-checks its real outcomes without rerunning the models.
+## Formal import and native proof
 
-Actual 1020 continuation: all 51,730 full native observations were fresh
-(7,010.422 s), followed by 1,491 fresh identity observations plus 8,761 exact
-reused records (325.724 s). Full and identity leases were genuinely released at
-20:14:10 and 20:20:09 UTC on October 22. All 247 geometric cases yielded 184 same,
-eight different and 55 unknown relationships, retained separately. The sole
-coordinator automatically started fit at 20:24:07 UTC. The first six fresh fit
-windows cover 493 scans, 1,944 fitted and 1,939 currently accepted person-frames
-in 802.079 s. An initial person-frame/window regression with a provisional
-81,066-person-frame mixed singles/doubles scenario predicts 9.25 fit hours;
-these assumed person counts are not delivered labels. Keep the 8–10-hour fit
-risk budget and separate QA/archive budget until later-source actual timings
-update it. CUDA remains bounded by the original 11:41:39 UTC October 23 deadline;
-any formal guarded leg still requires actual prerequisites and its separate grant.
-CPU verification/archive work can continue without CUDA after that deadline.
-
-The 1020 B02 release observer encountered a Windows sharing violation reading
-its atomic progress journal. Inference itself finished 120 new camera contexts,
-giving 221/494 with exit zero. Recovery preserved the failed journals, verified
-all 221 cache artifact sets and restored the original terminal bytes only after
-matching the independently retained pointer SHA `52bd730c...`. Reconciliation
-binds the known original launcher PID/create-time, actual child completion
-records and the independent current process scan; missing historical descendant
-creation times remain explicit. The fresh release observer released B02 at
-`2026-10-22T13:31:38.767130+00:00`, without extending its expired lease. A unique
-coordinator 33564 started B03 under the original continuous grant with a new
-13:31:41–15:31:41 UTC lease; the first real new context advanced to 222/494.
-`sequence_observer_recovery_20261022.json` and the in-run
-`observer_recovery_20261022/` retain the complete evidence. Coordinator and
-observer now share bounded live-JSON reads; original process observations are
-persisted before progress reads, and a coordinator-only failure preserves a
-successfully completed worker's original checkpoint.
-At 13:49 UTC, only that CPU coordinator was replaced by PID 5324 to load exact
-checkpoint-byte preservation and one bounded observer retry within the original
-held lease/deadline. B03's original teacher CLI 39108 and release observer 40552
-retained their process identities and continued to 242/494. The replacement
-waits for their genuine release before another CUDA stage. The independent
-global deadline monitor and both authorization/sampling bindings are unchanged.
-
-At the user's new paired-RGB acceleration request, the CPU sequence was explicitly
-held and B02 yielded after its current worker: 79/88 contexts, with 34 new in
-2,687.424143 s; actual CUDA release was `2026-10-22T06:26:36.187496+00:00`.
-The original local lease was retained before shortening its deadline; the active
-continuous grant is unchanged. `execution_hold.json` records the separate
-10 Hz frontend trial. The default native 30 Hz contract remains unchanged.
-
-The bounded trial subsequently passed three dual-camera windows, including a
-native RGB confirmed jump, and a 50-scan/two-person joint-LiDAR fitting case.
-The controlled first window used identical 40-pixel ROI margins in both arms:
-122.876 to 70.479 seconds, 1.743x. Two production-20-pixel windows reused exact
-historical baselines; their 3.10x/2.06x ratios are not controlled cold A/B estimates.
-The same 100 actual person/scan cells fit and passed QA in both backend arms.
-Visible-point surface mean was 24.408 to 24.642 mm; all 100 passed the existing
-bilateral detection rule. Original point-member and pelvis errors were zero;
-rebuilt native SMPL maximum error was 9.54e-7 m in both arms. Camera-1 fitting
-support differed in one cell because the old fallback used an adjacent real
-exposure; the common 96-cell projection mean was 7.933 to 7.963 px. These are
-pseudo-label consistency measurements, not independent anatomical ground truth.
-Receipts are under `benchmarks/paired_rgb10/` in the two authorized roots.
-
-The adopted explicit `paired_native_rgb10_latent_v1` input is frozen separately
-as each root's `teacher_sampling_input.json`, binding the original source plan
-and real backend acceptance. `paired_sampling.py` selects actual native record,
-PTS and common-clock rows from LiDAR pairs; integer first-core scan-midpoint
-subtraction precedes float seconds. The source MP4 remains 59.94 fps; paired
-RGB record steps are five/six, never an index divided by two. No raw recording,
-camera, original scan selection or global GPU deadline changes.
-
-`run_teacher` routes this explicit policy through the same initial/repaired
-teacher entry. Tracking gaps/minimum context retain their original durations.
-Real crops feed the heavy image models at about 10 Hz; role-marked near-30 Hz
-inferred states interpolate conditioning features, with virtual 2D confidence
-zero. Only actual RGB anchors remain observations. `sample_track` queries those
-inferred model states while requiring real RGB evidence within 8,500 us and
-preserving its original record/PTS/keypoints; the ordinary 36 ms bracket rule
-is unchanged. Identity mapping and exact pixel-cache reuse share that duration
-policy, so repaired contexts cannot silently rerun dense preprocessing.
-
-The continuous sequence resumed at 07:29:15 UTC with `--paired-native-rgb`.
-1019 B03 finished all nine remaining camera contexts in 415.993 s, reaching
-88/88 and releasing actual CUDA at 07:36:16.462899 UTC. Its original 79 dense
-contexts remain byte-identical. Native pose, real identity review and fitting
-follow; 1020 joint has 247 segments/25,865 scans and its own bound sampling
-input. The focused CPU suite has 159 passing checks. Whole-run delivery is
-estimated at 15–23 hours from 07:30 UTC, including CPU review/acceptance with
-some overlap, within the unchanged 2026-10-23 11:41:39.650687 UTC hard deadline.
-No new formal training release has been published.
-
-The first 1019 full review completed GPU fitting at 08:29:40 UTC: 44 windows,
-8,124 actual fitted person-scans and 8,115 fit-QA candidates. All 8,115 candidates
-passed native point-member/pelvis verification with zero error and rebuilt SMPL
-error at most 1.91e-6 m. Ten actual five-second Chrome clips passed at 08:48:50 UTC,
-including the tail of rally 19's jump. Review: http://127.0.0.1:8784/ .
-The 1020 joint teacher batch actually started at 08:29:43 UTC, overlapping the
-first cohort's CPU verification/browser work, and the original sequence adopts
-that exact batch only after its real CUDA release.
-
-`tools/audit_badminton_full_coverage.py` accounts for all actual selected scans
-before reporting qualification. A nominal two people on 4,117 scans gives 8,234
-cells: 112 missing nominal cells offset by two additional fitted hypotheses
-produce the net difference of 110. There are two zero-fit scans, 108 one-fit
-scans, 4,005 two-fit scans and two three-fit scans. Missing support comprises
-92 cells without usable continuous primary teachers and 20 excluded at native
-pose/point segmentation. Nine distinct fitted cells fail QA, with potentially
-overlapping rejection reasons. Existing cached-native bilateral detection gates
-qualify 8,100 of the 8,115 QA candidates; 15 lack a qualifying camera-1 match.
-These are presence-rule candidates using original bound native detections, not
-a new formal training export or repeated full native-pixel acceptance.
-
-The all-fit mean visible-point residual is 23.367 mm and raw camera reprojection
-means are 8.054/4.363 px. Accepted ground outliers remain, including source
-152750 scan 3948 at 115.77 mm, source 152542 scan 443 at 110.39 mm and source
-152750 scan 5277 at 98.41 mm. Two pelvis-step candidates remain explicitly
-reviewable; one has a rejected endpoint and the other is the previously observed
-2576-to-2577 fast motion. Full receipts are `coverage_bilateral_audit.json`,
-`coverage_bilateral_cells.json`, `quality_report.json`, `outlier_review.json`
-and `browser_checks/continuous_verification.json` in the 1019 full root.
-
-The accepted 115.77 mm case is source `20261019_152750`, scan `3948`,
-motion `000393173671_000397340410:1:0` (`003948_t000.npz`). Its ground
-distance uses the frozen shared physical court plane in viewer metres:
-`h = (vertex - origin) dot normalize(normal)`, then
-`max_vertex(max(-h, 0))` over all 6,890 SMPL vertices. The plane origin is
-`[13.31866272714975, -0.4794938249119665, -2.9825130024854447]` and its
-upward normal is `[-0.04387101604378947, -0.10197160568839171, 0.9938194632752052]`.
-This is separate from the ground Ignore upper surface. CPU recomputation from
-the saved vertices gives 115.76760 mm versus the stored 115.76763 mm; 354
-vertices are more than 20 mm below this plane. No plane or camera was changed.
-
-The existing optimizer uses a 20 mm soft tolerance with floor weight 0.5;
-this is not an export rejection threshold. `export.acceptance_reasons` rejects
-penetration strictly above 120 mm, point-to-surface mean above 65 mm or p90
-above 120 mm, fewer than 80 source points, nonfinite fits, combined reprojection
-above 50 px, or fewer than six valid joints in every available camera.
-This case has 308 points, surface mean/p90 26.25/52.86 mm, finite parameters,
-16 valid joints per camera and combined reprojection 40.735 px, so its existing
-body QA has no rejection reasons. The combined reprojection averages available
-per-camera confidence-weighted errors (57.455/24.014 px here); it does not impose
-a separate 50 px limit on each camera. It also passes the unchanged bilateral
-detection-presence rule, which does not add an anatomical or 20 mm floor gate.
-
-This person-scan is currently review-only and is absent from formal training.
-`dual_view.export_reviewed` rejects a review-only dataset or calibration; the
-only present split is `review`. If a separately admitted future formal source,
-camera bundle and role assignment retain these tensors and numerical gates,
-this person-scan would be eligible under those gates. Its visible defect is
-not evidence that the current rules exclude it. The SHA-bound supplement
-`ground_acceptance_review.json` preserves the original
-`full_native_review_completion.json` bytes and binds the exact fit, QA rows,
-plane, presence evidence and rule implementations. No thresholds, sample
-membership, cameras or formal releases were changed for this clarification.
-
-Formal-release readiness is recorded separately in
-`release_preflight/formal_release_readiness.json`. Existing CPU verification
-proves all 8,115 aggregate rows equal their native-verified window tensors;
-the current presence-qualified subset has 1,157/6,943 rows and 102 real
-continuous segments. The unchanged full continuity screen covers 8,115 rows
-and 8,022 adjacent edges with no flags under its existing criteria.
-The seven-source role draft preserves the full old 142,567 rows and their
-98,011/19,213/25,343 roles. New train sources are both 1019 sources plus
-1020 182854/193236/200346; val is 191011 and test is 184642. This draft uses
-only frozen eligible-scan counts and still needs the consumer's sealed input
-bindings. The original two-source 1019 review cannot independently populate
-all three nonempty source-disjoint roles required by the current intake.
-
-Camera admission requires a separate real applicability certificate and new
-admitted source indexes, not an edit to the active review inputs. The new
-formal calibration package also declares all seven `valid_source_ids` in
-`calibration.json`, and matching canonical `frame_maps` in `sources.json`.
-Changing source-scope/admission metadata requires an explicit derived-fit
-lineage adapter: existing strict review fit-reuse validation is retained.
-Final body completion, bilateral/native/pixel checks, version-bound Chrome
-acceptance, exact expansion, archive sealing and independent consumer CPU
-admission remain separate gates. The expansion loader now accepts a complete
-already-expanded base only with the consumer's explicit `old_archive` SHA,
-matching archived roles/payloads/source registry and verified per-source
-calibration snapshots. The actual 142,567-row base passes this structural and
-calibration preflight (13 sources, two calibrations). Actual assembly still
-hashes and checks every role payload/row and retains its exact tensor/metadata
-prefix. Draft or unsealed joint contracts cannot assemble the expansion.
-The expanded-dataset/pixel CPU suite passes 18 checks, including mixed old
-calibrations, unchanged prefixes, archive escapes, wrong payload hashes and
-substituted calibrations. The browser wrapper still needs the new seven-source
-scope; old 1015-specific assertions are not satisfied by relabeling a review
-receipt. Pending-runtime ranges in the readiness receipt are planning
-estimates, not measured formal-release completion.
-
-The joint publication uses two contract stages to avoid circular hashes.
-`expanded-1019-1020-assembly-input/v1` binds the actual seven-source
-paired/canonical publication, final per-source admitted counts, old full
-archive and source inputs; it must be sealed and complete before assembly.
-`producer_joint_manifest` refers to that new source publication. After actual
-archive sealing, the separate `expanded-1019-1020-consumer-contract/v1` adds
-`final_delivery` archive/dataset/training manifest bindings and typed
-`release_evidence` for audit, native verification, continuity, pixels, browser,
-seal and sequences. The final receiver rejects assembly-input contracts.
-`release_preflight/final_evidence_interface.json` binds historical report
-examples and their actual field/status meanings; those examples do not admit
-the new data. Drafts and missing/mismatched new counts/publications are rejected.
-
-`tools/audit_badminton_formal_inputs.py` audits a separately prepared formal
-source root against explicit `--review-root` inputs and the frozen role draft.
-It requires identical physical camera/court/ground/ROI/timing fields, native
-session maps/clocks, original full source frames/member declarations and crop
-lineage. The formal loader verifies real applicability certificates and their
-accepted five-file bundle. Relocation is enabled only by explicit
-`--data-relocations` and `--data-relocations-sha256`; default readers and strict
-fit reuse remain unchanged. Its input-equivalence receipt grants no fit import,
-body completion, repeated full RGB pixel check or training publication.
-
-Actual seven-source formal inputs were frozen and independently audited at
-`outputs/badminton_1019_1020_formal_v1`: 46,444 emitted source rows, 29,982
-selected scans and 291 effective native rally segments. Preparation took
-308.25 CPU seconds; `source_prepare_receipt.json` SHA begins `5513d8bf` and
-`formal_input_equivalence.json` begins `0ce0e0f1`. The new snapshot digest is
-`5e4c7b0f4e3bf5758ef8e8fe327787c44ffa427519a2542fb4b4de33eed005fb`.
-This completes camera/source admission only. Formal repair planning requires
-that exact completed audit via `--formal-input-equivalence` plus its SHA;
-it retains the original native rally windows and all three nonempty roles.
-Existing repair components can resolve the separately typed formal registry's
-explicit relocation declaration only through its frozen intake, real camera
-handoff, matching source-index identities and camera snapshot bundle. Ordinary
-undeclared runs keep their existing relocation checks. The relevant CPU
-relocation/formal-planning suite passes 79 checks with one platform skip.
-
-The continuous CPU relay encountered a transient Windows permission error
-opening a live teacher journal at 10:10:35 UTC. The running B01 teachers still
-completed 101 camera contexts and released real CUDA at 10:25:10. A replacement
-relay resumed B02 at 10:32:16 under the same fixed grant/deadline, preserving
-all 101 artifacts and the first cohort's completed viewer. Live JSON reads now
-retry only bounded permission errors; corrupted JSON and persistent failures
-remain errors. Three recovery tests pass; queue recovery receipts preserve the
-failed state and replacement process identity.
-
-The reusable `hmr4d/lidar_mocap/progress_io.py` provides bounded atomic
-status writes and paired shared-delete reads for new CPU controllers. On
-Windows, replacing an existing status uses `ReplaceFileW`; only errors 5/32
-retry for up to three seconds. Persistent failures retain the old target and
-pending bytes. Five real Windows tests cover held readers and recovery.
-Existing frozen writers retain their original behavior; new controllers must
-use both helper APIs. The actual evidence is preserved in
-`outputs/badminton_1022_release_inputs_v1/progress_io_tests_v1/`.
-
-The formal 291-window body plan also completed on CPU in 125.16 s:
-`body_prepare_receipt.json` SHA `efc064d7...` binds the original and formal
-window configs, proving exact equality except the admitted calibration digest,
-and equal full fitting settings. `repair/new_source_input.json` retains the
-existing `badminton-new-source-repair-input-v1` jobs contract and SHA
-`81e6409626b6aa7ee44bf78d96763dbbd113f6474cbd88675dc841a8899fa920`.
-`preparation_handoff_receipt.json` (`8c8515c9...`) records the completed source
-and planning proofs separately from unfinished body/native/identity import.
-The consumer independently checked the complete old 142,567 rows and both
-calibrations in 116.98 s and the actual new formal camera wrapper in 3.53 s;
-its independent receiver has 49 passing CPU checks. These are preparation
-receipts, not new body-label or final training admission. Existing guarded-leg
-CUDA stages in a new formal output require their own explicit authorized
-target/lease; the current immutable grant continues to cover its original two
-roots only.
-
-The separate guarded-leg request is
-`outputs/badminton_1019_1020_formal_v1/gpu_guarded_leg/guarded_leg_gpu_request.json`
-SHA `36799351328d5e7701e953fd5abce79deeadb1588266cfd16b30d2b9dd2c65a6`.
-It targets exactly the formal `repair` root and source input `81e64096...`,
-with a 5–15 minute planning estimate and 30 minute maximum. Its absolute
-deadline is unchanged. Issuer fields, current policy/configuration hashes,
-typed grant/readiness definitions and additional runtime checks are adjacent;
-actual future baseline/identity/native/exit evidence remains pending. No grant
-or live lease was created. The older command matcher does not cover the two
-leg CUDA scripts, so an independent guard must capture their exact commands,
-target and PID creation identities before launch. Baseline/native evidence
-used for authorization must be immutable pre-leg snapshots.
-
-Historical 1015 proposal-loop timing was 50.38 s for 62,895 body-QA candidates,
-59 windows and 12 ray-witness cases, producing nine eventual corrections;
-that measurement excludes process/model startup. New witness count is unknown.
-The library exposes a device parameter, while both complete CLI stages fix
-CUDA; a full CPU route has no validated timing. No CPU backend experiment or
-algorithm change was made. The root's current CPU allocation is recorded in a
-separate request addendum: pure producer CPU tools E26/27, BelowNormal, 1–2
-threads; CUDA proposal/application and their inherited scheduling remain 0/1.
-
-The independent executor is `tools/run_badminton_guarded_leg.py`, backed by
-`guarded_leg_gpu.py`, `guarded_leg_execution.py` and `windows_gpu_job.py`.
-It validates the bound local grant/readiness schemas offline, the unchanged
-request/runtime contract and CPU allocation, the complete parent/formal
-native/identity/body/import evidence and a tested implementation manifest.
-No inspection or preflight creates a lease or launches CUDA. Actual execution
-requires the coordinating root's new grant; the old two-root grant is unchanged.
-
-A new request may explicitly set `issuer_runtime_checks_file` to a separate JSON
-filename in that same `gpu_guarded_leg` directory. Omission retains the legacy
-`issuer_runtime_checks.json` default. The name must start with an ASCII letter,
-digit, `_` or `-`, contain only those characters plus `.`, end in `.json` and
-contain no `..`; paths, symlinks and nonregular files are rejected. The selected
-contract must bind the exact new request path and SHA256. Its actual file binding
-is also required by `implementation.runtime_contract` and retained among the
-immutable execution anchors. Issue separate request, runtime contract, schemas,
-CPU allocation and tested implementation bindings for a new authorization;
-preserve the expired request and its evidence. Selecting another contract cannot
-extend an old deadline or satisfy missing readiness, desktop or private Job gates.
-
-The optional live CPU read-pass mode keeps the expensive complete native/input
-preflight outside the separately issued GPU window. Its independent CPU-only
-bundle has exactly these fields: `schema=gvhmr-guarded-leg-pregrant-v1`,
-`state=cpu_inputs_only_not_authorized`, exact `request`, `runtime_contract`,
-`readiness` and `independent_guard` path/SHA256 bindings, an explicit
-`cpu_wait_deadline_utc` no later than the request's absolute hard deadline, and
-`gpu_started=false`, `training_published=false`. It grants no CUDA time. Append
-`--pregrant <absolute-bundle-path> --pregrant-sha256 <actual-bundle-SHA256>` to
-the exact `--execute --request ... --grant <future-new-grant-path>` command below.
-The same driver completes the unchanged full readiness predicate before waiting
-for that new grant; no lease, GPU inspection or private Job starts while waiting.
-
-`verified_read_pass.py` retains real, noninheritable Windows read handles for
-every observed deep-read input, every indexed original/admitted PNG and fullraw
-member map, and the native runtime/model inventory. Leaf handles deny write and
-delete; ordinary ancestors deny rename while permitting the existing atomic
-progress/lease writer. The live capability rejects every input reparse/junction
-alias: Windows attribute-only handles can alter a junction despite its sharing
-flags, so change detection alone cannot prove which object the first deep pass
-actually read. Use the canonical entity Python interpreter with the unchanged
-project and `.venv/Lib/site-packages` on `PYTHONPATH`, and the existing
-`.venv/Library/bin` at the front of `PATH` for the same CPU DLL dependencies.
-Its `sys.base_prefix` must name the canonical entity directory. The native
-inventory must match the frozen runtime by actual file SHA and versions.
-The canonical driver executable is bound in its live receipt; the three approved
-phase commands retain their original `.venv/Scripts/python.exe` argv. The ordinary
-legacy invocation below is unchanged. The synthetic junction probe records the
-actual limitation; it does not authorize an unlocked alias fallback.
-All source SHA/numerical comparisons still run in the original deep predicate
-with those handles held. Stat-only declarations acquire locks without adding a
-full PNG/video read. `read_set.json` reports real paths, file IDs, sizes and lock
-coverage, including the declared/locked stat-only difference; it does not claim
-additional per-file content hashes. `cpu_read_passes/<nonce>/cpu_ready.json`
-binds that exact inventory, the inputs and tested implementation, and the actual
-driver PID/create-time/command/nonce. This receipt cannot restore a capability
-in another process or after its locks close.
-
-The actual fresh grant must additionally bind that receipt as
-`verified_read_pass`, and a fresh independent `desktop_allowance` with
-`desktop_allowance_fixture_only=false`. Its approved start must follow CPU
-completion; the desktop capture must be at most fifteen minutes old and cover
-the entire approved deadline. This avoids rewriting the frozen implementation
-after a long CPU preflight. The bound grant schema must allow/require these new
-fields for this mode. Legacy invocation retains the implementation's desktop
-binding and its complete startup/apply preflight. Neither mode renews an old
-request or expands the thirty-minute grant, local lease or hard deadline.
-
-After the grant, startup and pre-apply checks still read/hash every actual current
-baseline report/artifact. The live capability replaces only repeated deep
-context reconstruction; runtime membership, algorithm provenance, predecessor
-identity, exact bindings, available time, watchdog, foreign GPU and private Job
-checks remain active. Immediately before apply it releases only the selected
-current FORMAL fit/export/report/review paths and exact aggregate outputs. A
-file-ID alias with any parent, original, unselected current or other immutable
-input rejects release. The capability becomes unusable across this mutation;
-all other input locks remain until the existing Job cleanup finishes. A stopped
-driver requires a new complete CPU pass and separately issued authority. This
-interface does not attest a production leg or replace any original native witness.
-
-Invoke the future driver with absolute paths in this exact argument order:
+A separately admitted run may reuse completed review results only after physical
+input, timing, membership, fitting policy, source roles and reviewed identity
+equivalence. `audit_badminton_formal_inputs.py` writes the real
+`formal_input_equivalence.json`; it does not import bodies. The source input
+and preparation receipt must bind that exact path and SHA.
 
 ```powershell
-& D:/PROJECT/LABEL/GVHMR/.venv/Scripts/python.exe -u `
-  D:/PROJECT/LABEL/GVHMR/tools/run_badminton_guarded_leg.py --execute `
-  --request D:/PROJECT/LABEL/GVHMR/outputs/badminton_1019_1020_formal_v1/gpu_guarded_leg/guarded_leg_gpu_request.json `
-  --grant <absolute-path-to-the-actual-new-issued-grant>
+uv run --no-sync python tools/import_badminton_formal_bodies.py --phase audit --root <formal> --input-equivalence <formal>/formal_input_equivalence.json --input-equivalence-sha256 <actual-SHA> --parent-root <complete-review-parent> --threads 1
+uv run --no-sync python tools/import_badminton_formal_bodies.py --phase apply --root <formal> --audit <actual-audit.json> --audit-sha256 <actual-SHA> --threads 1
 ```
 
-For the optional read-pass, use the verified canonical interpreter instead of
-the venv launcher, retaining the original approved phase commands:
+Audit checks all completed body/native/pose/identity receipts, original reports,
+assets, points, teacher bytes and fixed roles. Changed execution digests need
+explicit original-revision compatibility proof. Apply copies numeric artifacts
+into independent files; teacher values/dtype/shape stay exact while provenance is
+rebound. Quality measurements, acceptance and person/scan IDs remain unchanged.
+Conflicts and hardlinks to originals fail without replacement. The numeric import
+does not itself aggregate or reconstruct native SMPL.
 
-```powershell
-$env:PYTHONDONTWRITEBYTECODE = '1'
-$env:PYTHONPATH = 'D:/PROJECT/LABEL/GVHMR;D:/PROJECT/LABEL/GVHMR/.venv/Lib/site-packages'
-$env:PATH = 'D:/PROJECT/LABEL/GVHMR/.venv/Library/bin;' + $env:PATH
-& <absolute-canonical-python.exe> -u `
-  D:/PROJECT/LABEL/GVHMR/tools/run_badminton_guarded_leg.py --execute `
-  --request <absolute-new-request> --grant <absolute-future-fresh-grant> `
-  --pregrant <absolute-CPU-only-bundle> --pregrant-sha256 <actual-bundle-SHA256>
-```
+Run the original repair entry in completed-only CPU mode with the formal source
+input, identity decisions and unchanged v2 settings to aggregate all windows.
+`verify_badminton_native_bound.py` records the actual neutral model opened,
+code/CPU runtime and before/after inventory around genuine native reconstruction.
+Historical cached results gain no witness retroactively.
 
-The controller and independent watchdog remain on E26/27, BelowNormal. A
-private Windows Job Object owns every phase and inherited descendant. Launchers
-start suspended; their original kernel handles assign job ownership and affinity
-before resume. CUDA propose/apply use 0/1; CPU selection uses E26/27 and CUDA=-1.
-The watchdog must be live before the first phase. Both controllers enforce the
-earlier grant/local-lease deadline with a ten-second shutdown margin, including
-an independent timer thread while file checks block. Missing/revoked bindings,
-foreign GPU ownership, reused PIDs or vanished controllers stop only the owned
-job. Last-handle close also terminates the owned descendants. Existing outputs,
-leases and execution locks prohibit silent retries. Only actual empty-job proof
-permits release; post-leg native/QA/pixel/Chrome/archive checks remain separate.
+`derive_badminton_formal_native.py --root <formal> --numeric-import <receipt>
+--numeric-import-sha256 <SHA> --run-required-actual --threads 1` accepts explicit
+eligible `--parent-witness` / `--parent-witness-sha256` pairs. Each derived window
+needs genuine parent model/runtime execution and full numerical, point, pose,
+teacher, identity and input-equivalence proof. Missing or invalid parent evidence
+requires actual reconstruction, including the all-actual fallback.
+`verification_coverage` must cover every actual/derived window. A pose model SHA
+does not prove which model a historical native verifier opened.
 
-The future complete baseline wrapper uses schema
-`gvhmr-formal-preleg-baseline-v1`: `state=complete`, exact `source_input`
-binding, separate immutable `body_receipt` and `pose_receipt`, and
-`windows[key].report_snapshot` bindings. Store all pre-leg native/absolute-QA,
-body/pose receipt and fit-report snapshots under the readiness file's baseline
-directory; retain byte-identical report copies. The numerical importer uses
-`badminton-formal-numeric-import-v1`, exact source/calibration, complete window
-scope, `numerical_artifacts_byte_identical=true`, `qa_values_unchanged=true`,
-and each window's `original_report` / `current_report` bindings. Current reports
-must equal the baseline snapshots; original reports must match the real parent's
-native verification. The executor rechecks exact ptv3/fit artifact sets and hashes.
-The predecessor exit bundle uses
-`gvhmr-guarded-leg-predecessor-exit-bundle-v1`, `state=complete`, unchanged
-`predecessor_grant`, actual `process_identities` and `release_receipts` bindings.
-Every registered predecessor must really be gone. These interfaces describe
-future genuine completion; implementation tests do not fill those pending roles.
+`freeze_badminton_formal_baseline.py` freezes independent full pre-leg native,
+absolute QA, body/pose and report snapshots under `gpu_guarded_leg/baseline/`.
+Before refinement,
+`finalize_badminton_formal_cpu.py --stage prepare-leg --root <formal>
+--baseline <baseline.json> --baseline-sha256 <SHA>` installs that genuine
+before-QA snapshot; it cannot reconstruct it after leg mutation.
 
-The actual Windows WDDM driver reports desktop/browser processes in
-`nvidia-smi --query-compute-apps`, including `C+G` entries in its XML. A raw
-nonempty list therefore cannot identify a training owner on this machine.
-The execution guard now retains the raw list and exempts only an explicitly
-bound desktop snapshot's exact PID, creation time and executable identities.
-Unknown/new/reused/inaccessible identities remain blocking, including idle
-Python CUDA workers. No external process is stopped to clear that list.
-The shared `process_executable(pid, expected_create_time=...)` helper first uses
-the ordinary process image query. On AccessDenied it reads the real kernel image
-with `NtQuerySystemInformation(SystemProcessIdInformation)` and converts its
-device prefix using the actual `QueryDosDeviceW` mappings. Fresh creation-time
-checks bracket the image query. Unknown status, empty/unmapped paths and reused
-PIDs remain blocking. This adds no program-name exception or alternative desktop
-identity type; both paths require the same exact frozen executable and time.
-`implementation_wddm_v2/actual_gpu_process_observation.json` records the real
-29-entry observation: 28 independently observed GUI identities plus one actual
-1020 CUDA worker, which correctly remained blocking. The new 23-case focused
-CPU receipt also binds an AST comparison proving original timing, Job ownership,
-deadline and termination functions unchanged; the historical 55-case suite was
-not repeated.
+After actual guarded exit, use `finalize_badminton_formal_cpu.py --stage post-leg`
+for its original fingerprint contract, or the explicit
+`finalize_badminton_formal_cpu_compat.py --root <formal> --baseline <json>
+--baseline-sha256 <SHA> --leg-execution <completion.json>
+--leg-execution-sha256 <SHA> --compatibility-implementation <tested-binding.json>
+--compatibility-implementation-sha256 <SHA> --threads 1`.
+The compatibility adapter preserves the original numerical verifiers and requires
+the exact source/test binding for separate producer fingerprints. Metadata-only
+inspection performs no native/QA pass and is not completion.
+`verify_badminton_formal_dataset.py` supplies the frozen formal resolver while
+retaining original source/cloud/SMPL checks and thresholds.
 
-That desktop capture is a machine fixture, not a future leg admission proof.
-Before actual leg startup, capture the then-current reviewed GUI identities and
-bind the fresh path/SHA as `desktop_allowance` in the issued implementation
-manifest with `desktop_allowance_fixture_only=false`. Driver and independent
-watchdog each load it from that issued manifest; startup rejects a fixture or
-a capture older than 15 minutes. The policy is included among immutable context
-anchors. Each GPU check revalidates its bytes and current process identities;
-new GUI identities need another explicit capture rather than a broad program
-name exception. Exit evidence retains both raw and classified process lists.
+The resulting `formal_postleg_cpu_receipt.json` still leaves bilateral, pixels,
+browser, archive and consumer acceptance pending. Pass its exact path/SHA to
+`finish_badminton_body_repair.py --formal-postleg-cpu-receipt <json>
+--formal-postleg-cpu-receipt-sha256 <SHA>`. Formal finish verifies that completed
+CPU chain without another fit/native/leg pass. It waits for independent bilateral
+observations and never silently launches an observer on CUDA.
 
-The formal CPU import has two explicit phases in
-`tools/import_badminton_formal_bodies.py`. `--phase audit` requires the formal
-run, the existing input-equivalence path/SHA and both explicit `--parent-root`
-values. It stops until each parent's full body/native/pose/identity receipts
-are genuinely complete, then checks all original report/asset/point/native
-bindings, unchanged physical geometry/window/fit/ray policy and frozen source
-roles. A changed execution digest needs the existing explicit original-revision
-compatibility proof; ordinary strict calibration reuse remains unchanged.
-The result is only import eligibility in `import_evidence/numeric_import_audit.json`.
-
-`--phase apply --audit <actual audit> --audit-sha256 <actual SHA>` copies
-ptv3/fits bytes into independent files. It copies the required original native
-teacher witnesses, rebinds native observation metadata and retains every
-reviewed identity operation. Repaired teacher tensors are compared exactly in
-value/dtype/shape after only provenance updates; the changed per-window
-`source_window` also requires a new identity digest in both teacher provenance
-and the identity receipt. No teacher/model/fitting fallback is invoked.
-Quality rows keep their original measurements, acceptance and person/scan IDs.
-`formal_numeric_import.json` binds every original/current report, native pose
-and reviewed identity receipt, unchanged teacher tensor proof and an original
-QA snapshot. It explicitly leaves aggregation and native reconstruction pending.
-`formal_import_progress.json` records actual CPU stage/window progress and
-failures. Existing equal outputs are reverified; conflicting files and any
-hardlink to an original numerical artifact are rejected without replacement.
-
-After import, run the existing repair entry in completed-only CPU mode with
-the formal `repair/new_source_input.json`, source root, labels root,
-`--native-poses-root <formal>/repair --joint-ray-filter`, the formal identity
-decisions, unchanged distal/reprojection weights `0.03`/`2`, `--stage fit
---require-completed --device cpu --threads 1`. This validates caches and builds
-the complete aggregate/body receipt under the frozen source roles; it refuses
-missing or changed windows instead of fitting. Then run the existing full
-native checks through `derive_badminton_formal_native.py --root <formal>
---numeric-import <actual receipt> --numeric-import-sha256 <actual SHA>
---parent-witness <actual 1020 execution witness> --parent-witness-sha256 <actual SHA>
---run-required-actual --threads 1` before freezing. Omit absent historical
-witnesses; those windows retain actual reconstruction. With no eligible witness
-the adapter actually checks the whole scope. The original native verifier bytes,
-limits, source members, accepted rows and source roles remain unchanged.
-`freeze_badminton_formal_baseline.py --root <formal>
---numeric-import <actual receipt> --numeric-import-sha256 <actual SHA>` rechecks
-every original/current numerical artifact and row QA value, recalculates the
-existing absolute QA and freezes independent evidence in `gpu_guarded_leg/baseline/`.
-Its `baseline.json` is the genuine complete baseline wrapper; it creates no
-final guarded-leg readiness, grant, lease, archive or consumer admission.
-
-The proposed derived-native shortcut was separately checked against the actual
-1019 evidence. Its pose receipt binds the currently unchanged neutral SMPL
-model, but the original native reconstruction did not bind the model file it
-actually loaded; the native input inventory covers the verifier/plan/identity
-and teachers instead. A pose-stage model SHA is not a reconstruction-execution
-witness. Therefore the current formal pre-leg reconstruction remains required;
-no derived passed receipt is created from that incomplete historical chain.
-`badminton_full_native_gpu_queue_20261022/derived_native_eligibility_evaluation_20261022.json`
-records all 44 original report bindings and the precise missing proof. A future
-parent's first genuine CPU verification can now record model/code/runtime before
-and after invoking the unchanged verifier. The 1020 full-native `verify` branch
-selects `verify_badminton_native_bound.py` in its future fresh child process;
-the long-lived coordinator's in-memory pilot function is not invoked for that
-child's stage. No coordinator/CUDA restart is needed to load this branch.
-
-The wrapper records the neutral model file actually opened by the constructor,
-resolved file SHA, verifier/calling implementation and installed CPU math/image
-libraries before and after successful checking. Historical cached windows gain
-no new witness. `native_verification_witness.json` is written only after a first
-genuine full execution; subset witnesses name only newly reconstructed windows.
-The formal adapter reruns the existing complete input-equivalence audit, checks
-every numerical artifact/point row, native observation, teacher tensor and
-reviewed operation, and requires the witnessed model/runtime to match. Missing
-or invalid original witnesses fall back to actual checks, never a passed derived
-receipt. Each window names either its actual execution witness or its actual
-parent plus derived equivalence proof; `verification_coverage` covers the whole
-actual/derived set. Guard and baseline verify that full chain. Unchanged proven
-windows may remain cached after the leg; changed or unproven windows are actually
-reconstructed and receive new subset witnesses. Prior checkpoints are retained.
-
-Independent review found an uninitialized formal root when no derived windows
-remain. Root initialization now precedes both witness-bearing paths. Added
-synthetic regressions retain the real model-open/witness/context/coverage checks
-and run full actual fallback through guard and baseline, and all-window postleg
-reconstruction through completion. Only the numerical verifier is a stand-in;
-these tests do not attest production reconstruction.
-
-Current implementation evidence is in `gpu_guarded_leg/implementation_native_v6/`;
-all current115 targeted CPU checks passed (prior70 plus45 canonical identity
-contracts, including real CPU Job faults). The canonical source files and their
-unchanged Windows Job dependency are included in the native execution
-inventory before the first parent witness; all numerical fitter dependencies
-stay byte-identical. Old v3/v4/v5 and 55/143 evidence is retained. The historical real loader inspection resolved
-the installed neutral model (6890 vertices/24 joints)
-and 3537 bound CPU package files, without a body forward, native window check,
-production witness, formal numerical import or new GPU authorization.
-
-Before any leg output exists, `finalize_badminton_formal_cpu.py --stage prepare-leg
---root <formal> --baseline <actual baseline.json> --baseline-sha256 <actual SHA>`
-installs the byte-identical frozen absolute QA as `repair/evaluation/v2_before_leg.json`.
-It refuses to reconstruct before-QA after refinement has started. After a
-separately authorized guarded execution has really exited, distinct proposal,
-selection and apply producer fingerprints use the source-bound compatibility entry:
-`python -B tools/finalize_badminton_formal_cpu_compat.py --root <formal>
---baseline <actual baseline.json> --baseline-sha256 <actual baseline SHA>
---leg-execution <actual attempt/completion.json> --leg-execution-sha256 <actual execution SHA>
---compatibility-implementation <actual source-bound implementation.json>
---compatibility-implementation-sha256 <actual implementation SHA> --threads 1`.
-The implementation binds the exact tested compatibility source and test evidence;
-it cannot be replaced by a flag or an arbitrary successful report. Adding
-`--metadata-only` checks only the actual typed producer metadata: it performs no
-native/body QA and cannot serve as the postleg completion or training admission.
-The original `finalize_badminton_formal_cpu.py --stage post-leg` remains available
-for its unchanged legacy fingerprint contract. Historical request/grant,
-baseline, nonce, phase commands/outputs and actual private-Job/GPU exit must
-match; expiration of the historical grant does not prevent this CPU check or
-authorize another CUDA launch. The adapter runs only the existing full native
-and dataset reconstruction verifiers, then recalculates the existing same-v2
-QA comparison against the genuine before snapshot, preserving person-frame
-membership. Its `repair/evaluation/formal_postleg_cpu_receipt.json` explicitly
-leaves bilateral/native-pixel/Chrome/sequence/archive and consumer admission
-pending. It never calls the older automatic CUDA completion path.
-
-### Generic incremental guarded leg
+## Generic incremental guarded leg
 
 `tools/run_badminton_incremental_guarded_leg.py` uses `incremental_guard.py` and
-`incremental_guard_execution.py` for an explicitly bound formal increment. The
-original `run_badminton_guarded_leg.py` remains the legacy interface. The new
-authorization profile is `gvhmr-incremental-guard-parent-map-v1`; actual source
-IDs and parent roots come from the reviewed policy and numeric-import audit,
-with no date-based parent selection. The original propose/select/apply CLIs,
-numerical rules and native verification remain unchanged.
+`incremental_guard_execution.py` with
+`gvhmr-incremental-guard-parent-map-v1`. Actual parents/sources come from the
+policy and numeric audit, never date-based selection. The original
+`run_badminton_guarded_leg.py` remains compatible with its existing contracts.
+The propose/select/apply numerical CLIs and rules remain unchanged.
 
-The closed descriptor has exactly `schema`, `authorization_profile`,
-`formal_root`, `release_policy`, `source_input`, `import_audit`, `numeric_import`,
-`baseline`, `formal_preleg_native`, `formal_preleg_qa`, `parents`, `windows` and
-`source_scope`. Both profile fields use the value above. Its path/SHA bindings
-must identify the actual complete inputs. `parents` must equal the completed
-numeric import and audit's `parent_evidence`. Each window has exactly
-`parent_root`, `source_id`, `original_window`, `original_report`, `current_report`
-and `current_window_report`; the exact window set, counts, baseline snapshots,
-teacher rebinding, original numeric bytes and actual native/identity evidence
-are checked. These current review parents are separate from the release policy's
-five previous sealed-release bindings (`ParentRelease5`) described below.
-
-The request stays in `<formal>/gpu_guarded_leg`, targets only `<formal>/repair`
-and binds that descriptor as `incremental_descriptor`. Request, selected runtime
-contract, readiness and new grant must bind the same profile/descriptor. Issue
-their explicit grant/readiness schemas and CPU allocation independently. Readiness
-requires all seven actual evidence roles: `formal_numeric_import`,
-`formal_complete_baseline`, `formal_reviewed_identity`,
-`formal_preleg_native_verification`, `formal_preleg_qa`,
-`predecessor_cuda_exit_bundle` and `independent_guard_ready`. Predecessor evidence
-uses `gvhmr-incremental-guard-predecessor-release-v1`, actual released CUDA leases
-and exited original PID/create-time identities.
-
-Before production, retain a durable tested implementation package. Its closed
-`gvhmr-incremental-guard-implementation-v1` manifest contains `schema`, `request`,
-`descriptor`, `runtime_contract`, `code` and `test_execution`. The exact code map
-comes from `incremental_guard.implementation_files()`, including both new test
-files and the unchanged dependencies. Preserve actual code/test copies and the
-genuine CPU execution receipt, stdout and unique JUnit cases at durable bound
-paths. The required `gvhmr-incremental-guard-cpu-test-v1` evidence must match the
-current code, report exit0 with no failures/errors/skips, and truthfully retain
-`fixture_only=true`, `gpu_started=false` and the measured CPU allocation. Old
-guard8 implementation evidence cannot attest this new controller.
-
-With actual frozen files, the three public modes are:
+The incremental descriptor binds formal root, release policy, source input,
+import audit, numeric import, baseline, pre-leg native/QA, parents, exact windows
+and source scope. Review parents equal numeric-import `parent_evidence`; they
+are distinct from the five preceding sealed-release bindings below.
+Request/runtime/readiness/grant must bind this same descriptor/profile.
+Readiness includes actual numeric import, complete baseline, reviewed identity,
+pre-leg native/QA, real predecessor CUDA exit and independent guard readiness.
+A durable implementation package binds exact code and genuine CPU test execution;
+fixture tests cannot stand in for production readiness.
 
 ```powershell
-$Python = 'D:/PROJECT/LABEL/GVHMR/.venv/Scripts/python.exe'
-$Entry = 'D:/PROJECT/LABEL/GVHMR/tools/run_badminton_incremental_guarded_leg.py'
-$Request = '<absolute actual request.json>'
-$Descriptor = '<absolute actual descriptor.json>'
-$DescriptorSHA = '<actual descriptor SHA256>'
-$Grant = '<absolute newly issued grant.json>'
-& $Python -u $Entry --inspect-request --request $Request `
-  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
-& $Python -u $Entry --preflight --request $Request --grant $Grant `
-  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
-& $Python -u $Entry --execute --request $Request --grant $Grant `
-  --descriptor $Descriptor --descriptor-sha256 $DescriptorSHA
+& <python.exe> -u <absolute-repository>/tools/run_badminton_incremental_guarded_leg.py --inspect-request --request <request.json> --descriptor <descriptor.json> --descriptor-sha256 <SHA>
+& <python.exe> -u <absolute-repository>/tools/run_badminton_incremental_guarded_leg.py --preflight --request <request.json> --grant <new-grant.json> --descriptor <descriptor.json> --descriptor-sha256 <SHA>
+& <python.exe> -u <absolute-repository>/tools/run_badminton_incremental_guarded_leg.py --execute --request <request.json> --grant <new-grant.json> --descriptor <descriptor.json> --descriptor-sha256 <SHA>
 ```
 
-Execution validates that exact `-u` argument order and its live driver identity.
-Inspection consumes no grant. Preflight requires a real new grant and runs the
-deep readiness checks without a lease or CUDA; execution repeats them at startup
-and before apply. This entry has no legacy `--pregrant` read-pass mode. These CPU
-checks do not reset the issued grant's absolute window: grant/local stage time is
-at most thirty minutes and remains bounded by the request's hard deadline.
-Execution also requires a fresh real desktop binding (at most fifteen minutes
-old, valid through the deadline, `desktop_allowance_fixture_only=false`), no
-foreign compute owner and clean outputs. CPU controller/selection use E26/27
-with CUDA disabled; proposal/application use 0/1 and GPU0, with the bound two-thread
-allocation. Suspended children enter the private Windows Job before running;
-the separate watchdog enforces the deadline, controller loss and owned-tree exit.
-Existing locks, leases and failed outputs are preserved rather than auto-relaunched.
+The exact `-u` argument order and driver identity are validated. Inspection grants
+nothing; preflight requires real authority but starts no CUDA. Grant/local stage
+time remains at most thirty minutes within its original absolute deadline.
+Startup and pre-apply repeat readiness. Fresh non-fixture desktop identities
+(PID, creation time, executable; ≤15 minutes old and valid through the deadline)
+distinguish WDDM GUI entries from foreign compute. Unknown, reused or inaccessible
+identities block; no process-name exemption or external process termination exists.
 
-The actual joint development regression passed 63 tests in 45.8756 seconds,
-CPU-only, with real owned-Job lifecycle checks. Its original receipt is
-`.local/formal_release_recovery_20261024/1022-formal-readiness-v1/guard-implementation-v1/joint-v1/test-execution.json`
-(SHA256 `b830c29247bf9bdaee867e91311de1dc512d5a2c2d48fc5ee5abd8e02b56dc2f`).
-This is synthetic development evidence, not actual formal readiness, a GPU run,
-native completion or data release. Actual three-phase completion and CUDA release
-must precede the existing CPU postleg, bilateral and final publication gates.
+CPU controller/selection use E26/27 with CUDA disabled; proposal/application use
+0/1, GPU0 and the bound two-thread allocation. Suspended descendants enter the
+private Windows Job before executing; the independent watchdog and ten-second
+margin enforce deadlines/controller loss/owned-tree exit. Existing locks, leases
+and failed outputs prohibit automatic relaunch. Only actual empty-Job proof
+permits release. Postleg, native pixels, browser and admission remain separate.
 
-### Explicit incremental formal release policy v2
+The original guarded entry permits an explicit same-directory
+`issuer_runtime_checks_file`, retaining its legacy default. New authorization
+needs new immutable request/runtime/schema/implementation/readiness bindings;
+selecting a new file never extends expired authority. Its optional `--pregrant
+<bundle> --pregrant-sha256 <SHA>` uses `verified_read_pass.py` to do deep CPU checks
+before GPU handover. This mode requires a canonical non-junction interpreter and
+read-locked exact inputs/runtime; no alias fallback is allowed. A same-process
+live `cpu_ready.json` capability binds the read set and driver identity. A fresh
+grant binds that capability plus fresh desktop evidence. Before apply, only exact
+mutable FORMAL outputs may be released; parent/unselected aliases reject release.
+The capability is invalid across mutation or closed handles; restart requires a
+new full CPU pass and new authority. Incremental guard has no read-pass mode.
 
-An independent single-source review run can prepare a separate formal increment
-after the preceding complete archive and its actual final consumer audit exist.
-Use `python -B tools/prepare_badminton_formal_increment.py --release-policy
-<frozen policy.json> --release-policy-sha256 <actual SHA> --root <fresh formal root>
---threads 1`. The closed `badminton-incremental-release-policy-v2` binds a root-reviewed
-scope and five actual `parent_release` bindings: `archive_manifest`,
-`dataset_manifest`, `training_manifest`, `final_consumer_contract` and
-`final_consumer_audit`. The parent archive must be complete and its final contract
-sealed. The audit must have status `final_cpu_validation_passed_no_training_started`,
-`validation_stage=final` and the exact final-contract path/SHA. That contract's
-three `final_delivery` bindings must equal the policy's archive/dataset/training
-bindings, with the actual seal and archive verification checked in turn. Inherit
-`provenance/model_bridge.json` from that real archive; do not create a substitute
-historical runtime receipt. The policy also binds the original accepted
-camera/source review lineage. It never binds a future
-formal registry or guessed admitted counts, avoiding a creation dependency cycle.
-The immutable native28/guard8 sources and the original review run remain unchanged.
-
-For the requested 1022 increment the explicit whole-source roles are
-`train=[20261022_161632], val=[], test=[]` and only the new train partition must
-be nonempty. The complete old base and final union retain all three nonempty
-roles. The adapter verifies the original accepted/review snapshot derivation,
-loads the actual admitted source with its original strict certificate checker,
-retains every native window/settings/scan address, and invokes only the original
-CPU body-plan preparation. Its metadata receipt leaves body import, native/QA,
-guarded execution, complete bilateral observations and every publication gate pending.
-The real equivalence proof is written directly to
-`<formal>/formal_input_equivalence.json`. Both `repair/new_source_input.json` and
-the preparation receipt bind that same actual file, as required by the unchanged
-observer's formal teacher check; copying a byte-identical alias elsewhere does
-not satisfy that path contract.
-
-Actual input equivalence and numeric import then permit one policy-bound completed
-review parent, preserving all original teacher, numerical, identity and membership
-checks. The old two-parent/three-new-nonempty-role behavior remains the default.
-The canonical body CLI's `--require-completed` path and the canonical leg-apply
-CLI also consume the input union's exact `release_policy` binding. Before model
-setup or label writes they check the exhaustive source roles, suggested roles
-and required roles against that policy; after original aggregation they require
-only its declared new roles. No additional CLI flag is needed. Legacy and body
-review behavior remain unchanged. The focused CPU regression passed 48 cases,
-including original preparation, completed-cache aggregation and rejection of
-missing/stale fits; teacher, fit, leg-update and QA algorithms are unchanged.
-
-The v2 assembly entry additionally requires `--release-policy <same file>
---release-policy-sha256 <same SHA>` and a sealed
-`expanded-source-increment-assembly-input/v2`. Its actual source registry,
-source/body input, calibration, postleg/bilateral completion and admitted counts
-must agree with that policy and the real new canonical publication. Every old
-tensor value and raw metadata byte stays a prefix, with old registry lineage
-retained except for the derived `generation=old` classification. A role with zero
-new rows receives independent byte copies of its parent tensor and metadata;
-both complete SHA values must remain identical to the parent. Re-serializing an
-equal tensor does not satisfy this contract. The assembly remains provisional
-and binds that exact policy explicitly.
-
-The explicit contract `canonical_mode` selects `reviewed_cuts` or
-`reviewed_no_changes`. The cut route keeps the original reviewed-cut publication
-and requires its top-level `release_policy` to match the explicit pair. The
-no-change route requires the closed v2 publication and
-`badminton-canonical-no-change-verification-v2` proof, verified by
-`verify_no_change_publication` with that same policy path/SHA. Its root review
-must cover every flag in the genuine full-body continuity audit using native
-and both-camera evidence; zero review cases are valid only when the original
-audit has no flags. The proof binds the actual bilateral publication and source
-completion, preserves the original full audit's `body_manifest`, and checks
-unchanged identity/numerical values for the exact admitted bilateral subset.
-`full_accepted` and bilateral `accepted` remain distinct counts. A mode string
-or reviewer flag alone cannot admit a publication.
-
-After those real prerequisites exist, use
-`python -B tools/publish_badminton_canonical_no_change.py --source-manifest
-<formal>/repair_paired/datasets/dataset_manifest.json --reviewed-continuity
-<actual root-reviewed no-change.json> --output-root
-<formal>/repair/canonical_no_change_v2 --release-policy <same policy.json>
---release-policy-sha256 <same actual SHA>` for a genuinely unchanged result.
-The output stays inside that repair root and references unchanged payloads.
-Assembly, fresh-playback and seal recheck the typed proof rather than treating
-publication as final visual or archive acceptance.
-
-Consumer v2 selection uses the same explicit policy path/SHA. A successful previous
-final audit is checked through its exact final contract and sealed archive, without
-inventing the historical runtime receipt. Full-union train/val sequence preparation
-retains the unchanged continuous twelve-frame algorithm; retained old val supplies
-real validation windows. Final pixel/browser/continuity, independent archive seal,
-consumer validation and any later training authorization remain separate actions.
-For the 1022 increment, the preceding seven-source release must first have its
-real seal and final consumer audit; passing synthetic CPU tests creates none of
-these production policies, publications or acceptance receipts.
-
-The admitted review snapshot has explicit
-`badminton-admitted-review-calibration-derivation-v1` lineage. Its review-purpose
-fields make its digest different from the accepted snapshot even when camera,
-clock and source metadata are identical. The Consumer accepts this recognized
-derivation only after checking both self-digests, all four original lineage
-bindings, the admitted source index and original artifact bytes, and typed
-equality of every other snapshot field. It also checks the existing formal-input
-equivalence proof against the actual formal registry, policy, calibration and
-original review inputs. The equal-digest route retains its original checks.
-
-Original full-body exports can omit per-entry SHA fields. Canonical publication
-and the Consumer then use the exact body tensor/metadata bindings recorded by
-the original full continuity audit, with matching source and export paths.
-Present hashes must agree; bilateral exports still require their hashes. This
-handles the producer's existing format without rewriting body labels,
-continuity receipts, camera snapshots or historical review evidence.
-
-This metadata compatibility change passed a real, read-only 1022 policy/source
-smoke check and all 73 policy tests, including 49 new cases. In the combined
-165-case run, three unchanged CLI alias tests failed because its fixture base
-was outside the Consumer's required `.local` directory. The same three tests
-passed when rerun in that required directory; original and retry receipts are
-retained. Actual assembly, pixel checks, seal and final Consumer acceptance
-remain separate executions.
-
-For genuine eligible-coverage gaps, publish flat clips retaining original
-`rally_index` plus zero-based `segment_index`; source/rally/segment is unique.
-Each segment carries actual clock bounds and continuous eligible PNG ordinals.
-Nested `contiguous_windows` is rejected. Original native range and evidence stay
-bound; the viewer distinguishes original rallies from effective segments.
-
-Zero eligible sources use `excluded_source_indexes` plus `no_fit_sources` evidence
-instead of empty clips. Overall full-fit clips must remain nonempty. A standalone
-`badminton-native-no-fit-needed-v1` marker binds its actual source index,
-zero-count per-source coverage and completed native analysis/planner files. Its
-source watcher records `no_fit_needed` and exits without creating fitted input
-or SMPL tensors. Joint coverage still accounts for the source explicitly.
-
-### Explicit safe native decoding and formal display
-
-For the 1022 formal observer, use the original entry with explicit
-`--decode-threads 1`, for example:
+## Explicit incremental formal release policy v2
 
 ```powershell
-python -B tools/observe_badminton_dual_view.py --source-root <formal>/repair/final_labels --output-root <formal>/repair_paired --device cpu --threads 8 --decode-threads 1
+python -B tools/prepare_badminton_formal_increment.py --release-policy <frozen-policy.json> --release-policy-sha256 <SHA> --root <new-formal> --threads 1
 ```
 
-This selects single-thread PyAV SLICE decoding and verifies native PTS within
-2 microseconds. It retains the original frame indexes and BGR observation
-interface. The omitted option retains the legacy behavior. On the actual 1022
-recording, an AUTO seek probe produced visible corruption while the same-PTS
-single-thread decode was clear; the failed observer also terminated inside
-avcodec. Failed partial output remains separate from the fresh run.
+`badminton-incremental-release-policy-v2` binds reviewed scope and five actual
+`parent_release` roles: archive/dataset/training manifests, final consumer contract
+and successful final consumer audit. The audit must be
+`final_cpu_validation_passed_no_training_started`, stage `final`, binding the
+sealed final contract. Its three final-delivery bindings must equal the archive/
+dataset/training inputs, whose real seal/verification are checked. Inherit the
+actual archive's `provenance/model_bridge.json`; never invent a historical runtime
+receipt. The policy binds original accepted camera/source review lineage, not a
+future registry or guessed counts.
 
-Safe decoding does not by itself authorize a detection-cache hit. Each frame
-must match the actual decoded pixel SHA, original native row, source/camera,
-calibration, model settings and the hash-bound native-pose cache file. The
-cache index is validated once; each selected file and image is checked when
-used. A missing or mismatched frame uses the existing detector for that frame.
-Journal resumption requires the same explicit decoder profile. No cached
-SMPL, source point member, timestamp or camera matrix is modified.
+The policy may declare a train-only increment, while the complete old base/final
+union retain all required nonempty roles. Preparation preserves original native
+windows/settings/addresses and runs only CPU body planning. Numeric import and
+completed-body aggregation retain all original numerical/evidence checks.
+Legacy two-parent/all-new-role behavior remains unchanged.
 
-Full native geometry QA and bilateral observation are independent stages.
-An observer failure retains successful native QA and its original receipt;
-the original finish entry runs only after both actual stages have completed.
-Neither stage alone establishes archive acceptance or starts training.
+Accepted and review snapshot digests may differ only through recognized
+`badminton-admitted-review-calibration-derivation-v1`. Compatibility requires both
+self-digests, all original lineage/artifact/source bindings and typed equality
+of every other field, plus the actual formal-input equivalence proof. Equal
+digests retain their original strict route. This is metadata derivation, not a
+camera-geometry exception.
 
-The canonical viewer also accepts explicit `--native-decode-threads 1` before
-its first frame is decoded. Its optional `--display-crop` accepts the typed
-`badminton-formal-background-ground-display-v1` sidecar for the single 1022
-source. That sidecar binds the real formal body, bilateral completion and
-canonical publication, plus the accepted 15mm background preview settings.
-The existing ground-mask renderer protects all stored person members,
-including fits excluded from canonical display. Camera/court geometry and
-formal crop remain unchanged. This is a display option and does not turn a
-formal body into a review body or publish training labels.
+## Canonical publication and release
 
-The decoder/cache changes passed 34 focused CPU tests. The formal ground
-adapter and safe viewer passed 53 CPU tests, including 18 unchanged original
-viewer tests and real lossless-video pixel/PTS checks. Production full-frame
-traversal, sampled display comparisons, fresh browser playback and final
-archive/consumer acceptance remain separate recorded checks.
+After full native verification, audit all candidates with
+`audit_badminton_fresh_continuity.py` and render original dual-camera witnesses
+using `render_badminton_continuity_cases.py`. Pelvis/track flags are review
+candidates, not automatic same/different-person truth.
 
-On 2026-10-24 the actual 1022 continuation completed all of those checks. The
-single source `20261022_161632` contributed 5,879 bilateral canonical samples
-from 5,887 full-body QA candidates and 26 rallies. The cumulative archive
-`20261024_expanded_228059` retains all 222,180 parent samples and contains
-train/val/test counts 170,815/23,749/33,495. The zero-new val/test payloads and
-metadata are byte-identical to the parent. The original union pixel audit
-checked 26,124 images with zero unknown differences; the 13 historical
-corrections were recaptured in both cameras and all 26 person admissions
-remained unchanged. Archive verification and the actual final Consumer CPU
-audit passed; recomputed train/val sequence counts are 37,364/1,846. Model
-training was not started.
+For witnessed cross-person boundaries,
+`publish_badminton_canonical_tracks.py --source-manifest <json>
+--reviewed-boundaries <json> --output-root <new-root>` changes only identity keys.
+Numeric tensors and bilateral membership remain bit-exact. Under explicit v2
+policy, `canonical_mode=reviewed_no_changes` instead requires
+`publish_badminton_canonical_no_change.py --source-manifest <bilateral.json>
+--reviewed-continuity <root-review.json> --output-root <formal>/repair/<new-view>
+--release-policy <policy> --release-policy-sha256 <SHA>`.
+Its typed v2 proof covers every genuine continuity flag; zero cases are valid
+only for a genuinely flag-free audit. Mode strings or reviewer status alone
+never admit labels. Full-body QA and bilateral accepted counts remain distinct.
 
-The immutable release entry is
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`
-(SHA `68e0065c20a71d301e3318753fe28bcfce388ae72280a5f884b61762d64ca4a4`).
-The permanent final contract and actual successful Consumer audit are in
-`outputs/badminton_1022_formal_v1/release_inputs/tail-v2/`, with SHA values
-`d8715b54c3e7340f3423ba9e3811021ad4cbf6c682254f3a5854204f957a2106` and
-`e929668f13f2b3d6fd4bd6c38820a9d3f5f2c9c43f8d11e32c9e40d9d6ea5890`.
-The separate read-only viewer at `http://127.0.0.1:8803/` serves the same actual
-canonical publication and typed background-display sidecar. The original
-acceptance browser/service exited normally; the user viewer has its own
-recorded process identity and lifecycle.
+Original full-body exports can omit per-entry SHA fields; then canonical and
+consumer checks use the exact body tensor/metadata bindings from the genuine
+full continuity audit and matching source/export paths. Present hashes must
+agree; bilateral exports still require theirs. No historical labels or receipts
+are rewritten for this format compatibility.
+
+`assemble_badminton_expansion.py` writes provisional
+`assembly_manifest.json`, preserving all old tensor values and raw metadata
+bytes as role prefixes, per-source calibration and zero-sample sources. V2 uses
+the exact explicit release policy and sealed
+`expanded-source-increment-assembly-input/v2`. Zero-new roles are independent
+byte copies with complete parent SHA equality, not reserialized equal tensors.
+
+Only after actual canonical/continuity, native pixels, browser acceptance and
+consumer sequence preparation may `seal_badminton_expansion.py --assembly <json>
+--browser <json> --continuity <json> --pixels <json> --sequence-report <json>
+--data-root <archive-root> --release-id <new-id>` seal independent copies.
+V2 stages also require the identical `--release-policy` / SHA pair. The seal
+verifies the archive and appends its catalog without changing default selection.
+Final independent consumer acceptance is still required; GPU release and any
+training authorization are recorded separately.
+
+## Playback and native pixels
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = '-1'
+python -B tools/observe_badminton_dual_view.py --source-root <formal>/repair/final_labels --output-root <formal>/repair_paired --device cpu --threads 1 --decode-threads 1
+python -B tools/serve_badminton_canonical_tracks.py --manifest <canonical.json> --viewer-output <new-viewer-runtime> --native-decode-threads 1 --port 8803
+python -B tools/verify_badminton_fresh_playback.py --root <formal>/repair --url http://127.0.0.1:8803/ --canonical-manifest <canonical.json> --output-root <new-browser-acceptance>
+```
+
+Explicit safe decoding uses PyAV SLICE with one thread and PTS tolerance 2 µs.
+Omitting the option keeps the original decoder behavior. Cache reuse still
+requires actual pixel SHA, source/camera/native row, calibration/model settings
+and bound native-pose file SHA. Cache mismatch runs actual detection; interpolated
+or nearby teacher states never count as native presence. Resumption requires the
+same decoder profile.
+
+Playback reuses full 6,890-vertex geometry, original point members and native
+camera projections. Both RGBs, meshes, cloud and scan identity commit atomically;
+loading keeps the prior complete transaction. `preview_decoder.py` retains
+PTS-checked streams. Paired mode's visible canvas/frame binding is authoritative,
+not alternate MP4 `video.currentTime`. `verify_badminton_viewer.py` covers controls,
+viewport/mesh clipping and native transactions; `benchmark_badminton_playback.py`
+measures actual commits, waits and decoder seeks rather than wall-clock time.
+
+Fresh playback requires Node and a separate Chrome for Testing binary, selected
+by `GVHMR_CHROME` (legacy `LIDAR_CHROME` is accepted) or the local
+`build/tools/chrome-for-testing` installation. The maintained lifecycle helper
+is `tools/lib/browser_session.mjs`; `--browser-session-helper` is an explicit
+override. Owned browser registry/evidence belongs in `outputs/browser_sessions`.
+Never attach acceptance to a daily Chrome/profile. Coverage derives from frozen
+sources/ranges: require at least two genuine five-second clips per source plus
+every reviewed identity boundary. Browser/service teardown and actual owned
+process exit are part of acceptance.
+
+Display-only crop sidecars bind the real dataset/source scope and original bbox
+SHA. Native Region-minus-Ignore background filtering preserves actual human/mesh
+projections; a formal `badminton-formal-background-ground-display-v1` sidecar
+may apply the accepted 15 mm background preview while protecting every stored
+person member, including noncanonical fits. Use a separate viewer-output root.
+No display filter changes source crop, camera/court geometry, body QA or training
+membership. The 1022 original browser receipt also binds five actual with/without
+display comparisons.
+
+`audit_badminton_expanded_pixels.py` checks every held-out test image with its
+source-specific native address/calibration. It does not claim all train/val pixels
+were audited. A mismatch requires `recheck_badminton_expanded_pixels.py` lossless
+native-PTS captures and unchanged full-person association in both cameras.
+Corrections bind original video, record/PTS/common time, PNG and raw BGR hashes.
+All person admissions must remain unchanged; otherwise supplement publication
+fails. Consumers verify and replay those exact retained captures; future live
+decoding is not promised to be byte-reproducible.
+
+The current release's real pixel audit checked 26,124 images with zero unknown
+differences. Thirteen historical corrections were recaptured in both cameras;
+all 26 affected person admissions stayed unchanged. These immutable captures,
+native journals, teacher/fit artifacts, identity evidence, model bridge and
+release receipts are dependencies, not disposable caches. The
+[release contract](BADMINTON_REPAIRED_RELEASE.md) specifies projection/sequence use.

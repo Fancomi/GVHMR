@@ -192,6 +192,27 @@ def verify_controls(page, output):
         assert fov["count"] > 0 and fov["outside"] == 0 and fov["controls"]["bottom"] <= fov["height"] + 1, fov
         page.screenshot(path=str(output.with_name(f"controls_{width}x{height}.png")), full_page=False)
         viewports.append(dict(width=width, height=height, layout=layout, full_mesh_fov=fov, passed=True))
+    # This stored scan is outside the rally subset. A deep link must keep the
+    # exact scan, disable looping, and commit the same actors in every view.
+    page.set_viewport_size(dict(width=1366, height=768))
+    page.goto(
+        page.url.split("?")[0] + "?source=20261012_163452&rally=1&scan=8280",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_function("window.viewerReady===true && !frameBusy", timeout=180000)
+    linked = page.evaluate("""()=>({source:committedPairedFrame.sourceId,scan:committedPairedFrame.scan,
+        loop:document.getElementById('loop').checked,
+        actors:lastPairedFrame.athletes.map(a=>({id:a.motion_id,color:a.color})),
+        frameActors:lastPairedFrame.frame.athletes.map(a=>({id:a.motion_id,color:a.color})),
+        scene:document.getElementById('scene').contentWindow.REVIEW_STATE,projections:projectionStates})""")
+    assert linked["source"] == "20261012_163452" and linked["scan"] == 8280 and not linked["loop"], linked
+    assert linked["actors"] and {a["id"]: a["color"] for a in linked["actors"]} == {
+        a["id"]: a["color"] for a in linked["frameActors"]
+    }, linked
+    assert linked["scene"]["scan"] == 8280 and not linked["scene"]["webglError"], linked
+    assert all(s["scan"] == 8280 and not s["webglError"] for s in linked["projections"]), linked
+    linked["visible_native_rgb"] = visible_rgb_checks(page)
+    assert all(c["visible"] and c["different_rgba_components"] == 0 for c in linked["visible_native_rgb"]), linked
     return dict(
         passed=True,
         button_play_advanced_to=after_click,
@@ -201,6 +222,7 @@ def verify_controls(page, output):
         native_scan_arrow_steps=True,
         preparation_cancelled_without_late_restart=True,
         source_switch_and_rally_loop=True,
+        exact_scan_link_outside_rallies=linked,
         loop_scan_range=[min(loop_scans), max(loop_scans)],
         seek=sought,
         visible_native_rgb=rgb,

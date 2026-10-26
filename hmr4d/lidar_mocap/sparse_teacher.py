@@ -1,8 +1,8 @@
-"""Experimental real paired-RGB frontend with explicit missing temporal nodes.
+"""Paired-native RGB teacher with explicit missing temporal nodes.
 
-This module is deliberately separate from the production 30 Hz teacher. Virtual
-nodes contain interpolated conditioning features, never RGB/keypoint evidence,
-and only real native camera anchors are exported as teacher observations.
+The explicit sampling policy selects this frontend through the shared teacher
+entry. Virtual nodes contain interpolated conditioning features, never RGB or
+keypoint evidence; only real native anchors are exported as observations.
 """
 
 import gc
@@ -158,23 +158,16 @@ def sample_latent_track(track, target_times_us, max_time_error_us=18_000):
     return sample
 
 
-def run_paired_teacher(item, output_dir, *, recipe, batch_size, precision, origin_us, frontend_options=None,
-                       native_options=None, reuse_preprocess_dir=None, identity_decisions=None, resume=True):
+def run_paired_teacher(item, output_dir, *, options, batch_size, precision, origin_us,
+                       reuse_preprocess_dir=None, identity_decisions=None, resume=True):
     import torch
 
     rows = normalize_sparse_rows(item["observed_rows"])
     camera, video_path = item["camera"], Path(item["video"])
-    frontend_options = frontend_options or {}
-    roi_margin = frontend_options.get("roi_margin_px", 40.0)
-    detector_imgsz = frontend_options.get("detector_imgsz", 1280)
-    limits = duration_tracking_limits(rows, max_native_gap_frames=frontend_options.get("max_track_gap_frames", 6),
-                                     min_native_frames=frontend_options.get("min_track_frames", 8))
-    options = dict(sparse_trial_recipe=recipe, temporal_policy="piecewise_near_30hz_exact_native_anchors",
-                   virtual_keypoint_confidence=0, virtual_nodes_are_rgb_observations=False,
-                   duration_tracking=limits, batch_size=batch_size, preproc_precision=precision,
-                   roi_polygon=item["roi_polygon"], roi_margin_px=roi_margin, detector_imgsz=detector_imgsz)
-    if native_options is not None:
-        options = native_options
+    roi_margin = options.get("roi_margin_px", 40.0)
+    detector_imgsz = options.get("detector_imgsz", 1280)
+    limits = duration_tracking_limits(rows, max_native_gap_frames=options.get("max_track_gap_frames", 6),
+                                     min_native_frames=options.get("min_track_frames", 8))
     provenance, digest = native._provenance(video_path, rows, camera, options)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -283,7 +276,7 @@ def run_paired_teacher(item, output_dir, *, recipe, batch_size, precision, origi
             parts = {key: [] for key in ("body_pose", "betas", "global_orient", "transl")}
             with torch.no_grad():
                 for start, end, context_start, context_end in native._window_ranges(
-                        len(grid["relative_time_us"]), frontend_options.get("inference_window_frames", 600)):
+                        len(grid["relative_time_us"]), options.get("inference_window_frames", 600)):
                     n = context_end - context_start
                     data = {key: value[context_start:context_end] for key, value in expanded.items()}
                     data.update(length=torch.tensor(n), K_fullimg=K.repeat(n, 1, 1),
@@ -349,66 +342,6 @@ def run_sparse_teacher(video_path, frame_rows, camera, output_dir, *, batch_size
         from .identity_repair import decision_digest
         options["identity_decisions_sha256"] = decision_digest(identity_decisions)
     item = dict(video=str(video_path), observed_rows=frame_rows, camera=camera, roi_polygon=roi_polygon)
-    return run_paired_teacher(item, output_dir, recipe=sampling_recipe, batch_size=batch_size,
-        precision=preproc_precision, origin_us=int(sampling_origin_common_time_us), frontend_options=options,
-        native_options=options, reuse_preprocess_dir=reuse_preprocess_dir, identity_decisions=identity_decisions, resume=resume)
-
-
-def augment_with_latents(anchor_directory, output_dir):
-    """Reinfer the cheap temporal model from exact cached real crops/features."""
-    import json
-    import torch
-    import hydra
-    from hydra import compose, initialize_config_module
-    from hmr4d.configs import register_store_gvhmr
-    from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL  # noqa: F401
-    from .pilot import binding
-
-    source, output_dir = Path(anchor_directory), Path(output_dir)
-    source_manifest = json.loads((source / "manifest.json").read_bytes())
-    original = source_manifest["provenance"]
-    features = native._read_stage(source / "features.pt", source_manifest["provenance_hash"], True)["values"]
-    options = dict(original["options"], inferred_temporal_state_protocol="role_bound_near30hz_real_RGB_gate8500us",
-                   source_anchor_manifest=binding(source / "manifest.json"))
-    provenance, digest = native._provenance(original["video"]["path"], original["frame_rows"], original["camera"], options)
-    register_store_gvhmr()
-    with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
-        cfg = compose(config_name="demo", overrides=["video_name=sparse_backend", "static_cam=True"])
-    model = hydra.utils.instantiate(cfg.model, _recursive_=False)
-    model.load_pretrained_model(cfg.ckpt_path)
-    model = model.eval().cuda()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    manifest = dict(source_manifest, provenance=provenance, provenance_hash=digest,
-                    source_anchor_manifest=binding(source / "manifest.json"), tracks=[])
-    try:
-        for number, entry in enumerate(source_manifest["tracks"]):
-            track = native.load_teacher_track(source / entry["path"])
-            native.validate_provenance(track, source_manifest["provenance_hash"])
-            grid = track["temporal_latent_grid"]
-            data_full = dict(kp2d=expand_conditioning(track["kp2d"], grid, keypoints=True),
-                             bbx_xys=expand_conditioning(track["bbx_xys"], grid),
-                             f_imgseq=expand_conditioning(features[number], grid))
-            K = track["K_fullimg"][0]
-            parts = {key: [] for key in track["smpl_params_incam"]}
-            with torch.no_grad():
-                for start, end, a, b in native._window_ranges(len(grid["relative_time_us"]), 600):
-                    n = b - a
-                    data = {key: value[a:b] for key, value in data_full.items()}
-                    data.update(length=torch.tensor(n), K_fullimg=K.repeat(n, 1, 1),
-                                cam_angvel=torch.tensor([1., 0., 0., 0., 1., 0.]).repeat(n, 1))
-                    predicted = model.predict(data, static_cam=True)
-                    for key in parts:
-                        parts[key].append(predicted["smpl_params_incam"][key][start-a:end-a].detach().cpu())
-            states = {key: torch.cat(value) for key, value in parts.items()}
-            track.update(provenance=provenance, provenance_hash=digest,
-                         inferred_temporal_state=dict(role="inferred_model_state_not_rgb_observation", smpl_params_incam=states),
-                         smpl_params_incam={key: value[grid["anchor_indices"]] for key, value in states.items()})
-            native._save_tensor(output_dir / entry["path"], track)
-            native.load_teacher_track(output_dir / entry["path"])
-            manifest["tracks"].append(entry)
-    finally:
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-    native._save_json(output_dir / "manifest.json", manifest)
-    return manifest
+    return run_paired_teacher(item, output_dir, options=options, batch_size=batch_size,
+        precision=preproc_precision, origin_us=int(sampling_origin_common_time_us),
+        reuse_preprocess_dir=reuse_preprocess_dir, identity_decisions=identity_decisions, resume=resume)

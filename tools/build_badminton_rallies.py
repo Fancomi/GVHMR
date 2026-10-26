@@ -50,11 +50,6 @@ def publish(pipeline):
         dataset_manifest=str(paired / "datasets/dataset_manifest.json"),
     )
     write_json(root / "build_status.json", state)
-    # Consumer requested a machine-readable lease release once production GPU
-    # stages finish. Never publish release on a failed/incomplete production.
-    lease = Path("D:/PROJECT/LIDAR/rollout_lidar_mocap_badminton/.local/gvhmr_data_scale_20261015/gpu_lease.json")
-    if lease.parent.is_dir():
-        write_json(lease, dict(status="released", owner="GVHMR", note="production GPU completed"))
     return result
 
 

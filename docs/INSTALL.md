@@ -1,570 +1,79 @@
 # Install
 
-## Maintained entry points
-
-The working repository is `Fancomi/GVHMR`; `origin` points there and `upstream`
-retains `zju3dv/GVHMR`. The integration includes the upstream SimpleVO updates,
-the fork's single-image Flask service/exports, and calibrated LiDAR pairing.
-Demo, service and fitting reuse `hmr4d/utils/body_model/contracts.py` for mesh
-mapping and pelvis placement. Service and teacher reuse the pinhole K validator.
-SMPL-X parameter output from the existing service remains SMPL-X; mapping its
-mesh to 6890 vertices alone does not turn its parameters into SMPL labels.
-
-`pyproject.toml` and `uv.lock` are the dependency source for both installers.
-The `serve` extra contains Flask; `compat` contains the legacy runtime imports.
-Windows uses the PowerShell bootstrap below. Linux uses:
-
-```bash
-bash scripts/install.sh             # project-local .venv; no forced proxy
-bash scripts/run_service.sh 0 8666 64
-# Existing/custom environment: export GVHMR_ENV_DIR=/path/to/gvhmr
-# The previously supported baidu/aliyun proxy choices remain explicit options.
-```
-
-The Linux script's shell syntax has been checked here; the new Linux locked
-installation has not been executed on this Windows machine.
-
-## Calibrated badminton training pairs
-
-The canonical entry prepares inputs, processes all sessions, checks window
-coverage, exports three datasets, and verifies original returns/native SMPL:
-
-```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
-```
-
-Use a new output folder for a new calibration. `job_status.json` is `complete`
-only after export and verification; failed processing retries up to three times
-using validated caches. `--prepare-only` runs source/calibration/pairing checks
-without inference and records `prepared`, which does not mean fitted.
-
-Default inputs are `D:/PROJECT/LIDAR/datas/badminton/sessions` and
-`D:/PROJECT/LIDAR/lidar_project`. Override them with `--sessions-root` and
-`--lidar-project-root`. The only calibration inputs are the five files in the
-latter root's `config/calibration/badminton-20261012/`: `calibration.json`,
-`sources.json`, `sync-policy.json`, `bbox.json`, `roi-config.txt`. LiDAR owns
-K/d5/R/t, court geometry and their joint projection evaluation; GVHMR consumes
-these fixed inputs and fits bodies. No calibration optimizer or experimental
-worktree is a runtime dependency.
-
-`prepare` checks both complete cameras, exact raw-to-viewer SourceM, shared
-court/plane/bbox geometry, canonical file hashes and source identities. It
-rebuilds all timestamp maps from original scan clocks and native camera
-sidecars, checks their bytes against the published map SHAs, then freezes its
-own bundle. The accepted-source calibration SHA is original provenance; actual
-portable-file SHAs are recorded separately. SourceM is rounded: point transforms
-use its true inverse, while body orientation uses the nearest proper rotation.
-Historical v1 bundles remain independently loadable. Reusing one through
-`prepare` requires equivalent geometry, timing, original source hashes and maps;
-its bytes/digest are preserved. A changed source requires a new run.
-
-The internal stage adapter supports bounded processing and export operations:
-
-```powershell
-uv run --no-sync python tools/pair_badminton.py run --output-root outputs/badminton_smoke --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
-uv run --no-sync python tools/pair_badminton.py export --output-root outputs/badminton_run
-uv run --no-sync python tools/verify_badminton_dataset.py --output-root outputs/badminton_run
-```
-
-Its stages are `prepare`, `teacher`, `fit`, `run`, `export`. Options include
-`--session`, `--start-seconds`, `--duration-seconds`, `--window-seconds`,
-`--batch-size`, `--fit-batch-size`, `--iterations`. Full-run settings remain Cam2,
-60-second windows, teacher stride 2, batch 4, fit batch 128, 80 fitting iterations,
-float16 preprocessing and 20px ROI margin. Teacher cache identity includes original
-video rows, camera model, assets, ROI and precision; fit caches additionally bind
-algorithm/config and artifact/source PNG hashes. An algorithm change conservatively
-invalidates fits while preserving independently validated teacher features.
-
-Every source scan remains in `sessions/<sid>/pairs.jsonl`, including exclusions.
-Labels use integer device scan midpoints and nearest native camera frames with
-an 8.5ms tolerance; ties choose the earlier frame, and missing clocks/range do
-not reuse endpoints. The ~29.97Hz teacher uses true video PTS and SO(3)
-interpolation with recorded brackets/model-frame error (up to 18ms). It never
-relabels rendered-video frame numbers as sensor timestamps.
-
-The mapped SMPL-X mesh initializes neutral SMPL; shape is fitted in SMPL's own
-basis. Pose/pelvis are refined using actual segmented returns, video keypoints,
-pose/motion priors and a soft physical-floor constraint. Shape is shared per
-person/window. Up to eight observations establish it; accepted corrections carry
-across batches only through gaps <=250ms. Continuity follows observed cloud torso
-motion and relative video rotations. Original point coordinates are untouched.
-
-The primary RGB weight is 1. A shape-fixed batch with a maximum residual >8px
-also tries weight 3. It is selected as a whole only with >=0.5px mean reprojection
-gain, <=1/2mm mean surface/P90 increases, identical shape and every previously
-accepted frame still accepted. Decisions are retained in frame QA.
-
-Acceptance requires >=80 returns, finite parameters, mean visible point-to-SMPL
-triangle distance <=65mm, P90 <=120mm, floor penetration <=120mm, >=6 primary
-keypoints and primary reprojection <=50px. Surface distance uses actual triangles
-in locally centred millimetres. Rejected fits remain reviewable and are excluded
-from training. Each window stores teacher tracks, fitted `.npz`, `quality.jsonl`,
-`ptv3.pth`, source/QA metadata and an offline 3D/dual-camera preview. Aggregate
-export prefers full windows over contained smoke windows and rejects partial
-overlaps. Point indices refer to the decoded valid fixed24 list, not PNG pixels.
-
-The retained complete run `outputs/badminton_corner_fix_v1_continuity` contains
-3 sessions, 40 windows, 23,177 original scans / 23,040 valid nonempty dual-camera
-pairs and 59,972 accepted person-frame labels (60,847 fitted; 875 rejected).
-Keep historical runs read-only. Physical exposure timing, per-point scan motion,
-independently surveyed court scale and occluded-joint accuracy remain unverified;
-`production_admitted=false`. Visible-surface residual is not anatomical GT.
-Suggested train/val/test splits hold out whole sessions; athlete identity overlap
-is unverified. The consuming trainer is maintained separately at
-`D:/PROJECT/LIDAR/rollout_lidar_mocap_badminton`.
-
-For training, qualify each existing accepted person-frame using corresponding
-native detections/tracks in **both** cameras. Missing either view excludes that
-person-frame, even when video timestamps match. Full-body keypoint confidence,
-net tape, occlusion and reprojection diagnostics are retained as metadata and do
-not add admission conditions. Individual visual review is not required.
-
-The delivered `outputs/badminton_dualcam_paired_full_v2` contains 59,408
-qualified person-frames: train 14,664 / validation 10,787 / test 33,957.
-Its `datasets/dataset_manifest.json` binds tensor/metadata hashes and whole-session
-splits. `verification.json` checks every exported value against the original
-source subset; `quality_summary.json` reports retained-fit quality and measured
-cache/inference scope. A complete manifest is published only after validation.
-
-```powershell
-uv run --no-sync python tools/observe_badminton_dual_view.py --output-root outputs/my_paired_run --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam1_check.json --cache-report outputs/badminton_corner_fix_v1_continuity/sequence_review/cam2_check.json
-uv run --no-sync python tools/export_badminton_dual_view.py finalize --output-root outputs/my_paired_run --full-observations outputs/my_paired_run/observations/manifest.json --wait
-uv run --no-sync python tools/export_badminton_dual_view.py verify --output-root outputs/my_paired_run
-```
-
-Observation reuses exact native-frame teacher detections after checking frozen
-calibration, video identity, frame index/PTS/common clock and cache provenance.
-Nearest/interpolated teacher frames are not presence evidence. Missing cache
-uses YOLO plus one-to-one fixed-mesh bbox association, without new ViTPose,
-GVHMR, body fitting or calibration. Per-camera journals resume only with the
-same sources/settings/code; an interrupted final line is recoverable. The
-second command may run alongside observation and finalizes after all source
-labels are checked. Published manifests are immutable. Tensor/metadata hashes,
-source indices, independent detection boxes, association and native time/image
-evidence are exported with unchanged source point/SMPL values. Original
-whole-session splits are preserved; physical identities across sessions remain
-unverified. Cached-evidence-only pilot exports are explicitly marked as pilots.
-
-An upstream source index can be checked separately with
-`tools/prepare_badminton_source.py --source-index <index.json> --data-root <badminton-data-root> --source-index-sha256 <digest> --report outputs/source_prepare/report.json`.
-This CPU-only adapter checks file hashes, explicit raw-XYZ/M semantics, original
-device clocks and native camera frame maps, and decodes six spread-out source
-scans. It normalizes metadata in memory and never edits original manifests.
-Candidate calibration applicability remains preparation-only and cannot admit
-body fitting; the default pipeline session list is unchanged.
-An admitted camera source requires a hash-bound applicability certificate that
-binds its calibration, exact application M, native files and review evidence.
-Camera-source admission is separate from body-label production admission.
-Explicit dataset-only `video_sidecars` require
-`video_index_contract.kind=dataset_only_device_clock`,
-`canonical_receive_admitted=false` and verified device/PTP evidence. They retain
-the original host receive-axis rejection. Unknown/lost device synchronization,
-synthetic frames and video discontinuities cannot provide valid pair evidence.
-
-Fullraw packet-row compatibility (validated 2026-10-20): a completed exporter
-may have one original final packet row without an emitted cloud. The explicit
-`lidar_common_clock_row_indices` array must contain one ordered unique integer
-per actual PNG. Each frame and corresponding original frame-map record must
-retain its exact `source_common_clock_row_index`, complete
-`source_common_clock_row` object, original frame ID and integer first/last/mid
-times. Reordered/duplicate/interior omissions, changed packet offsets or types,
-and inferred mappings are rejected. Only the exact final raw row may appear in
-`unexported_packet_clock_rows` with reason `unclosed_final_scan_not_emitted`;
-it may lie inside camera coverage. No PNG, member array or training sample is
-created for it. The full original clock remains in session/audit evidence; only
-validated emitted rows enter the existing pair builder in memory. Legacy
-`nonexported_original_clock_rows` still requires its original outside-camera
-coverage proof and cannot conceal fullraw packet omissions.
-
-Original or derived fullraw sources require hash-bound complete export evidence,
-original passing PTP evidence and unchanged raw timestamp indexes. A reconstructed
-export receipt must disclose the historical exit source, no frame limit and actual
-bound completion logs. For a derived crop, this proof binds the original full
-manifest through `parent_inputs`, not the new cropped manifest. Parent identity,
-clock/map hashes, frame counts, parent PNG and member-map counts remain explicit.
-`parent_scope=fullraw_exported_clouds` and `maps_to_full_pcap_returns=false` prevent
-interpreting cropped valid-return indexes as complete PCAP return indexes.
-When reading a derived cloud, `source_membership.py` verifies the member file,
-original PNG, inverse/grid index arrays, crop binding and exact retained RGB8
-coordinate bytes. Empty emitted clouds remain empty. Source preparation checks
-six spread-out clouds; its sampled member receipts are not a claim to have read
-every derived point or to have accepted body labels.
-
-Original fullraw metadata may express image dimensions as `image_width` /
-`image_height` and omit legacy consumer-policy aliases. Only this explicit
-fullraw family receives in-memory compatibility: storage must still declare raw
-XYZ and `M_baked_into_stored_xyz=false`; the consumer applies its declared M once.
-Explicit conflicting aliases, a second application or inconsistent dimensions
-are rejected. Original files are unchanged. A nonempty pending camera-applicability
-object does not block CPU source inspection; any declared camera admission or
-normal fitting load still requires the unchanged verified certificate.
-
-Actual parent-source evidence is sealed at
-`outputs/badminton_1019_source_mapping_cpu/final/verification.json`: 99 CPU tests,
-code snapshots, original input/report hashes and process timing. Source 152542
-has 1,173 emitted clouds / 1,174 clock rows / 1,170 paired; source 152750 has
-6,365 / 6,366 / 6,359. Six original PNGs per source were decoded; six completed
-first-source crop samples also passed exact member checks. The measured parent
-prepare processes took 3.014 s and 7.894 s on the already-read local data; the
-prepare functions took 1.580 s and 6.468 s. These are CPU preparation times, not
-SMPL fitting throughput. Both camera/body admissions remain false and no GPU ran.
-Actual frozen/admitted derived-source preparation must follow upstream crop and
-media/camera publication. These two new sources extend an existing release with
-its old evaluation sources retained; this adapter does not invent a third source
-or relax the complete-release train/val/test gates.
-
-Subsequent actual frozen-v2 inspection is sealed separately at
-`outputs/badminton_1019_frozen_cpu_v2/final/verification.json`. Both frozen crop
-indexes passed real CPU preparation and six child/parent PNG/member-map samples
-each; the 7,538 emitted clouds and 7,540 original clock rows remain intact.
-Nonempty timed pairs are 1,122 and 6,345. Their reduction from the parent counts
-is exactly the 48 and 14 crop-empty clouds, which remain explicit frames.
-The measured prepare functions took 1.838 s / 7.397 s, with process wall times
-3.334 s / 9.150 s on already-read local data. All 103 CPU regressions pass.
-The current cam1 correction is still pending: camera/body admissions stay false,
-no GPU ran, and these source counts are not qualified training-label counts.
-
-A frozen clock snapshot intentionally preserves the original JSON bytes.
-Its `raw_index` values remain relative to the original clock directory. Derived
-inspection therefore follows the verified parent source index's original
-`common_clock` file/SHA, checks those bytes against the frozen copy, and resolves
-all raw timestamp files only from that bound directory. It does not search for
-same-name files next to the relocated snapshot or edit the clock to repair paths.
-The report retains `original_clock_for_raw_indices`; a missing/changed original
-clock or changed raw timestamp file still fails validation. Original parent PNGs
-and clock evidence must remain available within the explicit data root for these
-source/member audits.
-
-Receive a sealed native rally collection with:
-
-```powershell
-uv run --no-sync python tools/prepare_badminton_rallies.py --acquisition-manifest <acquisition-manifest.json> --acquisition-sha256 <digest> --data-root <badminton-data-root> --output-root outputs/rally_intake
-```
-
-This CPU preparation verifies immutable native analysis, counted rally bounds,
-the source/camera contracts and all frame-map identities. `prepared_ranges.jsonl`
-preserves the declared review order, parent PNG ordinals, original clock/map
-indices and frame IDs. Its SHA is bound by `verification.json`, which also
-provides deduplicated frame ranges. Camera-bound summaries describe the first
-and last **jointly matched** camera rows inside each full parent range.
-The accounting end is the last scan's start time; use the authoritative PNG
-range for later processing, since filtering scan midpoints by that end would
-drop the terminal frame. Overlapping windows count once per source. Window
-minutes include pre-roll/cooldown and do not certify qualified training time.
-This command starts no model inference or body fitting.
-
-The explicit seven-source body production entry (original three plus four new
-sources, 204 accepted native rallies) is:
-
-```powershell
-uv run --no-sync python tools/build_badminton_rallies.py --stage prepare
-uv run --no-sync python tools/build_badminton_rallies.py
-```
-
-Default input is `outputs/upstream_rally_intake_v1/verification.json`, bound to
-acquisition SHA `360c4898437c6cb563f607cbdaa5b8cbd790ebd11db34e506c96a4340df60a70`.
-The input contains 39.6134098 deduplicated rally-window minutes and 23,946
-unique paired PNG scans. These are input counts, not accepted person labels.
-`outputs/badminton_rallies_v1/build_status.json` tracks each source's pending,
-running, fitted/reused, failed and completed stages, with fitted/QA/exclusion
-counts. New sources have 847 / 4,414 / 3,516 / 3,328 selected paired scans,
-grouped into 35 bounded fitting windows. Rest frames do not become labels.
-Exact PNG membership, including each terminal scan, controls selection.
-
-The command reuses original baseline fits only after checking camera/source,
-clock/frame-map and fit-artifact bindings. Original caches remain in their
-frozen run. New camera-admitted indexes use the existing teacher and SMPL fitter
-with unchanged cameras. The dataset-only device-time source `192753` keeps its
-original host-axis rejection and uses only its reviewed device-clock contract.
-Matching per-window teacher/fit caches resume after rerunning the same command;
-changed inputs/settings fail and require a new output root. Errors remain in
-the per-source status and process traceback; they are never counted as success.
-
-After all body windows finish, the same command observes corresponding native
-people in both cameras, imports only exact matching previous evidence, applies
-the existing bilateral person-detection rule and verifies all tensor values
-before publishing `outputs/badminton_rallies_v1_paired/datasets/dataset_manifest.json`.
-The body-QA export under `badminton_rallies_v1/datasets` is an intermediate and
-must not be confused with the final bilateral-qualified dataset. A separately
-started body job can be followed by
-`tools/build_badminton_rallies.py --stage publish --wait`.
-Keep one body supervisor and one publisher at most; do not publish concurrently
-twice. For the newer user-requested split, whole-session train is `163452` plus
-the four new sources, validation is `161544`, and test is `154726`. The old
-full_v2 dataset and its earlier split/results remain unchanged. This newly
-designated test source has appeared in prior training and is not a fresh blind
-test. Cross-session physical identities remain unverified.
-
-The native source viewer starts independently while production runs:
-
-```powershell
-uv run --no-sync python tools/serve_badminton_rallies.py --display-crop D:/PROJECT/LIDAR/lidar_project/config/calibration/badminton-20261012/display-crop.json
-# Optional browser driver, using installed Chrome (no browser download):
-uv pip install --python .venv/Scripts/python.exe playwright orjson
-uv run --no-sync python tools/verify_badminton_viewer.py
-```
-
-Open `http://127.0.0.1:8767/`. HTML and a source/rally manifest are generated in
-`outputs/badminton_rallies_v1/viewer/`; original H264 MP4 streams through local
-HTTP byte-range requests without copies/transcodes. Source/rally selection,
-play/pause, rates, loop and seek use recorded native common-time and media-PTS
-anchors. The default paired mode plays original scan transactions using each
-camera's PTS-verified decoded native RGB. Preview decoding checks the same
-SessionIndex rows as fitting/offline reviews; JPEG85 previews bind record index, PTS, common
-clock, original decoded BGR SHA and preview JPEG SHA. Both previews decode
-offscreen before one animation-frame commit updates their visible canvases,
-the full 3D scene, both camera projections and the public committed scan.
-Loading retains the previous complete image/geometry combination. `pause()`
-returns a Promise that drains an in-flight transaction and settles the requested
-scan. The alternate native-video mode plays the original MP4 timeline.
-"Exact paired frame" pauses at a scan. JPEG previews are lossy display assets;
-their frame binding and displayed decoded-preview pixels are verified separately.
-
-The preview decoder retains one PyAV stream per source/camera, with two decode
-threads. It seeks only on a new stream, backwards requests or gaps over four
-seconds, then decodes forward using actual PTS. Playback requests batches of
-four consecutive recorded scans, with up to three requests in flight, sixteen
-decoded complete bundles buffered, and twelve bundles prepared before starting.
-Both camera JPEGs and full mesh normals are prepared ahead of their display
-time. Mesh projection UVs use packed Float32 rather than nested JSON arrays;
-optional `orjson` accelerates HTTP serialization (stdlib JSON remains supported).
-`window.viewer.bufferState()` records actual complete commits and buffer waits;
-the status endpoint includes decoder seek/frame counters.
-
-Default point display follows native `badmintonDetectionBboxSet`: the ground
-box's top plane defines a five-metre-high Region with the same XY extent and
-rotation, then ground/net Ignore boxes are removed. Float32 Z*Y*X quaternion
-rotation and closed box boundaries match the native filter. An obsolete third
-Region is ignored. The **全部源点** switch restores all source returns. This
-filter affects displayed background and human returns in both 3D and camera
-projections; it does not alter original inputs, calibration, fits or QA.
-
-The explicit `--display-crop` sidecar additionally extends only the accepted
-net Ignore's positive local-X face by 0.19 m. Its schema, sport, display-only
-scope and base bbox SHA must match this frozen run. Arithmetic starts with the
-original Float64 center, adds the native Float32 rotation's first column times
-half the Float64 extension, extends size X, then compiles the Float32 crop.
-The viewer manifest records the exact sidecar path/SHA and resulting boxes.
-Omit the option to inspect the original accepted bbox without the display fix.
-Neither mode rewrites the source bbox or any published training tensor.
-
-The 3D view reuses `review_assets/review.js`, the existing offline WebGL2 player:
-all 6,890 SMPL vertices, triangle topology, computed normals, opacity/wireframe,
-real human returns, background points and orbit controls. The online adapter
-passes the same packed native-frame geometry contract as offline `data.js`.
-Large background scans display a deterministic subset of at most 25,000 actual
-returns after the selected display filter; fitted meshes remain complete.
-Human returns retain all points allowed by that display filter. Both camera overlays project
-the same stored mesh and actual points with frozen Brown K/d/R/t. Full projected
-triangles form a translucent silhouette union. No geometry is interpolated;
-pending/outside-rally scans keep their actual raw cloud and explicitly show
-missing body fits. Counts/status refresh during production.
-
-The browser verifier uses a separate headless installed Chrome, decodes both
-videos and exercises first/middle/last rally playback/seeking for all seven
-sources (21 cases). It also checks native PTS transactions, all-source raw cloud
-and both camera projections, full mesh vertex counts, WebGL errors and actual
-3D scan progression while playing. Its JSON receipt and screenshot are written
-beside the generated page. `/api/geometry?source=<id>&t=<relative-seconds>` is a
-read-only original-scan endpoint. `window.viewer` exposes selectSource,
-selectRally, seek, play, pause, pairedFrame and commonTime for diagnostics;
-await `window.viewer.ready` (or wait for `window.viewerReady === true`) before
-automating initial source switches; await each selection/seek Promise and wait
-for `!frameBusy` before inspecting the displayed native-frame transaction.
-In paired mode use `window.committedPairedFrame`, `lastPairedFrame` and visible
-`nativeFrame1/2` canvases. `video.currentTime` belongs to the alternate MP4 mode
-and is not proof of the currently displayed paired RGB. The verifier compares
-every visible RGB pixel against that scan's bound decoded JPEG, not just PTS
-or mesh counts. The focused regression holds the next geometry response while
-checking previous RGB/3D retention, then plays/pauses and checks the same-frame
-commit again:
-
-```powershell
-uv run --no-sync python tools/verify_badminton_viewer.py --atomic-only --output outputs/badminton_rallies_v1/viewer/atomic_loading_verification.json
-uv run --no-sync python tools/benchmark_badminton_playback.py --source 20261012_163452 --source 20261009_202713 --seconds 8
-```
-
-`iframe#scene.contentWindow.REVIEW_STATE` reports scan/mesh/vertex/point counts.
-The playback benchmark measures actual complete frame commits, startup delay,
-commit-gap median/P95/max, buffer waits, decoder seeks and visible RGB identity
-on the reported browser/GPU. Wall-clock advancement alone is not a frame count.
-The server snapshots its HTML/JS/CSS together at startup; restart after backend
-or client edits to deploy a consistent version.
-Playback controls and the rally-relative progress bar sit above a viewport-sized
-3D/dual-camera workspace. Both native camera frames keep their full aspect ratio;
-dataset tables sit in a disclosure rather than displacing the inspection views.
-Space toggles playback with focus in either the page or embedded 3D canvas;
-Left/Right step one actual scan. Preparing/cancelled/buffering/paused states are
-visible, and paired playback does not wait for browser MP4 metadata. Each new
-rally fits the full body view; automatic framing widens only as necessary until
-the user orbits/zooms, and "适配视野" restores automatic framing.
-
-```powershell
-uv run --no-sync python tools/verify_badminton_viewer.py --controls-only --output outputs/badminton_rallies_v1/viewer/controls_verification.json
-```
-
-This uses actual button/keyboard/slider events, preparation cancellation and
-rally looping, checks all three views and controls fit in four viewport sizes,
-and projects every current SMPL vertex into the 3D view to detect clipping.
-Final delivery `quality_summary.json` distinguishes original input/rally scans,
-fit QA rejections, bilateral exclusions and final person frames by source.
-For a published run created by an already-loaded older exporter, add the same
-quality report and an independent hash-bound receipt without changing its
-training manifest or tensors:
-
-```powershell
-uv run --no-sync python tools/report_badminton_rally_delivery.py
-```
-
-`delivery_receipt.json` binds the published manifest, verification and quality
-report, explicitly records the sealed rally scope, and discloses resumed-call
-timing limits. A generic scope string in an older published manifest does not
-expand the source manifest's sealed rally selection.
-
-The user-requested full-data union references original published tensors without
-copying or re-encoding them:
-
-```powershell
-uv run --no-sync python tools/build_badminton_reference_union.py
-```
-
-`outputs/badminton_full_plus_new_v1/dataset_manifest.json` contains 79,776 unique
-person frames: all 59,408 old full-v2 frames plus 20,368 from the four new sources.
-The 32,786 old rally-subset frames are checked against their full-v2 person/scan
-keys and all five tensor fields, then omitted as duplicates. Each split contains
-ordered `parts` with original paths, metadata and hashes; no merged tensor file
-is created. Train has 62,414 frames, validation retains full 161544 (10,787), and
-test uses new 190709 (6,575), disjoint from train/validation. The manifest records
-the requested 100 training epochs; actual training belongs to the consumer queue.
-`overlap_verification.json` and `receipt.json` bind the duplicate checks and final
-manifest. This is session isolation, not verified unseen-person generalization.
-
-For the reported 1009/rally-1 color switch and far-foot distortion, the read-only
-CPU audit covers all delivered union labels plus their formally selected fitted
-windows:
-
-```powershell
-uv run --no-sync python tools/audit_badminton_body_labels.py
-uv run --no-sync python tools/verify_badminton_track_colors.py
-```
-
-`outputs/badminton_label_audit_v2/index.html` contains the investigation, native
-camera comparisons and per-source counts. Its JSONL records and source-union
-SHA bind the numeric audit; `--reuse-report <previous/report.json>` can reuse
-hash-verified measurements of the same immutable union. Write to a new output
-directory when reusing a report. Exact-frame viewer links support `&scan=1535`.
-Colors now follow the local detector track across segment changes, in both
-cameras and 3D; the footer shows actual track/segment IDs. Colors and local IDs
-do not establish identity across windows or sources.
-
-The audit found 648 old-display recoloring events, 90 short-gap nearby-track
-fragment candidates and 587 delivered frames with a confident ankle residual
-over 20 px. The latter two are screening candidates, not verified identity or
-anatomical error rates. An ankle residual uses the participating detector and
-can miss a twisting forefoot. The original published union uses cam2 pose
-constraints; cam1 provides detection/association admission for that version.
-Whole-body one-sided point-to-surface means do not establish correct feet.
-Compare actual mapped geometry through conversion and fitting: raw local
-SMPL-X/SMPL parameter differences use different rest bases and cannot establish
-geometric rotation. This investigation changes display colors and reports only;
-tracking, fitted bodies, calibration and published training values stay frozen.
-
-The completed follow-up uses dual-camera observations, reviewed native identity
-boundaries, bounded SMPL leg corrections and synchronized ten-clip comparisons.
-The earlier single-case pilot and static report have been retired. The validated
-workflow, current metrics, reproducible stages and retained evidence are in
-[Badminton body repair](BADMINTON_BODY_REPAIR.md). The completed candidate viewer
-is `http://127.0.0.1:8771/`; comparisons and quality report are at
-`http://127.0.0.1:8772/` and `http://127.0.0.1:8772/report.html`.
-These remain candidate body labels, separate from the original 79,776 training
-union. Both cameras participate in the new fit, so cam1 is no longer a held-out
-pose check for this repair version.
-
-Segmentation evaluates bone scores only on points inside each person's box;
-outside scores were always infinite. Three 615k-point native scans matched the
-previous implementation's selected points/indices exactly and ran 6.33–7.05x
-faster in that isolated stage (`segmentation_benchmark.json`). This is not an
-end-to-end uncached throughput claim. The build CLI caps tensor CPU threads to
-eight; launch with `OPENBLAS_NUM_THREADS=1` to avoid BLAS oversubscription.
-
-For offline previews and measured fit quality/efficiency:
-
-```powershell
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --clips 10 --seconds 5
-uv run --no-sync python tools/report_badminton_quality.py --output-root outputs/badminton_run --output-dir outputs/badminton_run/sequence_review
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --html-only
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --verify-only
-```
-
-Open `sequence_review/index.html` and retain its whole folder. It uses native
-scans/meshes and actual paired camera images without interpolating geometry.
-The quality report counts full-job completed windows including validated cached
-windows, and discloses cache reuse in throughput. Reported surface P90 is the
-average per-person/frame P90, not a pooled percentile. Optional independent
-`tools/check_badminton_cam1.py --output-root outputs/badminton_run` checks detector
-agreement on CPU. Its association/occlusion filtering can use fitted geometry;
-its pixels are undistorted and do not establish independent anatomical truth.
-
-To inspect an immutable run, supply `--verification-report` to the preview verifier
-or `--report` to the dataset verifier, targeting a new output path. The optional
-browser checker requires Node with built-in WebSocket and an explicit separately
-installed Chrome for Testing binary; it never reuses a personal browser profile:
-
-```powershell
-node tools/check_badminton_reviews.mjs --review-dir outputs/badminton_run/sequence_review --browser C:/tools/chrome-for-testing/chrome.exe --cleanup-profile
-uv run --no-sync python -m unittest discover -s tests
-```
+Use [CODEMAP.md](../CODEMAP.md) to choose a workflow. This fork is
+`Fancomi/GVHMR`; upstream is `zju3dv/GVHMR`. `pyproject.toml` and `uv.lock`
+are the dependency source for both installers.
 
 ## Local Windows environment with uv
 
-From the repository root, run:
+Run from the repository root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/setup_uv.ps1
+uv sync --extra compat --extra dev --extra review
 uv run --no-sync python tools/check_env.py
 uv run --no-sync python tools/check_env.py --require-assets
 uv run --no-sync python tools/demo/demo.py --video docs/example_video/tennis.mp4 -s --preproc_batch_size 4
 ```
 
-The project uses `.venv`, Python 3.10, PyTorch 2.3.0 / torchvision 0.18.0
-with CUDA 12.1, and a committed `uv.lock`. NumPy remains at 1.23.5 for
-the legacy SMPL/chumpy pickle loader. The bootstrap script installs torch
-before resolving PyTorch3D, whose source metadata imports torch.
-The large Windows torch wheel is fetched from the official PyTorch index
-using parallel ranges and verified against that index's SHA-256 before
-installation with `uv pip`.
-Windows builds PyTorch3D 0.7.6 from its pinned upstream source in
-`.build-tools/pytorch3d` (a shorter path avoids MSVC object-file path limits); Linux uses
-the original upstream wheel. Install Visual Studio's C++ workload and a
-CUDA 12.x toolkit before running the Windows script. The build targets
-the installed GPU and defaults to two compiler jobs.
-The Windows build replaces Pulsar's two `uint`/`ushort` preprocessor
-macros with equivalent C++ type aliases, avoiding token expansion inside
-CUDA 12.8's tuple headers. This compatibility patch is applied only to
-the local checkout by the setup script.
+The local environment is `.venv`: Python 3.10, PyTorch 2.3.0 / torchvision
+0.18.0 with CUDA 12.1 and NumPy 1.23.5 for legacy SMPL/chumpy pickles. Setup
+installs torch before resolving PyTorch3D, whose source metadata imports torch.
+The Windows torch download is checked against the official index's SHA256.
 
-On this machine CUDA Toolkit 12.8 and MSVC 19.51 are installed. The script
-fetches a project-local MSVC 14.38 toolset from Microsoft's VS 2022 feed,
-verifies the package SHA-256 values, and uses it with the existing Windows
-SDK. The installed Visual Studio is not modified.
-The local compiler layout also includes the VS `vcvarsall.bat` entrypoint
-required by NVCC; builds use the developer environment already loaded
-by the setup script.
-`check_env.py` checks actual CUDA KNN forward/backward and mesh
-rasterization, as well as the demo imports and Hydra configuration.
-It reports missing assets separately; the `--require-assets` option exits
-with status 2 when assets are missing. Full video inference still requires
-all six assets listed below. DPVO is optional and is not installed.
-The demo's `--preproc_batch_size 4` option reduces ViTPose/HMR2 activation
-memory on this 12 GB GPU. HMR2 image crops are transferred to the GPU per
-batch rather than retaining every frame's crop in GPU memory.
-Video merging uses the bundled `imageio-ffmpeg` executable when there is
-no system `ffmpeg` on PATH.
+The `dev` extra supplies pytest; `review` supplies Playwright for browser checks.
+Add `--extra serve` only for the Flask service. Review checks also need Node and
+a separate Chrome for Testing binary; see [playback prerequisites](BADMINTON_FULL_NATIVE.md#playback-and-native-pixels).
 
-If Google Drive's shared-download quota is exhausted, the
-[demo linked by the project README](https://huggingface.co/spaces/LittleFrog/GVHMR/blob/main/app.py)
-uses the following public Hugging Face mirrors. These commands pin the
-repository revisions used for this local setup:
+Windows builds pinned PyTorch3D 0.7.6 in `.build-tools/pytorch3d`; install Visual
+Studio's C++ workload and a CUDA 12.x toolkit first. Setup uses a project-local
+MSVC 14.38 toolset, validates its package hashes and loads the existing Windows
+SDK without modifying Visual Studio. It defaults to two compiler jobs and
+applies the local Pulsar type-alias compatibility patch for newer CUDA headers.
+Linux uses the upstream wheel.
+
+`check_env.py` checks actual CUDA KNN forward/backward, mesh rasterization,
+imports and Hydra configuration. Missing assets are reported separately;
+`--require-assets` returns status 2 when any required asset is absent. The demo's
+batch size 4 reduces preprocessing memory; crops move to CUDA per batch.
+Video merging falls back to the bundled `imageio-ffmpeg` executable.
+
+Linux uses the same dependency lock:
+
+```bash
+bash scripts/install.sh
+bash scripts/run_service.sh 0 8666 64
+# Existing/custom environment:
+# export GVHMR_ENV_DIR=/path/to/gvhmr
+```
+
+The `serve` extra contains Flask and `compat` contains legacy runtime imports.
+Linux shell syntax has been checked; a complete Linux installation has not
+been validated on this Windows host. Service details are in
+[scripts/README.md](../scripts/README.md). DPVO is optional; the default moving
+camera demo uses SimpleVO. A static camera uses `-s`.
+
+## Assets and original training data
+
+Obtain licensed [SMPL](https://smpl.is.tue.mpg.de/) and
+[SMPL-X](https://smpl-x.is.tue.mpg.de/) models yourself. Runtime must not fetch
+them from another local workspace.
+
+```text
+inputs/checkpoints/
+  body_models/smpl/SMPL_NEUTRAL.pkl
+  body_models/smplx/SMPLX_NEUTRAL.npz
+  gvhmr/gvhmr_siga24_release.ckpt
+  hmr2/epoch=10-step=25000.ckpt
+  vitpose/vitpose-h-multi-coco.pth
+  yolo/yolov8x.pt
+```
+
+Other gendered body models are needed for their corresponding evaluation tasks.
+The original pretrained assets are available from
+[the project download](https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link).
+If its quota is exhausted, these public mirrors pin the revisions used by the
+local setup:
 
 ```powershell
 $env:HF_HUB_DISABLE_XET = '1'
@@ -572,501 +81,159 @@ uv tool run --python 3.10 --from huggingface_hub hf download camenduru/GVHMR --r
 uv tool run --python 3.10 --from huggingface_hub hf download camenduru/SMPLer-X --revision 9e5548b70b48efe6992faa3b2a418df108542bf7 SMPLX_NEUTRAL.npz --local-dir inputs/checkpoints/body_models/smplx
 ```
 
-Provide the licensed neutral SMPL model at
-`inputs/checkpoints/body_models/smpl/SMPL_NEUTRAL.pkl`; runtime does not fetch it
-from another local project.
+For GVHMR training/evaluation, obtain original datasets under their licenses and
+[preprocessed support files](https://drive.google.com/drive/folders/10sEef1V_tULzddFxzCmDUpsIqfv7eP-P?usp=drive_link).
+Extract each `<DATASET>_hmr4d_support.tar.gz` under `inputs/`, producing
+`AMASS/hmr4d_support`, `BEDLAM/hmr4d_support`, `H36M/hmr4d_support`,
+`3DPW/hmr4d_support`, `EMDB/hmr4d_support` and `RICH/hmr4d_support`.
+The preprocessed files do not replace the original videos/annotations.
 
-## Using GVHMR results with the sibling single-frame PTv3 project
+## Calibrated session route
 
-The interface can be connected through model conversion. GVHMR's
-`hmr4d_results.pt` is **SMPL-X parameters**, even though its keys are named
-`smpl_params_incam` and `smpl_params_global`. Its 63-dimensional body pose
-contains 21 local body rotations plus a separate root rotation, and its
-betas have 10 dimensions. The downstream trainer uses **neutral SMPL**,
-24 joints, and 10 betas. Its network predicts 24 rotation-6D vectors, which
-the trainer derives from the axis-angle labels; labels should stay in
-axis-angle representation.
+This is the standard session pipeline. For admitted native rally production and
+formal cumulative releases use [BADMINTON_FULL_NATIVE.md](BADMINTON_FULL_NATIVE.md).
 
-| Downstream joblib field | Shape | Meaning |
+```powershell
+uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
+uv run --no-sync python tools/pair_badminton.py run --output-root outputs/badminton_smoke --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/verify_badminton_dataset.py --output-root outputs/badminton_run
+```
+
+Default sessions are `D:/PROJECT/LIDAR/datas/badminton/sessions`; the calibration
+project is `D:/PROJECT/LIDAR/lidar_project`. Override with `--sessions-root` and
+`--lidar-project-root`. The standard route reads the five files under that
+project's `config/calibration/badminton-20261012/`: `calibration.json`,
+`sources.json`, `sync-policy.json`, `bbox.json`, `roi-config.txt`.
+LiDAR owns K/d5/R/t, court registration and joint projection evaluation. GVHMR
+fits bodies using these fixed inputs. Different calibration requires a new run.
+
+`--prepare-only` checks source/calibration/pairing and records `prepared`; it
+does not fit bodies. The full entry records `job_status.json=complete` only
+after export and verification, with up to three validated retries. The internal
+`pair_badminton.py` stages are `prepare`, `teacher`, `fit`, `run`, `export`.
+Standard full-run defaults are cam2, 60-second windows, teacher stride 2, batch 4,
+fit batch 128, 80 iterations, float16 preprocessing and a 20 px ROI margin.
+
+The pipeline freezes original source identities, all timestamp maps, exact
+raw-to-viewer SourceM and shared court/plane/bbox geometry. Point transforms use
+the true inverse of rounded SourceM; body orientation uses its nearest proper
+rotation. Historical v1 bundles remain loadable only with unchanged geometry,
+timing, source hashes and maps. Teacher caches bind actual native rows, camera,
+model assets, ROI and precision; fit caches additionally bind algorithm/settings
+and source PNG/artifact hashes. Existing filenames alone do not validate reuse.
+
+A mapped SMPL-X mesh initializes neutral SMPL. Shape is fitted in SMPL's own basis
+and shared per person/window; up to eight observations establish it. Corrections
+propagate only across gaps ≤250 ms, using observed torso motion and video rotations.
+Point coordinates remain original. The primary RGB weight is 1; a shape-fixed
+batch over 8 px maximum residual may try weight 3. Selection requires ≥0.5 px
+mean gain, surface mean/P90 degradation ≤1/2 mm, identical shape and retention
+of all previously accepted frames.
+
+Body QA requires ≥80 returns, finite parameters, visible point-to-triangle mean
+≤65 mm and P90 ≤120 mm, floor penetration ≤120 mm, ≥6 primary keypoints and
+primary reprojection ≤50 px. Distances use actual triangles in locally centred
+millimetres. Rejected fits remain reviewable and are excluded from export.
+Each window retains teachers, fitted NPZ, `quality.jsonl`, `ptv3.pth` and metadata.
+Aggregate selection prefers full windows over contained smoke windows and rejects
+partial overlaps. Point indices address the decoded valid fixed24 list.
+
+Training qualification is a separate `bilateral_detection` stage: each person
+needs a unique actual corresponding detection in both native cameras. Matching
+timestamps, interpolated teacher states and body QA alone are insufficient.
+Keypoint confidence, occlusion and reprojection diagnostics do not add admission
+gates. Use `observe_badminton_dual_view.py` and `export_badminton_dual_view.py`;
+formal stage details and explicit CPU decoding are in the
+[native production guide](BADMINTON_FULL_NATIVE.md).
+
+## Source and time contracts
+
+```powershell
+uv run --no-sync python tools/prepare_badminton_source.py --source-index <index.json> --data-root <badminton-data-root> --source-index-sha256 <digest> --report outputs/source_prepare/report.json
+uv run --no-sync python tools/prepare_badminton_rallies.py --acquisition-manifest <acquisition.json> --acquisition-sha256 <digest> --data-root <badminton-data-root> --output-root outputs/rally_intake
+```
+
+These CPU adapters inspect immutable inputs; source preparation samples six
+spread-out scans and never certifies all body labels. Camera source admission
+requires a hash-bound applicability certificate identifying the exact calibration,
+application M, native files and review evidence. Candidate applicability is
+preparation-only. Explicit dataset-only video contracts retain their original
+host receive-axis rejection and require verified device/PTP evidence.
+
+Labels address integer device scan midpoints and nearest native camera records
+within 8.5 ms; ties choose the earlier record. Missing clocks/range do not reuse
+endpoints. The dense teacher uses actual video PTS and SO(3) interpolation with
+recorded brackets and an 18 ms model-frame tolerance. Never infer sensor frame IDs
+from rendered videos: the demo writes at 30 fps without resampling source frames.
+
+`prepared_ranges.jsonl` retains original review order, PNG ordinals, clock/map
+indices, frame IDs and counted native rally bounds. Its verification binds the
+deduplicated ranges. The accounting end is the terminal scan's start time:
+process the authoritative PNG range, including the last scan. Overlap counts once
+per source; rally-window minutes include buffers and are not qualified label time.
+
+Fullraw indexes use ordered unique `lidar_common_clock_row_indices`, one per
+emitted PNG, preserving exact original packet-row objects and integer first/last/mid
+times. Only an evidenced final unclosed row may appear under
+`unexported_packet_clock_rows` with `unclosed_final_scan_not_emitted`; it creates
+no cloud, member array or sample. Legacy outside-camera omissions keep their
+separate original checks. Full export/PTP/raw-index/download/parent evidence
+remains hash-bound.
+
+Derived crops declare `parent_scope=fullraw_exported_clouds` and
+`maps_to_full_pcap_returns=false`. `source_membership.py` checks the original PNG,
+member maps, inverse/grid arrays and retained RGB8 coordinate bytes when a cloud
+is read. Empty emitted clouds stay empty. Explicit fullraw aliases normalize
+dimensions in memory, require stored raw XYZ and `M_baked_into_stored_xyz=false`,
+and reject conflicting aliases or applying M twice.
+
+Frozen clock JSON keeps its original bytes. Relative `raw_index` references
+resolve through the verified parent's original `common_clock` directory, after
+comparing the frozen copy; no basename search or manifest rewrite is allowed.
+Original clouds, clocks and member evidence remain required inputs. Canonical
+roots and explicit historical resolvers are in [DATA_RELOCATIONS.md](DATA_RELOCATIONS.md).
+
+## Neutral SMPL and the single-frame consumer
+
+GVHMR `hmr4d_results.pt` stores SMPL-X parameters despite the
+`smpl_params_incam/global` names: 21 body rotations (63 values), separate root and
+10 betas. The consumer needs neutral SMPL, 24 joints and 10 betas.
+
+| Export field | Shape | Meaning |
 | --- | --- | --- |
-| `root_pose` | `(N, 1, 3)` | Target-frame root axis angle, radians |
-| `body_pose` | `(N, 23, 3)` | SMPL local body rotations, radians |
-| `shape` | `(N, 10)` | Fitted neutral SMPL betas |
-| `transl` | `(N, 3)` | **Global pelvis position**, metres |
-| `pc` | `(N, 256, 3)` | Points in the same target frame, metres |
-| `motion_id` | `(N,)` | Clip identifier used to split sequences |
-
-The first 22 kinematic joints correspond (pelvis through both wrists).
-SMPL adds the two terminal hand joints. Zero padding these two rotations
-is an initialization only: **SMPL-X and SMPL shape spaces are different,
-so copying betas and padding pose does not produce aligned geometry**.
-Use the bundled `hmr4d/utils/body_model/smplx2smpl_sparse.pt` to map
-SMPL-X vertices to SMPL topology (10475 -> 6890 vertices), then fit neutral
-SMPL pose, shape, and translation to that mesh. The matrix transforms
-vertices, not model parameters. Prefer one fitted shape per person/clip,
-and recompute all 24 joint targets using the downstream `PySMPL`.
-See the [SMPL-X model-transfer documentation](https://github.com/vchoutas/smplx/blob/main/transfer_model/README.md).
-
-There is a second compatibility issue: standard SMPL/SMPL-X `transl` is
-an additive mesh offset; the downstream `PySMPL` subtracts the shaped
-pelvis before adding its `transl`. After fitting with a standard SMPL
-implementation, export `fitted_output.joints[:, 0]` as downstream
-`transl`, rather than copying the fitted offset. This preserves the mesh
-position under the downstream pelvis-centred forward convention.
-
-The downstream target frame is right-handed: X forward/depth, Y left,
-Z up. For GVHMR **camera-frame** geometry (x right, y down, z forward),
-the camera-axis remapping is:
-
-```python
-R = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
-R_root_target = R @ R_root_camera
-pelvis_target = R @ pelvis_camera  # add calibrated translation if needed
-points_target = points_camera @ R.T
-```
-
-Local body rotations stay unchanged under a global frame transform.
-For real LiDAR supervision, use synchronized frame IDs, calibrated
-camera-to-LiDAR extrinsics, metric alignment, and point-cloud-based
-position/shape refinement. GVHMR global output has Y up but an arbitrary
-initial heading/origin; it is not already in the LiDAR coordinate frame.
-Its monocular metric estimates also need validation against the sensor.
-The default demo selects one video track; match that person to the
-segmented LiDAR subject before constructing paired labels.
-
-For synthetic supervision, first fit the SMPL labels, then sample visible
-points **from that same fitted SMPL mesh** using the sensor viewpoint,
-and FPS to 256 points. The sibling project's
-`src/tools/data_convert/basic.py::sample_visible_pc` already provides
-the visibility/raycasting/FPS route (Open3D is required in that project).
-Uniform all-surface sampling has a different input distribution from
-visible LiDAR points. Split train/test by person or clip before sampling.
-GVHMR labels remain pseudo-labels; transfer/mesh residuals and video
-reprojection should be inspected before large-scale data generation.
-
-With both neutral body models available, the interface can be checked
-numerically against the actual sibling dataset loader, PySMPL forward,
-and shared single-frame decoder:
-
-```powershell
-uv run --no-sync python tools/check_ptv3_contract.py
-```
-
-This smoke check fits three generated SMPL-X poses and saves
-`outputs/setup/ptv3_contract_report.json`. Its point subsets only exercise
-the dataset format and are not simulated LiDAR or a training dataset.
-
-Local validation on the RTX 4070 SUPER passed: the three generated poses
-had a fitted mean vertex residual of 6.19 mm, and the standard-SMPL to
-downstream-PySMPL forward and coordinate transform agreed within
-`4.77e-7` metres. This checks conversion conventions, not real-video
-accuracy. The downstream loader, 24-joint shared decoder, and pose-6D
-round trip also passed. A 60-frame clip of the provided tennis video ran
-through tracking, ViTPose, HMR2 features, GVHMR inference, both renderers,
-and video merging. Reports are in `outputs/setup/environment_report.json`,
-`outputs/setup/ptv3_contract_report.json`, and
-`outputs/setup/video_smoke_report.json`.
-
-The demo writes videos at 30 fps without resampling source frames.
-Use original timestamps for synchronization, or explicitly resample
-both labels and points together. Do not infer sensor frame IDs from the
-rendered video's playback timestamps.
-
-## Environment
-
-```bash
-git clone https://github.com/zju3dv/GVHMR
-cd GVHMR
-
-conda create -y -n gvhmr python=3.10
-conda activate gvhmr
-pip install -r requirements.txt
-pip install -e .
-# to install gvhmr in other repo as editable, try adding "python.analysis.extraPaths": ["path/to/your/package"] to settings.json
-```
-
-### Optional: DPVO (not recommended if you want fast inference speed)
-```bash
-cd third-party/DPVO
-wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
-unzip eigen-3.4.0.zip -d thirdparty && rm -rf eigen-3.4.0.zip
-pip install torch-scatter -f "https://data.pyg.org/whl/torch-2.3.0+cu121.html"
-pip install numba pypose
-export CUDA_HOME=/usr/local/cuda-12.1/
-export PATH=$PATH:/usr/local/cuda-12.1/bin/
-pip install -e .
-```
-
-## Inputs & Outputs
-
-```bash
-mkdir inputs
-mkdir outputs
-```
-
-**Weights**
-
-```bash
-mkdir -p inputs/checkpoints
-
-# 1. You need to sign up for downloading [SMPL](https://smpl.is.tue.mpg.de/) and [SMPLX](https://smpl-x.is.tue.mpg.de/). And the checkpoints should be placed in the following structure:
-
-inputs/checkpoints/
-├── body_models/smplx/
-│   └── SMPLX_{GENDER}.npz # SMPLX (We predict SMPLX params + evaluation)
-└── body_models/smpl/
-    └── SMPL_{GENDER}.pkl  # SMPL (rendering and evaluation)
-
-# 2. Download other pretrained models from Google-Drive (By downloading, you agree to the corresponding licences): https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link
-
-inputs/checkpoints/
-├── dpvo/
-│   └── dpvo.pth
-├── gvhmr/
-│   └── gvhmr_siga24_release.ckpt
-├── hmr2/
-│   └── epoch=10-step=25000.ckpt
-├── vitpose/
-│   └── vitpose-h-multi-coco.pth
-└── yolo/
-    └── yolov8x.pt
-```
-
-**Data**
-
-We provide preprocessed data for training and evaluation.
-Note that we do not intend to distribute the original datasets, and you need to download them (annotation, videos, etc.) from the original websites.
-*We're unable to provide the original data due to the license restrictions.*
-By downloading the preprocessed data, you agree to the original dataset's terms of use and use the data for research purposes only.
-
-You can download them from [Google-Drive](https://drive.google.com/drive/folders/10sEef1V_tULzddFxzCmDUpsIqfv7eP-P?usp=drive_link). Please place them in the "inputs" folder and execute the following commands:
-
-```bash
-cd inputs
-# Train
-tar -xzvf AMASS_hmr4d_support.tar.gz
-tar -xzvf BEDLAM_hmr4d_support.tar.gz
-tar -xzvf H36M_hmr4d_support.tar.gz
-# Test
-tar -xzvf 3DPW_hmr4d_support.tar.gz
-tar -xzvf EMDB_hmr4d_support.tar.gz
-tar -xzvf RICH_hmr4d_support.tar.gz
-
-# The folder structure should be like this:
-inputs/
-├── AMASS/hmr4d_support/
-├── BEDLAM/hmr4d_support/
-├── H36M/hmr4d_support/
-├── 3DPW/hmr4d_support/
-├── EMDB/hmr4d_support/
-└── RICH/hmr4d_support/
-```
-
-
-### Independent adopted calibration and source-only rally runs
-
-Use the existing rally entry with an explicit five-file bundle inside the LiDAR
-project and an exhaustive whole-source split. Never overwrite 1012 or reuse
-body labels fitted with another camera:
-
-```powershell
-uv run --no-sync python tools/build_badminton_rallies.py --intake outputs/upstream_1015_v2/verification.json --output-root outputs/badminton_1015_v2 --calibration-dir D:/PROJECT/LIDAR/lidar_project/config/calibration/badminton-20261015 --session-splits outputs/upstream_1015_v2/session_splits.json --threads 1 --stage prepare
-```
-
-The split JSON has nonempty train/val/test source-ID lists, each intake source
-exactly once. The revised six-source split uses train 153618/155040/155844/164748,
-validation 161256, test 162740 (prefix each with 20261015_).
-The older native analysis reported zero rallies for the short 164748 source; this
-is a prior, not a claim about the newly processed data. Independent prepare requires
-at least one actual paired fitting window in each split, while individual zero-rally
-sources remain allowed. Counts must ultimately follow new native/paired/body-QA
-outputs; a prepared window alone does not establish a qualified body label.
-New-source body manifests explicitly require train/val/test to retain real accepted
-samples; the standard bilateral verifier repeats this count check before publication.
-An individual source can remain an empty tensor without invented samples. These recordings were
-reviewed for calibration; this is not a blind calibration test or a guarantee of
-independent physical people. The selected lists freeze in session_splits.json;
-changed splits require a new output root.
-
-When every inventory source has baseline:false, preparation never reads or copies
-old baseline fits. Admitted source indexes provide raw fixed24 members, original
-device clocks and selected camera rows, including verified dataset-only contracts.
-No canonical sessions layout or copied media is required. Source indexes and their
-applicability certificates bind the actual five-file bundle hashes. The sources.json
-frame-map hashes bind compact serialization of these selected pairs; camera
-selection is not recomputed. Original canonical loading and seven-source defaults
-remain supported. Acquisition/inventory schemas and prepare_badminton_rallies.py
-remain unchanged.
-
-This adapter establishes source/calibration intake only. The existing --stage run
-and --stage fit still execute the original rally body fitter; they do not enable
-the validated body-repair v2 policy automatically. Do not publish new 1015 labels
-through those stages as if they used the repaired policy. The v2 recipe in
-BADMINTON_BODY_REPAIR.md additionally requires native dual-camera observations,
-reviewed identity decisions, contradictory-ray filtering, shared shape, distal
-pose weight 0.03, lower-limb weight 2 and guarded continuous leg refinement.
-The fresh-source adapter described below supplies prepared teacher windows to
-these same repair components without manufacturing legacy fitted labels.
-
---threads 1 limits Torch/OpenCV CPU threads. This intake adapter changes no body
-fitting algorithm and does not launch production during prepare. The existing
-serve_badminton_rallies.py --output-root argument selects the new run; use its
-bbox-bound --display-crop when applicable. The baseline viewer argument is unused
-for source-only intakes. GPU stages require bounded per-window execution and no
-concurrent heavy jobs.
-
-
-### 1022 accepted-camera native review intake
-
-`prepare_badminton_admitted_native.py` consumes the independently completed
-strict accepted camera freeze and derives a separate review-only calibration
-snapshot. Its parent stays immutable. The derived snapshot copies every geometry,
-session, clock and artifact byte, changes only the five purpose fields, and binds
-the parent, complete native manifest, review authorization and actual freeze proof.
-The existing full-native/native-rally validators and source/body-plan builders
-remain responsible for all original windows; no artificial train/val/test split
-is introduced for the single 1022 source.
-
-The canonical-input-v2 bundle uses the existing compact-pair-map summary contract
-in `sources.frame_maps`. The source index and camera certificate retain the
-original enriched frame-map reference and packet-clock evidence. Original
-`crop-admit --accepted-calibration` creates the independently versioned index;
-candidate and accepted bundle hashes remain separate. The published 1022 camera
-result and both visual review decisions are unchanged.
-
-For the actual 26-rally/3015-scan handoff, inspection is read only:
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES = '-1'
-python -B tools/prepare_badminton_admitted_native.py --manifest D:/PROJECT/LIDAR/datas/badminton/collections/gvhmr-1022-full-20261023/handoff/full-native-admitted-review-v3.json --root outputs/badminton_1022_full_native_admitted_v3 --accepted-parent outputs/badminton_1022_full_native_admitted_v3/accepted-base/calibration_snapshot.json --accepted-parent-sha256 3a7a65aed100ec327a03c1fbf614f39fc8e2868a45a7a220e04567de1e610e5e --accepted-freeze-proof D:/PROJECT/LIDAR/datas/badminton/calibration/20261022/canonical-input-v2/evidence/strict-freeze-proof-permanent-v3.json --accepted-freeze-proof-sha256 b834545e923394df51f02cb65503401bc9dae8dcbfb3c3a8e63eaa45e2bb2633 --threads 1
-```
-
-Adding `--prepare` creates the new review snapshot and invokes only the original
-CPU source and full-body planning stages. Source preparation uses the assigned
-BelowNormal CPU resources; the original body-plan stage forces affinity `[0,1]`
-and one numerical thread. Teacher, pose, fit and GPU execution require their
-separate stage authority. Camera acceptance, body QA and training publication
-remain distinct; this intake publishes no labels.
-
-### Fresh-source native v2 body production
-
-After the independent rally prepare above, keep the same fixed cameras and run
-`prepare_badminton_new_source_repair.py --source-root <prepared-rally-run> --root <repair-run>`.
-This CPU stage freezes exact source windows, source split, native-pose case plan
-and initial teacher locations. It creates no legacy fitted bodies. Initial teacher
-inference is explicit and bounded to one window:
-`prepare_badminton_new_source_repair.py --source-root <prepared-rally-run> --root <repair-run> --stage teacher --source <id> --window <window> --threads 1`.
-Run independent dual-camera observations with
-`observe_badminton_repair_poses.py --source-root <prepared-rally-run> --root <repair-run> --threads 1`.
-Source-filtered observation calls remain partial until a complete cache validation pass.
-
-Identity starts pending. Detection/dual-camera evidence must resolve each selected
-window, preserving hashes and source teacher bindings; reviewed may be algorithmic
-or visual evidence and does not require per-frame user approval. Do not import the
-old seven-source manual exceptions. The identity decision file must bind the new
-input as source_union_sha256, the frozen camera digest, evidence_files and every
-selected window. A reviewed status does not substitute for those actual evidence
-files. Unresolved windows remain pending.
-
-Prepare the existing repair command with
-`repair_badminton_body_labels.py --stage prepare --union <repair-run>/new_source_input.json --source-root <prepared-rally-run> --output-root <repair-run>/final_labels --native-poses-root <repair-run> --joint-ray-filter --distal-pose-weight 0.03 --lower-limb-reprojection-weight 2 --identity-decisions <repair-run>/identity_evidence/identity_decisions.json --threads 1`.
-Then `run_badminton_repair_windows.py --root <repair-run> --union <repair-run>/new_source_input.json --source-root <prepared-rally-run> --threads 1` runs one native process per window, retaining v2 settings and validating cached receipts. No original fitted labels are required. New-source source-root and source-index registry are bound to the preparation, and changed repair configuration requires a new root.
-
-`finish_badminton_body_repair.py --root <repair-run> --threads 1 --observer-max-new-frames 500`
-uses the same native-member/SMPL verifier, bounded leg proposals, continuous selection,
-unchanged candidate and absolute body QA gates, application backups and standard
-bilateral detector publication. It records the actual v2 body baseline before leg
-changes and compares the same person-scans after; it does not fabricate an old fitted
-version. Native detector lineage is reproduced from the actual initial detection
-cache instead of the old seven-source replay. The final detector observation stage
-is bounded and resumable; rerun the command until publication completes.
-
-The fresh completion receipt is `new_source_completion_receipt.json`, with state
-`labels_published_viewer_prepared`. It binds final native verification, leg receipt,
-actual pre/post metrics and the independent paired dataset. The standard native
-viewer is prepared under final_labels/viewer and served by the existing rally viewer.
-Actual browser playback still requires separate verification; the completion receipt
-explicitly keeps browser_playback_verified=false. Old-source finish behavior and
-its ten-clip comparison remain unchanged.
-
-Separately admitted formal runs reuse only an already completed, explicitly
-hash-bound post-leg CPU receipt:
-
-```powershell
-uv run --no-sync python tools/finish_badminton_body_repair.py --root <formal-run>/repair --threads 1 --formal-postleg-cpu-receipt <formal-run>/repair/evaluation/formal_postleg_cpu_receipt.json --formal-postleg-cpu-receipt-sha256 <actual-sha256>
-```
-
-The formal branch calls the unchanged strict CPU completion verifier against that
-existing receipt. It revalidates actual guarded exit, native/dataset evidence and
-same-person pre/post QA; it does not launch another native/dataset/leg pass or
-rewrite the original QA snapshots. Missing or foreign receipts fail. Complete
-bilateral observations are required independently: until then, finish writes
-`completion_progress.json` with `bilateral_observation_pending` and starts no
-observer. Run the observer explicitly, choosing its device:
-
-```powershell
-$env:CUDA_VISIBLE_DEVICES = '-1'
-uv run --no-sync python tools/observe_badminton_dual_view.py --source-root <formal-run>/repair/final_labels --output-root <formal-run>/repair_paired --device cpu --threads 1
-```
-
-The observer reuses the declared initial teacher and existing secondary-camera
-teacher detections only at exact native records with matching PTS, common time,
-source frame, camera and video identity. Formal reuse additionally requires the
-prepared input's frozen physical-input/calibration equivalence proof. Interpolated
-or nearby teacher frames do not count as detections; missing cache records require
-actual detection on the explicitly selected device. Both teacher cache inventories
-are bound into resumable observation identity. The original observer CLI device
-default remains unchanged, so always pass `--device cpu` for this CPU route.
-
-After standard bilateral finalize/verify and typed viewer preparation succeed,
-formal fresh completion records `bilateral_labels_published=true` while retaining
-`training_published=false`, `archive_published=false`, `consumer_admitted=false`
-and `browser_playback_verified=false`. The receipt binds the existing formal CPU
-receipt, complete observations, export verification and prepared viewer manifest.
-Formal archive publication and consumer acceptance remain later gates.
-
-Use `serve_badminton_body_repair.py --repair-root <formal-run>/repair/final_labels`
-for candidate playback, or `serve_badminton_canonical_tracks.py --manifest
-<canonical-publication>` for the admitted identity view. Both use the explicit typed
-formal relocation/intake contract. Run `verify_badminton_fresh_playback.py --root
-<formal-run>/repair --url <viewer-url> --canonical-manifest <canonical-publication>`
-after bilateral completion. Its dedicated Chrome for Testing session uses
-`tools/check_badminton_fresh_playback.mjs` and the existing LiDAR
-`scripts/checks/lib/browser_session.mjs` helper; `--browser-session-helper` selects
-an explicit installed helper. Coverage comes from frozen sources/ranges: this
-seven-source formal run requires at least two genuine five-second clips per source
-(at least fourteen total), plus every reviewed canonical boundary regression.
-The complete native-pixel audit covers all images in the held-out **test split**;
-it does not claim coverage of all train/validation images.
-
-
-Fresh-source identity evidence uses the existing command names with a source-bound
-inventory, without the historical 64-case assumptions or manual exceptions:
-
-```powershell
-uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair
-uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair --render-endpoints --endpoint-offset 0 --endpoint-limit 20
-```
-
-The first command reads completed initial teachers and writes only
-`identity_evidence/boundary_inventory.pending.json`: real original tracklet IDs,
-positions and native timestamp endpoints, no inferred identity approval. The second
-writes bounded paired native RGB evidence and an HTML page at
-`identity_evidence/endpoint_previews/index-0.html`. Images use the exact adopted
-K-preserved undistortion; the primary detector box is drawn in its declared pixel
-space, with both original frame records/raw-image SHAs retained in the JSON receipt.
-Use offsets 20, 40, etc. to inspect further endpoints. This does not change labels.
-
-After native evidence establishes the boundary inventory, provide a separate JSON
-with schema `badminton-new-source-identity-inventory-v1`, `review_status: reviewed`,
-the exact `source_union_sha256`, nonempty hash-bound `evidence_files`, and `cases`.
-Each case names `source_id`, `window`, and its two `original_track_ids`. Inventory
-review concerns which real boundaries require assessment, not per-frame user approval.
-No association thresholds are added. Then:
-
-```powershell
-uv run --no-sync python tools/prepare_badminton_identity_review.py --root outputs/badminton_1015_v2_repair --boundary-inventory outputs/badminton_1015_v2_repair/identity_evidence/boundary_inventory.reviewed.json
-uv run --no-sync python tools/observe_badminton_repair_poses.py --root outputs/badminton_1015_v2_repair/identity_evidence --source-root outputs/badminton_1015_v2 --threads 1
-uv run --no-sync python tools/review_badminton_identity_views.py --root outputs/badminton_1015_v2_repair
-uv run --no-sync python tools/build_badminton_identity_decisions.py --root outputs/badminton_1015_v2_repair
-```
-
-The geometric review keeps its existing support/uniqueness/coexistence criteria.
-By default uncertain cases remain `review_status: pending` and cannot become reviewed
-body inputs. `screen_badminton_new_identity.py` inventories all actual endpoints and
-proposes nearby short-gap candidates; it approves no person identities. For native
-RGB witnesses of explicit cases, use `render_badminton_identity_cases.py --root <run>
---case <index>`. Producer snapshots and actual raw-image hashes stay with the evidence.
-
-An optional `build_badminton_identity_decisions.py --abstention-policy <json>` makes
-an explicit conservative processing choice: reset previous raw-tracklet joins, join
-only geometrically confirmed same-person pairs, retain witnessed different-person
-constraints and keep unproven tracklets separate. The policy must have schema
-`badminton-new-source-identity-abstention-v1`, action
-`keep_unproven_original_tracklets_separate`, reviewed status, exact input/inventory
-hashes and nonempty hash-bound evidence. Unknown relationships are still unknown;
-their indices are retained as `abstained_relationship_cases`. This completes a safe
-processing decision without assigning fabricated same/different-person verdicts.
-Graph contradictions fail sealing. New-source sealing never applies historical
-scene-specific overrides, and no body or bilateral admission threshold is relaxed.
-
-`review_badminton_identity_views.py --source <id>` can review each fully observed new
-source while the GPU observes later sources. The final full review reuses a source
-result only after checking complete case coverage and all native/teacher input hashes.
-`advance_badminton_identity_review.py` supervises dense observations, full geometric
-review and sealing. `advance_badminton_body_production.py --abstention-policy <json>`
-waits for complete review, applies the explicit policy, freezes execution inputs and
-runs isolated body fits plus full native/leg/bilateral QA. Both require explicit
-`--root`, `--source-root` and `--gpu-lease`; failures are visible in
-`production_stage.json`. Body completion stops at
-`awaiting_browser_playback_verification`, retaining the lease for real acceptance.
-
-Expansion assembly uses the complete old qualified dataset, preserving exact old
-role prefixes, each source's own calibration and real zero-sample sources.
-`assemble_badminton_expansion.py` writes only a provisional `assembly_manifest.json`.
-`audit_badminton_expanded_pixels.py` audits every held-out native image through its
-source-specific run/calibration and accepts historical hash corrections only with
-unchanged component metadata and admission-preserving evidence. Actual browser and
-final publication acceptance remain mandatory; assembly is not training publication.
-
-Daily production and notification dashboard: `http://127.0.0.1:8780/`. It refreshes
-every three seconds, showing real fitting/native/bilateral progress, formal
-publication status, relay/watchdog health, task execution receipts and links to
-the existing training curves/queue. Fitted QA candidates are separate from formal
-training samples; failed reads and stale page updates are explicitly flagged.
-The consumer repository's existing relay watchdog maintains this local HTTP entry
-with the verified GUI Python launcher. No extra scheduled task or GPU work is used.
-Runtime source and recovery/browser receipts are under that repository's `.local/`
-and `.local/gvhmr_expanded_1015_20261018/`; the command status helper remains optional
-for diagnostics.
-
-The completed 1015 expansion is documented in
-`docs/BADMINTON_REPAIRED_RELEASE.md`. Formal producer entry:
-`outputs/badminton_expanded_v1/training_manifest.json`; actual data:
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261019_expanded_142567`.
-The canonical archive root is `D:/PROJECT/LIDAR/datas/lidar2smpl_badminton`;
-`seal_badminton_expansion.py --data-root` defaults to that directory for future
-releases. The former `D:/PROJECT/LABEL/datas/lidar2smpl_badminton` location is a
-compatibility junction for immutable published manifests and receipts. Their
-historical path strings and SHA bindings are retained; migration does not rewrite
-released tensors or publication evidence.
-The fixed dashboard links to admitted canonical playback on port 8774 and the
-existing training curves. Port 8773 was the superseded pre-correction preview.
-
-For a future independent expansion, audit the completed native fits with
-`audit_badminton_fresh_continuity.py` and render flagged dual-camera witnesses with
-`render_badminton_continuity_cases.py`. Reviewed cross-person boundaries are
-published through `publish_badminton_canonical_tracks.py --source-manifest <json>
---reviewed-boundaries <json> --output-root <new-root>`; identity keys change only
-after native evidence checks, while numeric tensors and admission remain exact.
-The derived view is served by `serve_badminton_canonical_tracks.py --manifest
-<derived-manifest> --port 8774`. Real browser acceptance uses
-`verify_badminton_fresh_playback.py --root <repair-root> --url <viewer-url>
---canonical-manifest <derived-manifest> --output-root <new-acceptance-root>`.
-
-If native pixel hashes differ, `recheck_badminton_expanded_pixels.py` retains
-lossless native-PTS PNG captures and binds their source video, address and pixel
-digests. It rechecks all candidates in both cameras using unchanged admission
-rules. Consumers verify and replay those exact retained captures; this does not
-claim future live video decoding is bit-reproducible.
-
-Final sealing uses `seal_badminton_expansion.py --assembly <json> --browser <json>
---continuity <json> --pixels <json> --sequence-report <json> --data-root <root>
---release-id <new-id>`. It requires actual accepted browser/continuity/pixel
-receipts and the consumer's real sequence indexes, preserves old samples and
-source calibrations, verifies independent archived copies, and appends the
-catalog without changing its default. Existing formal files cannot be replaced.
-Release the GPU separately only after formal consumer CPU acceptance; the
-completed run records this later action in `gpu_handoff.json`.
-
-Sonata data-scale prediction review: `http://127.0.0.1:8780/comparisons/sonata/`,
-also linked from the fixed dashboard. The consumer repository's
-`scripts/compare_sonata_releases.py` compares the validation-selected 62,414 and
-98,011 training runs on identical 25,343 test person-frames, with source-specific
-native cameras and calibration. Both models use the same frozen test features;
-references enter only evaluation/rendering. The independent offline directory is
-`.local/gvhmr_sonata_62414_vs_98011_20261019`; retain its complete directory when
-moving the HTML. `scripts/verify_sonata_comparison.py` checks ten continuous Chrome
-clips, exact native RGB identity, synchronized full meshes, file/HTTP playback
-and backward compatibility. Validation populations differ between training runs;
-the review reports matched test means separately for old and new test sources.
+| `root_pose` | `(N,1,3)` | Target-frame root axis angle, radians |
+| `body_pose` | `(N,23,3)` | SMPL local axis angles, radians |
+| `shape` | `(N,10)` | Fitted neutral SMPL betas |
+| `transl` | `(N,3)` | Global shaped-pelvis position, metres |
+| `pc` | `(N,256,3)` | Actual points in the same target frame, metres |
+| `motion_id` | `(N,)` | Sequence identity |
+
+Map vertices using `hmr4d/utils/body_model/smplx2smpl_sparse.pt`
+(10,475 → 6,890), then fit neutral SMPL pose/shape/position. The matrix maps meshes,
+not parameters; copying betas and padding hand rotations does not align the two
+shape/rest bases. Recompute 24 joints with the consumer model. Shared conversion
+and placement live in `hmr4d/utils/body_model/contracts.py`.
+
+Consumer translation is the shaped pelvis, unlike standard SMPL's additive offset.
+Export `fitted_output.joints[:,0]`, and reconstruct with
+`forward_smpl_at_pelvis`. The target frame is X forward/depth, Y left, Z up. Camera
+geometry (right/down/forward) maps with `R=[[0,0,1],[-1,0,0],[0,-1,0]]`;
+left-multiply root/global positions and row-multiply points by R transpose, adding
+calibrated translation where needed. Local body rotations do not change.
+GVHMR world output has arbitrary heading/origin and is not already LiDAR-aligned.
+
+The optional `tools/check_ptv3_contract.py --ptv3-root <consumer-repository>`
+loads that explicitly supplied consumer to test conversion conventions on three
+generated poses. It is a GPU interface check, not a real-video accuracy test or
+a training-data generator. Production does not import the consumer workspace.
+The measured setup check is retained under `outputs/setup/`.
+
+For synthetic supervision, sample visible points from the same fitted SMPL mesh
+using a sensor viewpoint, then FPS; all-surface sampling has a different distribution.
+For actual supervision, preserve synchronized native records and calibrated metric
+alignment. Split whole scenes before sampling. Labels remain pseudo-labels:
+surface residual and video reprojection do not establish independent motion-capture
+accuracy, especially for occluded joints and foot orientation.
+
+The [consumer release contract](BADMINTON_REPAIRED_RELEASE.md) gives exact split,
+sequence, native-address and raw-versus-undistorted projection rules.

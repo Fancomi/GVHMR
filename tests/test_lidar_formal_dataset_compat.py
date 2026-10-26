@@ -19,7 +19,7 @@ from hmr4d import PROJ_ROOT
 from hmr4d.lidar_mocap import formal_completion_policy_compat as compat
 from hmr4d.lidar_mocap import formal_native_derive
 from hmr4d.lidar_mocap import new_source_completion as consumer
-import verify_badminton_formal_dataset as dataset
+from tools import verify_badminton_formal_dataset as dataset
 from test_lidar_formal_baseline import bytes_file, put, read, stage
 from test_lidar_formal_completion import finished, pending
 from test_lidar_formal_policy_compat import producer_finished, durable_bundle

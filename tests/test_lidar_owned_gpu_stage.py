@@ -50,7 +50,8 @@ def stage(tmp_path, monkeypatch):
         shutil.copyfile(actual_root / relative, destination)
     scripts = repo / ".venv/Scripts"
     scripts.mkdir(parents=True)
-    os.link(actual_root / ".venv/Scripts/python.exe", scripts / "python.exe")
+    # The system temporary directory may be on another Windows drive.
+    shutil.copyfile(actual_root / ".venv/Scripts/python.exe", scripts / "python.exe")
     # The real venv launcher must find its existing pyvenv.cfg and packages.
     shutil.copyfile(actual_root / ".venv/pyvenv.cfg", repo / ".venv/pyvenv.cfg")
     manifest = put(repo / "input/manifest.json", dict(schema="synthetic-only"))

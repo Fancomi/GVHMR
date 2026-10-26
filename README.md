@@ -28,32 +28,20 @@ Please see [installation](docs/INSTALL.md) for details.
 
 ## Badminton video / LiDAR labels
 
-Start with [CODEMAP](CODEMAP.md) for workflow navigation and use the project-local
-uv environment in [INSTALL](docs/INSTALL.md). The full-session entry fits every
-athlete and exports 24-joint neutral SMPL paired with actual fixed24 LiDAR returns:
+Start with [CODEMAP](CODEMAP.md) for workflow navigation and the project-local
+uv environment in [INSTALL](docs/INSTALL.md). For new admitted native-camera
+sources, prepare an explicit manifest in a separate run:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
+uv run --no-sync python tools/run_badminton_full_native.py --manifest <manifest.json> --root outputs/badminton_run --stage prepare
 ```
 
-Inputs are original recordings and the LiDAR project's declared canonical
-`config/calibration/badminton-20261012` result. `--prepare-only` verifies these
-inputs and pairing without inference. GVHMR fits bodies using fixed cameras;
-LiDAR maintains camera/court calibration and its joint projection evaluation.
-`job_status.json` becomes `complete` after full export and native-source checks.
-Changed calibration requires a new output root; historical snapshots stay intact.
-
-For ten continuous five-second offline previews and a quality/efficiency report:
-
-```powershell
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --clips 10 --seconds 5
-uv run --no-sync python tools/report_badminton_quality.py --output-root outputs/badminton_run --output-dir outputs/badminton_run/sequence_review
-uv run --no-sync python tools/render_badminton_reviews.py --output-root outputs/badminton_run --html-only
-```
-
-Open the run's `sequence_review/index.html`. Preview geometry uses original scans
-and native video timestamps without interpolation. These are pseudo-labels;
-surface and RGB residuals measure observation agreement, not anatomical truth.
+The manifest binds source indices, native timestamps, calibration and rally
+ranges. Preparation runs without inference; teacher, identity, fitting and
+publication stages are described in [the native pipeline](docs/BADMINTON_FULL_NATIVE.md).
+Outputs are 24-joint neutral SMPL paired with original fixed24 LiDAR returns.
+Changed inputs require a new run; archived releases retain their original evidence.
+Surface and RGB residuals measure observation agreement, not anatomical truth.
 
 ## Quick Start
 

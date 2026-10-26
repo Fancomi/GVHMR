@@ -12,7 +12,50 @@ import torch
 from hmr4d.lidar_mocap import formal_import_audit as audit, formal_numeric_import as importer
 from hmr4d.lidar_mocap.identity_repair import decision_digest
 from hmr4d.lidar_mocap.teacher import COORDINATE_SPACE, SCHEMA
+import test_lidar_formal_reuse as reuse_fixtures
 from test_lidar_formal_import_audit import case as audited_case, write, rows, refresh_report
+
+
+@pytest.mark.parametrize("changed", [None, "handoff", "mapping", "asset", "calibration"])
+def test_import_sessions_use_only_the_frozen_formal_relocation_chain(tmp_path, monkeypatch, changed):
+    from hmr4d.lidar_mocap.source_index import SourceIndexedSession
+
+    _, registry, calibration, original = reuse_fixtures.FormalRelocationTests().fixture(tmp_path)
+    root = tmp_path / "import"
+    write(root / "source/source_registry.json", registry)
+    target = Path(registry["data_root"]) / "sessions/20261019_152542/meta/original.bin"
+    if changed == "handoff":
+        Path(registry["camera_admission_handoff"]["path"]).write_bytes(b"changed")
+    elif changed == "mapping":
+        (Path(registry["data_root"]) / registry["data_relocations"]["file"]).write_bytes(b"changed")
+    elif changed == "asset":
+        target.write_bytes(b"changed")
+    elif changed == "calibration":
+        calibration["data_relocations"] = dict(calibration["data_relocations"], sha256="0" * 64)
+
+    loaded = []
+
+    def load_index(path, data_root, *, expected_sha256, require_admitted, relocations):
+        assert require_admitted is True
+        assert Path(path) == Path(registry["sources"]["20261019_152542"]["source_index"]["path"])
+        assert expected_sha256 == registry["sources"]["20261019_152542"]["source_index"]["sha256"]
+        assert Path(data_root) == relocations.root
+        assert not (relocations.root / original["file"]).exists()
+        asset = relocations.resolve(original)
+        assert asset == target and asset.read_bytes() == b"actual original"
+        loaded.append(asset)
+        return asset
+
+    # Keep the real formal intake, camera handoff, relocation checks and run
+    # loader. Only the unrelated source-index/camera certificate parser is a stub.
+    monkeypatch.setattr(SourceIndexedSession, "load_source_index", load_index)
+    if changed is None:
+        assert importer._sessions(root, SimpleNamespace(data=calibration)) == {"20261019_152542": target}
+        assert loaded == [target]
+    else:
+        with pytest.raises(ValueError):
+            importer._sessions(root, SimpleNamespace(data=calibration))
+        assert loaded == []
 
 
 @pytest.fixture

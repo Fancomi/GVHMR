@@ -1,5 +1,5 @@
 // Canonical owned-browser wrapper for the Python fresh native playback verifier.
-// Uses the calibration repository's existing Chrome for Testing lifecycle helper.
+// Uses the repository's owned Chrome for Testing lifecycle helper.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -11,7 +11,7 @@ const args = process.argv.slice(2);
 const forwarded = [];
 let python = process.env.GVHMR_PYTHON || resolve(tools, '../.venv/Scripts/python.exe');
 let helper = process.env.LIDAR_BROWSER_SESSION_HELPER ||
-  resolve(tools, '../../../LIDAR/lidar_project/scripts/checks/lib/browser_session.mjs');
+  resolve(tools, 'lib/browser_session.mjs');
 for (let index = 0; index < args.length; index++) {
   if (['--python', '--browser-session-helper'].includes(args[index])) {
     const option = args[index];
@@ -32,7 +32,7 @@ if (forwarded.includes('--help') || forwarded.includes('-h')) {
   });
   process.exit(code);
 }
-if (!existsSync(helper)) throw new Error('Provide the existing browser_session.mjs with --browser-session-helper');
+if (!existsSync(helper)) throw new Error('Chrome lifecycle helper missing; use --browser-session-helper to select an explicit override');
 const { startBrowser } = await import(pathToFileURL(resolve(helper)).href);
 const port = await new Promise((done, fail) => {
   const server = createServer();

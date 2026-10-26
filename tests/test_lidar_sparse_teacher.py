@@ -1,4 +1,4 @@
-"""Timing/evidence contracts for the isolated paired-RGB experiment."""
+"""Timing, evidence and cache contracts for the paired-native RGB teacher."""
 
 import numpy as np
 import pytest
@@ -102,10 +102,18 @@ def test_latent_role_anchor_and_identity_guards():
         sample_track(track, [95_000])
 
 
-def _production_cache(tmp_path):
+def _production_cache(tmp_path, monkeypatch):
+    import hmr4d
     from hmr4d.lidar_mocap.teacher import _provenance, _save_json, SCHEMA
     from hmr4d.lidar_mocap.pilot import binding
 
+    # Provenance stats these files; no test loads them as pretrained models.
+    for relative in ("yolo/yolov8x.pt", "vitpose/vitpose-h-multi-coco.pth",
+                     "hmr2/epoch=10-step=25000.ckpt", "gvhmr/gvhmr_siga24_release.ckpt"):
+        identity = tmp_path / "inputs/checkpoints" / relative
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_bytes(b"test-only weight identity; not a loadable model")
+    monkeypatch.setattr(hmr4d, "PROJ_ROOT", tmp_path)
     video = tmp_path / "native.mp4"
     video.write_bytes(b"test-only-no-video-decode")
     policy = tmp_path / "sampling.json"
@@ -125,18 +133,24 @@ def _production_cache(tmp_path):
     return directory, manifest, video, rows, camera, options
 
 
-def test_common_teacher_resumes_sparse_cache_without_dense_preprocessing(tmp_path):
-    from hmr4d.lidar_mocap.teacher import run_teacher
+def test_common_teacher_resumes_sparse_cache_without_dense_preprocessing(tmp_path, monkeypatch):
+    from hmr4d.lidar_mocap import teacher
 
-    directory, manifest, video, rows, camera, options = _production_cache(tmp_path)
-    assert run_teacher(video, rows, camera, directory, **options) == manifest
+    directory, manifest, video, rows, camera, options = _production_cache(tmp_path, monkeypatch)
+    assert teacher.run_teacher(video, rows, camera, directory, **options) == manifest
+    assert manifest["provenance"]["options"] == options
+    monkeypatch.setattr(teacher, "_detect", lambda *args: [[] for _ in rows])
+    rebuilt = teacher.run_teacher(video, rows, camera, directory, resume=False, **options)
+    assert rebuilt["provenance"] == manifest["provenance"]
+    assert rebuilt["provenance_hash"] == manifest["provenance_hash"]
+    assert rebuilt["tracks"] == []
 
 
-def test_pixel_reuse_reproduces_duration_matched_sparse_segments(tmp_path):
+def test_pixel_reuse_reproduces_duration_matched_sparse_segments(tmp_path, monkeypatch):
     import torch
     from hmr4d.lidar_mocap import teacher
 
-    directory, manifest, _, rows, _, options = _production_cache(tmp_path)
+    directory, manifest, _, rows, _, options = _production_cache(tmp_path, monkeypatch)
     detections = [[dict(bbx_xyxy=np.array([20, 20, 100, 200], np.float32), detection_confidence=.9)] for _ in rows]
     limits = duration_tracking_limits(rows)
     tracks = teacher.associate_detections(detections, max_track_gap_frames=limits["max_gap_frames"])

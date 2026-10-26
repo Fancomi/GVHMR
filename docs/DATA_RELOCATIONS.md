@@ -44,5 +44,6 @@ clock 和 9,050 个 PNG 原来依赖待清理的 device 目录，需要带映射
 迁移验收输出在 `outputs/badminton_relocation_runtime_acceptance_20261021/`。
 检查包括封存输入 SHA 不变、拒绝旧域打开的 guard、实际点云/原生 RGB/容器 PTS，
 以及真实 Chrome 的完整网格、双相机投影和严格 RGBA 一致性。
-`tools/verify_badminton_relocated_viewer.py` 可在物理删除后对相同 URL 再次验收；
-8767/8771 额外传 `--without-canonical-publication`。
+迁移后使用 `tools/verify_badminton_viewer.py --url <viewer-url>` 检查同一看板的
+原生双相机播放、扫描同步、完整网格、投影和严格 RGBA 一致性；
+显式来源映射与封存输入不变由 `tests/test_lidar_runtime_relocations.py` 回归保护。

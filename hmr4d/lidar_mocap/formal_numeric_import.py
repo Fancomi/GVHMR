@@ -191,9 +191,9 @@ def _load_audit(root, proof):
 
 def _sessions(root, calibration):
     from .rally_pipeline import load_run_session
-    from .relocations import load_run_relocations
+    from .relocations import load_pilot_run_relocations
 
-    resolver = load_run_relocations(root / "source")
+    resolver = load_pilot_run_relocations(root / "source", calibration.data)
     registry = read_json(root / "source/source_registry.json")
     return {
         sid: load_run_session(root / "source", calibration, sid, relocations=resolver) for sid in registry["sources"]
