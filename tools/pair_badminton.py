@@ -4,6 +4,9 @@ Input: declared canonical LiDAR calibration and original session recordings.
 Output: immutable snapshot, tracks/fits and PTv3 single-frame pairs in output-root.
 Use local uv with body-model assets (CUDA required for teacher/fitting stages).
 Changed calibration/source identity needs a new output root; see job status/errors.
+This legacy route requires the original meta/<ID>/<ID>_common_clock.json layout.
+The final session-contained dataset is inspected on CPU through
+prepare_badminton_source.py --final-current-release, which does not admit fitting.
 """
 import argparse
 import json
@@ -15,7 +18,8 @@ def main():
     torch.set_num_threads(4)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('stage',choices=('prepare','teacher','fit','run','export'))
-    parser.add_argument('--sessions-root',default='D:/PROJECT/LIDAR/datas/badminton/sessions')
+    parser.add_argument('--sessions-root',default='E:/Datas/badminton-recoding/sessions',
+                        help='Compatible legacy sessions with original meta/<ID>/<ID>_common_clock.json; use the explicit final-current inspector for the final dataset')
     parser.add_argument('--lidar-project-root',default='D:/PROJECT/LIDAR/lidar_project')
     parser.add_argument('--output-root',default='outputs/badminton')
     parser.add_argument('--session',action='append',dest='session_ids')

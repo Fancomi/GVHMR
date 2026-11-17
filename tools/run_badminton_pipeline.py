@@ -7,6 +7,9 @@ Run through project-local uv; fitting needs installed CUDA/body-model assets.
 --prepare-only checks calibration, source clocks and pairing without inference.
 On failure read job_status.json, resolve its error and rerun this command;
 validated caches resume. Changed physical inputs require a new output root.
+This legacy route requires the original meta/<ID>/<ID>_common_clock.json layout.
+The final session-contained dataset uses prepare_badminton_source.py
+--final-current-release for CPU inspection; that mode does not admit fitting.
 """
 from __future__ import annotations
 import argparse
@@ -23,7 +26,8 @@ from hmr4d.lidar_mocap.pipeline import BadmintonPipeline,write_json
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sessions-root',type=Path,default=Path('D:/PROJECT/LIDAR/datas/badminton/sessions'))
+    parser.add_argument('--sessions-root',type=Path,default=Path('E:/Datas/badminton-recoding/sessions'),
+                        help='Compatible legacy sessions with original meta/<ID>/<ID>_common_clock.json; use the explicit final-current inspector for the final dataset')
     parser.add_argument('--lidar-project-root',type=Path,default=Path('D:/PROJECT/LIDAR/lidar_project'))
     parser.add_argument('--prepare-only',action='store_true')
     parser.add_argument('--output-root',type=Path,default=Path('outputs/badminton'))

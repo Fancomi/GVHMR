@@ -10,7 +10,7 @@ calibration; all body stages keep cameras fixed.
 ## Current accepted data
 
 The cumulative archive is
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`,
+`E:/Datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`,
 SHA256 `68e0065c20a71d301e3318753fe28bcfce388ae72280a5f884b61762d64ca4a4`.
 It contains **228,059** person-frames: train **170,815**, validation **23,749**,
 test **33,495**. It preserves all 222,180 parent rows and adds 5,879 samples from

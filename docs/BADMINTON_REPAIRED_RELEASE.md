@@ -1,7 +1,7 @@
 # 双机训练发布与消费契约
 
 当前累计发布为
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`：
+`E:/Datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`：
 train/val/test **170,815 / 23,749 / 33,495**，总计 **228,059** 人帧。
 发布链和验收见 [原生生产](BADMINTON_FULL_NATIVE.md)。
 这里的 GT 是多视角/点云拟合伪标签，不是独立光学动捕真值。
@@ -25,7 +25,7 @@ train/val/test **170,815 / 23,749 / 33,495**，总计 **228,059** 人帧。
 SHA、角色/来源校准与验证证据。旧绝对路径可经兼容 Junction 指向同一份归档，
 历史字符串/清单/SHA 不改写，见 [DATA_RELOCATIONS.md](DATA_RELOCATIONS.md)。
 默认 `seal_badminton_expansion.py --data-root` 为
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton`。
+`E:/Datas/lidar2smpl_badminton`。
 
 ## 修复版基线入口
 

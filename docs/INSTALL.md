@@ -90,18 +90,29 @@ The preprocessed files do not replace the original videos/annotations.
 
 ## Calibrated session route
 
-This is the standard session pipeline. For admitted native rally production and
+This is the legacy session pipeline. It requires compatible original recordings,
+including `meta/<source-id>/<source-id>_common_clock.json`, and the exact adopted
+calibration. The final 35-source dataset uses session-contained metadata under
+`meta/recording/` and has retired original point mappings; this route does not
+adapt it for body fitting. Use the explicit CPU inspector in
+[Source and time contracts](#source-and-time-contracts) for that dataset.
+`gvhmr_temp` contains temporary metadata and sparse-point evidence and cannot
+replace recordings or the independent trained archive.
+
+For admitted native rally production and
 formal cumulative releases use [BADMINTON_FULL_NATIVE.md](BADMINTON_FULL_NATIVE.md).
+The following examples require an explicitly retained compatible legacy input:
 
 ```powershell
-uv run --no-sync python tools/run_badminton_pipeline.py --output-root outputs/badminton_run
-uv run --no-sync python tools/pair_badminton.py run --output-root outputs/badminton_smoke --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
+uv run --no-sync python tools/run_badminton_pipeline.py --sessions-root <compatible-legacy-sessions-root> --output-root outputs/badminton_run
+uv run --no-sync python tools/pair_badminton.py run --sessions-root <compatible-legacy-sessions-root> --output-root outputs/badminton_smoke --session 20261012_154726 --duration-seconds 6 --fit-batch-size 128 --preproc-precision float16 --roi-margin-px 20
 uv run --no-sync python tools/verify_badminton_dataset.py --output-root outputs/badminton_run
 ```
 
-Default sessions are `D:/PROJECT/LIDAR/datas/badminton/sessions`; the calibration
+Default sessions are `E:/Datas/badminton-recoding/sessions`; the calibration
 project is `D:/PROJECT/LIDAR/lidar_project`. Override with `--sessions-root` and
-`--lidar-project-root`. The standard route reads the five files under that
+`--lidar-project-root`. The default directory exists, but its current final layout
+does not satisfy this legacy input contract. The legacy route reads five files under that
 project's `config/calibration/badminton-20261012/`: `calibration.json`,
 `sources.json`, `sync-policy.json`, `bbox.json`, `roi-config.txt`.
 LiDAR owns K/d5/R/t, court registration and joint projection evaluation. GVHMR
@@ -202,7 +213,8 @@ foreground variants must not be replaced by current session CROP merely because
 their source IDs match. The final-current inspector always selects canonical
 `sessions/<source-id>/` CROP, and does not select this manual variant implicitly.
 
-The original external source-index and rally modes remain:
+The original external source-index and rally modes remain for explicitly retained
+compatible legacy inputs, including their required original clocks and maps:
 
 ```powershell
 uv run --no-sync python tools/prepare_badminton_source.py --source-index <index.json> --data-root <badminton-data-root> --source-index-sha256 <digest> --report outputs/source_prepare/report.json
@@ -243,10 +255,34 @@ is read. Empty emitted clouds stay empty. Explicit fullraw aliases normalize
 dimensions in memory, require stored raw XYZ and `M_baked_into_stored_xyz=false`,
 and reject conflicting aliases or applying M twice.
 
+An explicit `retired_parent_payload` file/SHA256/byte-length reference enables
+only the derived `original_fullraw_fixed24` reader to use a retained CROP after
+parent retirement. Its `badminton-retired-fullraw-parent-evidence-v1` proof binds
+an immutable base index; every existing index field remains typed-equal. It also
+binds the completed original crop/approval/calibration, original parent and clock
+metadata, all-frame child/member-map validation, and either the actual historical
+retirement receipt or a complete current parent comparison marked
+`verified_ready_for_retirement`. This transition state does not claim deletion.
+Without the opt-in the original parent PNG and exact retained RGB8 comparison
+remain required.
+
+The retired reader rechecks each current child PNG and member NPZ digest, the
+complete original valid-return grid digest, selected original IDs and inverse
+mapping. It reports `parent_payload_reopened=false` and does not reconstruct
+removed original XYZ or replay parent coordinate equality. Historical encoded
+checks retain their recorded coverage, including limited pixel samples; complete
+current child/map checks do not promote those samples to a full parent replay.
+This read compatibility does not grant camera, exposure, body or training admission,
+change timing/geometry, or cover other parent kinds.
+This legacy opt-in still requires its bound member NPZ files. It does not make
+the final v2 dataset's retired mappings available; use `read_current_cloud` above
+for that dataset's current PNG points.
+
 Frozen clock JSON keeps its original bytes. Relative `raw_index` references
 resolve through the verified parent's original `common_clock` directory, after
 comparing the frozen copy; no basename search or manifest rewrite is allowed.
-Original clouds, clocks and member evidence remain required inputs. Canonical
+Original clocks and member evidence remain required inputs; original cloud payloads
+are required unless this explicit retirement proof is verified. Canonical
 roots and explicit historical resolvers are in [DATA_RELOCATIONS.md](DATA_RELOCATIONS.md).
 
 ## Neutral SMPL and the single-frame consumer

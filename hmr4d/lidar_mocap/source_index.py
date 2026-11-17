@@ -89,10 +89,12 @@ def validate_packet_row_mapping(index, clock_rows, frozen, selected, camera_omit
     return packet_omitted, indices
 
 
-def verify_fullraw_evidence(index, data_root, clock_path, clock, *, relocations=None):
+def verify_fullraw_evidence(index, data_root, clock_path, clock, *, relocations=None, _retired_context_out=None):
     """Verify export/PTP evidence separately from camera or body admission."""
     direct = index.get("source_kind") == "original_fullraw_fixed24"
     derived = index.get("parent_source_kind") == "original_fullraw_fixed24"
+    if "retired_parent_payload" in index and not derived:
+        raise ValueError("Retired-parent opt-in requires a derived original-fullraw source")
     if not (direct or derived):
         return None
     if "lidar_common_clock_row_indices" not in index:
@@ -191,7 +193,7 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock, *, relocations=
                 original["common_clock"]["file"], track["raw_index"], track["raw_index_sha256"])
         _bound_file(data_root, entry, relocations=relocations)
         raw_indexes.append(entry)
-    return dict(
+    result = dict(
         parent_scope="fullraw_exported_clouds",
         maps_to_full_pcap_returns=False,
         decode_evidence=index["fullraw_decode_evidence"],
@@ -201,6 +203,13 @@ def verify_fullraw_evidence(index, data_root, clock_path, clock, *, relocations=
         raw_timestamp_indices=raw_indexes,
         derived=derived,
     )
+    if "retired_parent_payload" in index:
+        from .source_membership import verify_retired_parent_evidence
+        context = verify_retired_parent_evidence(index, data_root, _bound_file, relocations=relocations)
+        result["retired_parent_payload"] = context.summary
+        if _retired_context_out is not None:
+            _retired_context_out.append(context)
+    return result
 def _bound_file(data_root, entry, verify=True, *, relocations=None):
     require_relocation_root(data_root, relocations)
     path=(relocations.resolve(entry) if relocations is not None else (data_root/entry['file']).resolve())
@@ -409,7 +418,10 @@ class SourceIndexedSession(SessionIndex):
                 if nearest['status']!='outside_video_time_range' or row['cameras'][camera]!=frozen['cameras'][camera]:
                     raise ValueError('An omitted source frame could affect paired camera coverage')
         packet_omitted,mapping=validate_packet_row_mapping(index,self.original_lidar_clock_rows,self._frozen,selected,omitted)
-        self.fullraw_evidence=verify_fullraw_evidence(index,data_root,clock_path,self.common_clock,relocations=relocations)
+        retired_context = []
+        self.fullraw_evidence=verify_fullraw_evidence(index,data_root,clock_path,self.common_clock,relocations=relocations,
+                                                   _retired_context_out=retired_context)
+        self._retired_parent_context = retired_context[0] if retired_context else None
         self.member_mapping_verifications={}
         if packet_omitted and self.fullraw_evidence is None:
             raise ValueError('Unexported packet rows require the explicit fullraw completion/PTP contract')
@@ -439,6 +451,10 @@ class SourceIndexedSession(SessionIndex):
         return self
 
     def read_cloud(self,pair,viewer=True):
+        retired_context=getattr(self,'_retired_parent_context',None)
+        if retired_context is not None:
+            from .source_membership import verify_retired_index_binding
+            verify_retired_index_binding(self.source_index,retired_context)
         frame=self.source_index['frames'][pair['lidar_index']]
         if self.data_relocations is not None:
             actual=_bound_file(self.data_root,dict(file=frame['file'],sha256=frame['png_sha256'],bytes=frame['png_bytes']),
@@ -451,7 +467,8 @@ class SourceIndexedSession(SessionIndex):
         if self.fullraw_evidence and self.fullraw_evidence['derived']:
             from .source_membership import verify_fullraw_members
             self.member_mapping_verifications[pair['lidar_index']]=verify_fullraw_members(
-                frame,pair['lidar_path'],self.data_root,self.manifest,_bound_file,relocations=self.data_relocations)
+                frame,pair['lidar_path'],self.data_root,self.manifest,_bound_file,relocations=self.data_relocations,
+                retired_evidence=retired_context)
         return points
 
 

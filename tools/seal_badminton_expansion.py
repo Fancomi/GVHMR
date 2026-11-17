@@ -701,7 +701,7 @@ def main():
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("D:/PROJECT/LIDAR/datas/lidar2smpl_badminton"),
+        default=Path("E:/Datas/lidar2smpl_badminton"),
         help="Canonical release archive root (default: %(default)s)",
     )
     parser.add_argument("--release-id", required=True)

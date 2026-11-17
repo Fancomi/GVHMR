@@ -28,7 +28,7 @@ states.
 | Native dual-camera playback and acceptance | `tools/serve_badminton_canonical_tracks.py`, `tools/verify_badminton_fresh_playback.py` / `rally_viewer.py`, `preview_decoder.py` | [Playback and native pixels](docs/BADMINTON_FULL_NATIVE.md#playback-and-native-pixels) |
 
 Current accepted cumulative archive:
-`D:/PROJECT/LIDAR/datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`.
+`E:/Datas/lidar2smpl_badminton/releases/20261024_expanded_228059/manifest.json`.
 It contains train/val/test **170,815 / 23,749 / 33,495** person-frames.
 Use one complete version; releases overlap and their counts must not be added.
 
