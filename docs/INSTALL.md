@@ -148,6 +148,62 @@ formal stage details and explicit CPU decoding are in the
 
 ## Source and time contracts
 
+The portable final dataset has a separate, explicit CPU inspection mode:
+
+```powershell
+uv run --no-sync python tools/prepare_badminton_source.py --final-current-release <published-final-review-release.json> --source-id 20261019_152542 --data-root <data-root> --final-current-release-sha256 <release-digest> --report outputs/final_current/20261019_152542.json
+```
+
+Use the dataset root, for example `E:/Datas/badminton-recoding`, as `--data-root`.
+Its current inputs are under `sessions/`. Select the published release and digest
+from `sessions/_meta/canonical-ready.json`. Each source's helper, index and
+original scientific proofs live under `sessions/<source-id>/meta/extra/`; native
+configuration is under `sessions/<source-id>/meta/recording/`. Main PNG stays under
+that source's `output-lidar/`; tracked v1 sources also require `member-maps/`.
+The release must be inside the explicit dataset root. This mode accepts
+the explicit source-index v1 or v2 contract and verifies original index/native
+manifest bytes, declared paths and unchanged non-membership scientific values.
+For `badminton-final-current-source-index-v1`, first/middle/last CROP checks include
+PNG/member-map hashes, original valid-return grid cells and the J-to-current
+inverse mapping. A missing v1 NPZ still fails; it never selects another mode. Historical
+`lineage_only_not_a_live_payload_dependency` references are never opened. Removed
+parent XYZ and current parent-coordinate equality are not reconstructed or replayed.
+Video payloads are not rehashed or certified by this bounded inspection.
+
+`badminton-final-current-source-index-v2` explicitly declares
+`point_mapping_available=false` and the user retirement of those maps. It preserves
+the exact previous portable-v1 index as historical metadata, binds per-source
+retirement counts/bytes, and contains no active member-map descriptors. The same
+CLI chooses current-PNG-only inspection from this schema, returning actual current
+grid cells and setting original membership/identity verification false. It does
+not infer this contract from a missing file. Logical retirement and physical
+deletion are recorded separately.
+
+Python callers use `FinalCurrentRelease(release_file, data_root,
+expected_sha256).source(source_id)` from `hmr4d.lidar_mocap.final_current`.
+For v1, `read_cloud(frame_index)` returns raw sensor XYZ plus membership evidence.
+For v2, `read_current_cloud(frame_index)` returns `(XYZ, current_grid_indices,
+evidence)`. These grid indices are derived from the current PNG valid mask and
+are identified together with its SHA256; they are not original parent J IDs.
+The old `read_cloud` interface clearly rejects v2. Removed original-label point
+membership cannot be replayed through this current-only view.
+`viewer=True` applies that source's unchanged M once. Reports explicitly keep
+training/body/exposure admission false. Original camera states, null pairs and
+software arrival timing retain their original scope. This mode does not feed
+old fitting or training consumers and is mutually exclusive with `--source-index`.
+
+Manual hit annotations select a distinct variant through
+`sessions/_meta/manual-hit-index.v4.json`. Each native manual sub-session is
+`sessions/<source-id>/annotations/manual_hits/<source-id>/`, containing
+`session.json`, `meta/recording/` and `output-lidar/lidar_<source-id>/`.
+Use the index's bound original clock manifest and label bytes; annotation time
+is the original first-point timestamp difference, not the current review scan midpoint. The four extra 1012
+foreground variants must not be replaced by current session CROP merely because
+their source IDs match. The final-current inspector always selects canonical
+`sessions/<source-id>/` CROP, and does not select this manual variant implicitly.
+
+The original external source-index and rally modes remain:
+
 ```powershell
 uv run --no-sync python tools/prepare_badminton_source.py --source-index <index.json> --data-root <badminton-data-root> --source-index-sha256 <digest> --report outputs/source_prepare/report.json
 uv run --no-sync python tools/prepare_badminton_rallies.py --acquisition-manifest <acquisition.json> --acquisition-sha256 <digest> --data-root <badminton-data-root> --output-root outputs/rally_intake
